@@ -36,3 +36,17 @@ func (d *DB) SeedSegmentCommits(ctx context.Context, segment session.SegmentID, 
 func (s *SessionStore) IndexOf(ctx context.Context, segment session.SegmentID) (session.CommitIndex, session.Head, error) {
 	return s.backend.Index(ctx, segment)
 }
+
+// DeleteRecord, TruncateSegment and CreateSession expose the backend writes
+// the retention tests call directly. Production goes through the Ledger.
+func (s *SessionStore) DeleteRecord(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {
+	return s.backend.DeleteRecord(ctx, sid)
+}
+
+func (s *SessionStore) TruncateSegment(ctx context.Context, id session.SegmentID, through session.CommitSeq) (session.Head, []session.CommitID, error) {
+	return s.backend.TruncateSegment(ctx, id, through)
+}
+
+func (s *SessionStore) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
+	return s.backend.CreateSession(ctx, seg, rec)
+}

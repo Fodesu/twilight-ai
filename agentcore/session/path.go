@@ -20,15 +20,6 @@ type Span struct {
 // add spans.
 type Path []Span
 
-// Endpoint is one live session's right endpoint on a segment. The segment
-// keeps every commit at or before the maximum endpoint; an empty set means
-// the whole segment can be removed. An open endpoint retains every commit
-// the segment has.
-type Endpoint struct {
-	Session SessionID `json:"session"`
-	End     Bound     `json:"end"`
-}
-
 // Validate checks the path shape against tip: the last span names tip and
 // is open, earlier spans are closed, segments are unique, and each span
 // starts where the previous one stopped.
@@ -91,16 +82,16 @@ func (p Path) Branch(seq CommitSeq, next SegmentID) (Path, CommitRef, error) {
 	return nil, CommitRef{}, fmt.Errorf("commit %d is outside the path", seq)
 }
 
-// MaxBound is the retention bound of endpoints: an open endpoint retains
-// the whole segment, otherwise the greatest Through. ok is false when
-// endpoints is empty.
-func MaxBound(endpoints []Endpoint) (Bound, bool) {
-	if len(endpoints) == 0 {
+// MaxBound is the retention bound of the ends that still name a segment:
+// an open end retains the whole segment, otherwise the greatest Through.
+// ok is false when ends is empty.
+func MaxBound(ends []Bound) (Bound, bool) {
+	if len(ends) == 0 {
 		return Bound{}, false
 	}
-	max := endpoints[0].End
-	for _, c := range endpoints[1:] {
-		max = mergeBound(max, c.End)
+	max := ends[0]
+	for _, end := range ends[1:] {
+		max = mergeBound(max, end)
 	}
 	return max, true
 }

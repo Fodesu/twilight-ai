@@ -127,20 +127,19 @@ type LeaseDirectory interface {
 
 // Maintenance changes the set of roots and reclaims nodes (SES-GC).
 type Maintenance interface {
-	// Delete tombstones the root and reclaims along its stored path
-	// (SES-GC-1/2). Each segment on the path loses this session's endpoint.
-	// An empty endpoint set removes the segment; a closed maximum truncates
-	// the segment to that commit. A prefix another live session still covers
-	// stays. The Session is no longer found, opened, read or forked, and its
-	// SessionID is never reused (a Create under it is ErrDeleted). An owned
-	// Session is ErrOwned and nothing is reclaimed. The report lists the
-	// segments and commits this call removed.
+	// Delete tombstones the root, drops its path spans, and reclaims along
+	// that path (SES-GC-1/2). A segment with no remaining span is removed.
+	// A closed maximum truncates the segment to that commit. A prefix
+	// another live session still names stays. The Session is no longer
+	// found, opened, read or forked, and its SessionID is never reused (a
+	// Create under it is ErrDeleted). An owned Session is ErrOwned and
+	// nothing is reclaimed. The report lists the segments and commits this
+	// call removed.
 	Delete(context.Context, SessionID) (CollectReport, error)
-	// Collect repairs retention from the live roots' paths (SES-GC-2): it
-	// rewrites each segment's endpoints, truncates to the maximum that
-	// remains, and removes segments no path covers. It is idempotent and
-	// safe while Sessions are open. An open tip is an open endpoint, so the
-	// commits under it stay.
+	// Collect reclaims from the spans that still name each segment
+	// (SES-GC-2): it truncates to the greatest remaining end and removes
+	// segments no path names. It is idempotent and safe while Sessions are
+	// open. An open tip stays open, so the commits under it stay.
 	Collect(context.Context) (CollectReport, error)
 }
 

@@ -91,50 +91,62 @@ type RootStore interface {
 }
 
 // MaintenanceStore is the adapter port for the operations that change the
-// set of nodes and roots (SES-GC-4): enumeration for reachability, node
-// creation with its root, truncation and removal, root deletion. They share
-// one consistency domain with the other two ports.
+// set of nodes, path spans and roots (SES-GC-4): enumeration, node creation
+// with its root, the greatest span still naming a segment, truncation and
+// removal, root deletion. They share one consistency domain with the other
+// two ports.
 type MaintenanceStore interface {
 	// ListSegments returns every node.
 	ListSegments(context.Context) ([]SegmentID, error)
 	// ListRecords returns every root.
 	ListRecords(context.Context) ([]SessionRecord, error)
-	// CreateSession persists a new node, the endpoints its path records on
-	// each span's segment, and the root that names the node (SES-FRK-1).
-	// The root is the last write: a crash before it leaves a segment and
-	// endpoints no live root names, which Collect repairs. Never a root
-	// without its segment. Both the SessionID and the SegmentID must be
-	// new: ErrConflict when either exists, ErrDeleted when the SessionID
-	// was deleted, so no two roots ever name one writable tip (SES-FRK-4).
+	// CreateSession persists a new node, the root's path spans, and the root
+	// that names the node (SES-FRK-1). The root is the last write. On a
+	// database the three writes are one transaction. On a file store the
+	// path is part of the root file, so a crash before that file leaves a
+	// segment no root names, which Collect removes. Never a root without
+	// its segment. Both the SessionID and the SegmentID must be new:
+	// ErrConflict when either exists, ErrDeleted when the SessionID was
+	// deleted, so no two roots ever name one writable tip (SES-FRK-4).
 	// When the segment's header names a Parent, the parent segment must
 	// exist at the moment of the write and the adapter must keep it from
 	// being removed while the edge stands (SES-GC-4): a vanished parent is
-	// ErrNotFound.
+	// ErrNotFound. Each closed span's Through commit, and the parent edge's
+	// commit, must also still exist. The check and the span insert hold the
+	// same per-segment lock as TruncateSegment, so a commit removed by a
+	// truncation is not then named by a new span. A missing commit is
+	// ErrNotFound and nothing is written.
 	CreateSession(context.Context, Segment, SessionRecord) error
-	// RemoveEndpoint drops sid's endpoint on the segment and returns the
-	// endpoints that remain. A missing cover record returns an empty slice
-	// and a nil error. ReplaceEndpoints sets the segment's endpoints to covers;
-	// Collect uses it to make stored endpoints match live paths. A missing
-	// segment is ErrNotFound and nothing is written.
-	RemoveEndpoint(ctx context.Context, id SegmentID, sid SessionID) ([]Endpoint, error)
-	ReplaceEndpoints(ctx context.Context, id SegmentID, covers []Endpoint) error
+	// SpanBound is the greatest end among the path spans that still name
+	// the segment. ok is false when none do. An open end retains every
+	// commit the segment has. DropOrphanSpans deletes path spans whose
+	// session is not a live root, so a span left behind cannot keep a
+	// segment. A file store that keeps the path only on the root has
+	// nothing to drop.
+	SpanBound(ctx context.Context, id SegmentID) (Bound, bool, error)
+	DropOrphanSpans(context.Context) error
 	// TruncateSegment drops the segment's own commits after through and
-	// returns the new head. RemoveSegment deletes the node when nothing
-	// references it, atomically with that check (SES-GC-4): a root whose Tip is
-	// the segment or a segment whose Parent edge names it makes the removal
-	// ErrReferenced and nothing is removed. The adapter enforces this with
-	// its own consistency (a foreign key, a check under the store lock), so
-	// a Create racing a Collect on another replica cannot leave a child on
-	// a removed parent.
-	TruncateSegment(ctx context.Context, id SegmentID, through CommitSeq) (Head, error)
+	// returns the head afterwards plus the CommitIDs it actually removed.
+	// Under the same per-segment lock CreateSession holds while inserting a
+	// span, it re-reads the greatest span still naming the segment: an open
+	// span deletes nothing, and a greater Through raises the cut. A caller's
+	// through can be stale. Nothing removed yields the unchanged head and
+	// an empty list. RemoveSegment deletes the node when nothing references
+	// it, atomically with that check (SES-GC-4): a root whose Tip is the
+	// segment, a segment whose Parent edge names it, or a path span that
+	// still names it makes the removal ErrReferenced and nothing is removed.
+	// The adapter enforces this with its own consistency (a foreign key, a
+	// check under the store lock), so a Create racing a Collect on another
+	// replica cannot leave a child on a removed parent.
+	TruncateSegment(ctx context.Context, id SegmentID, through CommitSeq) (Head, []CommitID, error)
 	RemoveSegment(context.Context, SegmentID) error
-	// DeleteRecord marks a root deleted (SES-GC-1): the Session is no longer
-	// found, and its SessionID stays taken (CreateSession on it is
-	// ErrDeleted), so a command in flight for the old Session can never
-	// reach a new one under the same name. ErrOwned while a Lease is live;
-	// a deleted root is ErrNotFound. Record and ListRecords do not return
-	// deleted roots.
-	DeleteRecord(context.Context, SessionID) error
+	// DeleteRecord marks a root deleted and drops its path spans in the same
+	// write (SES-GC-1). It returns the record as it was, including the path,
+	// so the caller can reclaim after the write commits. ErrOwned while a
+	// Lease is live, and then nothing is written. A deleted root is
+	// ErrNotFound. A nonempty path that does not validate is ErrCorrupt and
+	// nothing is written. Record and ListRecords do not return deleted roots.
+	DeleteRecord(context.Context, SessionID) (SessionRecord, error)
 }
 
 // Backend is what an adapter implements: the three ports over one

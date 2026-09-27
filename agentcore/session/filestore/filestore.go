@@ -3,12 +3,12 @@
 // segments/<id>/ as header.json plus log.jsonl, one committed line per own
 // Commit, index.jsonl, the segment's persisted CommitIndex (SES-REP-5) with
 // the byte range of each commit's line, verified.json, the head through
-// which the segment was last verified (SES-REP-1), and covers.json, the
-// right endpoints of the live sessions whose paths include the segment.
+// which the segment was last verified (SES-REP-1).
 // Session roots live under sessions/<sid>.json with their writer ownership
-// and stored path. The log is plain JSONL so a stream can be inspected and
+// and stored path. That path is the reference relation: SpanBound reads
+// live roots. The log is plain JSONL so a stream can be inspected and
 // diffed with standard tools. Fork, inherited prefixes and retention are
-// the Ledger's; this package stores nodes, endpoints and roots.
+// the Ledger's; this package stores nodes and roots.
 //
 // Ownership is arbitrated through the root file, so two Store instances over
 // the same root behave as two processes: a takeover through one instance
@@ -38,7 +38,6 @@ const (
 	sessionsDir = "sessions"
 	headerFile  = "header.json"
 	logFile     = "log.jsonl"
-	coversFile  = "covers.json"
 )
 
 // Store is the JSONL session.Store: the Ledger's methods are promoted from
@@ -388,33 +387,52 @@ func (s *Store) fail(lease session.Lease, owner ownerRecord, step string, cause 
 	return kerr(session.ErrHandleFailed, "append", lease.Session, detail)
 }
 
-func (s *Store) TruncateSegment(ctx context.Context, id session.SegmentID, through session.CommitSeq) (session.Head, error) {
+func (s *Store) TruncateSegment(ctx context.Context, id session.SegmentID, through session.CommitSeq) (session.Head, []session.CommitID, error) {
 	if err := ctx.Err(); err != nil {
-		return session.Head{}, err
+		return session.Head{}, nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	header, dir, err := s.loadSegment(id, "collect")
 	if err != nil {
-		return session.Head{}, err
+		return session.Head{}, nil, err
 	}
 	path := filepath.Join(dir, logFile)
 	commits, _, _, _, err := readLog(path, "", "collect")
 	if err != nil {
-		return session.Head{}, err
+		return session.Head{}, nil, err
+	}
+	// CreateSession holds this same lock while it checks a commit and writes
+	// the span that names it. A span already stored can only raise the cut.
+	bound, ok, err := s.spanBoundLocked(id)
+	if err != nil {
+		return session.Head{}, nil, err
+	}
+	if ok && bound.Open {
+		return headOf(header, commits), nil, nil
+	}
+	if ok && bound.Through > through {
+		through = bound.Through
 	}
 	keep := 0
 	for keep < len(commits) && commits[keep].Seq <= through {
 		keep++
 	}
+	if keep == len(commits) {
+		return headOf(header, commits), nil, nil
+	}
+	dropped := make([]session.CommitID, 0, len(commits)-keep)
+	for _, c := range commits[keep:] {
+		dropped = append(dropped, c.CommitID)
+	}
 	s.dropIndex(id)
 	if err := rewriteLog(path, commits[:keep]); err != nil {
-		return session.Head{}, err
+		return session.Head{}, nil, err
 	}
 	if _, err := s.rebuildIndex(id, header, dir); err != nil {
-		return session.Head{}, err
+		return session.Head{}, nil, err
 	}
-	return headOf(header, commits[:keep]), nil
+	return headOf(header, commits[:keep]), dropped, nil
 }
 
 // RemoveSegment deletes the node unless a root's tip or a child's edge
@@ -437,110 +455,42 @@ func (s *Store) RemoveSegment(ctx context.Context, id session.SegmentID) error {
 	return os.RemoveAll(s.segmentDir(id))
 }
 
-// RemoveEndpoint drops sid's endpoint and returns the endpoints that remain.
-// A segment with no cover file, or no directory, has none.
-func (s *Store) RemoveEndpoint(ctx context.Context, id session.SegmentID, sid session.SessionID) ([]session.Endpoint, error) {
+// SpanBound is the greatest end among live roots whose path names id.
+// The caller does not hold the store lock.
+func (s *Store) SpanBound(ctx context.Context, id session.SegmentID) (session.Bound, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return session.Bound{}, false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := os.Stat(s.segmentDir(id)); err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	covers, err := s.readCovers(id)
+	return s.spanBoundLocked(id)
+}
+
+// spanBoundLocked is SpanBound. The caller holds s.mu.
+func (s *Store) spanBoundLocked(id session.SegmentID) (session.Bound, bool, error) {
+	roots, err := s.readRoots()
 	if err != nil {
-		return nil, err
+		return session.Bound{}, false, err
 	}
-	next := dropCover(covers, sid)
-	if err := s.writeCovers(id, next); err != nil {
-		return nil, err
-	}
-	return next, nil
-}
-
-// ReplaceEndpoints sets the segment's endpoints to covers. The segment must exist.
-func (s *Store) ReplaceEndpoints(ctx context.Context, id session.SegmentID, covers []session.Endpoint) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, _, err := s.loadSegment(id, "collect"); err != nil {
-		return err
-	}
-	return s.writeCovers(id, append([]session.Endpoint(nil), covers...))
-}
-
-func (s *Store) readCovers(id session.SegmentID) ([]session.Endpoint, error) {
-	raw, err := os.ReadFile(filepath.Join(s.segmentDir(id), coversFile))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	var ends []session.Bound
+	for i := range roots {
+		if roots[i].Deleted {
+			continue
 		}
-		return nil, err
-	}
-	var file struct {
-		Covers []session.Endpoint `json:"covers"`
-	}
-	if err := json.Unmarshal(raw, &file); err != nil {
-		return nil, segerr("covers", id, err.Error())
-	}
-	return file.Covers, nil
-}
-
-func (s *Store) writeCovers(id session.SegmentID, covers []session.Endpoint) error {
-	if covers == nil {
-		covers = []session.Endpoint{}
-	}
-	raw, err := json.Marshal(struct {
-		Covers []session.Endpoint `json:"covers"`
-	}{Covers: covers})
-	if err != nil {
-		return err
-	}
-	return writeAtomic(filepath.Join(s.segmentDir(id), coversFile), raw)
-}
-
-// putCover returns covers with c stored under c.Session, replacing an
-// endpoint the same session already has.
-func putCover(covers []session.Endpoint, c session.Endpoint) []session.Endpoint {
-	for i := range covers {
-		if covers[i].Session == c.Session {
-			covers[i] = c
-			return covers
+		for _, span := range roots[i].Path {
+			if span.Segment == id {
+				ends = append(ends, span.End)
+			}
 		}
 	}
-	return append(covers, c)
+	bound, ok := session.MaxBound(ends)
+	return bound, ok, nil
 }
 
-// dropCover returns covers without sid. The result does not alias covers.
-func dropCover(covers []session.Endpoint, sid session.SessionID) []session.Endpoint {
-	out := make([]session.Endpoint, 0, len(covers))
-	for _, c := range covers {
-		if c.Session != sid {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
-// writePathCovers records rec's endpoint on every span of its path. The
-// caller holds the store lock, and each span's segment directory exists.
-func (s *Store) writePathCovers(rec session.SessionRecord) error {
-	for _, span := range rec.Path {
-		covers, err := s.readCovers(span.Segment)
-		if err != nil {
-			return err
-		}
-		if err := s.writeCovers(span.Segment, putCover(covers, session.Endpoint{Session: rec.ID, End: span.End})); err != nil {
-			return err
-		}
-	}
-	return nil
+// DropOrphanSpans has nothing to drop: the path lives on the root file, and
+// a tombstone clears it in the same write that marks the root deleted.
+func (s *Store) DropOrphanSpans(ctx context.Context) error {
+	return ctx.Err()
 }
 
 // referenced reports whether a live root's tip or any segment's parent
@@ -623,11 +573,11 @@ func (s *Store) saveRoot(sid session.SessionID, rec ownerRecord) error {
 	return writeAtomic(s.rootPath(sid), raw)
 }
 
-// CreateSession lands a new node, then the path's endpoints, then the root,
-// under the store lock. The root file is the last atomic write, so a crash
-// in between leaves a segment and endpoints no root names: Collect rebuilds
-// endpoints from live paths and reclaims the rest (SES-GC-2). There is never
-// a root without its segment, and never a second root on an existing one.
+// CreateSession lands a new node, then the root, under the store lock. The
+// path is part of the root file, which is the last atomic write, so a crash
+// in between leaves a segment no root names. Collect removes it (SES-GC-2).
+// There is never a root without its segment, and never a second root on an
+// existing one.
 func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -650,7 +600,9 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 		return segerr("create", seg.ID(), err.Error())
 	}
 	// The parent must still be a node at the moment the edge is written
-	// (SES-GC-4); the store lock keeps RemoveSegment out meanwhile.
+	// (SES-GC-4); the store lock keeps RemoveSegment and TruncateSegment
+	// out meanwhile. A closed span's commit is checked under that same
+	// lock, so the span is not written for a commit this store just truncated.
 	if seg.Header.Parent != nil {
 		if _, err := readHeader(s.segmentDir(seg.Header.Parent.Segment)); err != nil {
 			if os.IsNotExist(err) {
@@ -658,6 +610,9 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 			}
 			return segerr("create", seg.Header.Parent.Segment, err.Error())
 		}
+	}
+	if err := s.requireRetainedCommits(rec.ID, seg, rec.Path); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
@@ -669,10 +624,36 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 	if err := writeAtomic(filepath.Join(dir, headerFile), raw); err != nil {
 		return err
 	}
-	if err := s.writePathCovers(rec); err != nil {
-		return err
-	}
 	return s.saveRoot(rec.ID, ownerRecord{SessionRecord: rec})
+}
+
+// requireRetainedCommits reports ErrNotFound when a closed span's Through,
+// or the parent edge's commit, is not in the log. The caller holds s.mu.
+func (s *Store) requireRetainedCommits(sid session.SessionID, seg session.Segment, path session.Path) error {
+	check := func(id session.SegmentID, seq session.CommitSeq) error {
+		commits, _, _, _, err := readLog(filepath.Join(s.segmentDir(id), logFile), sid, "create")
+		if err != nil {
+			return err
+		}
+		for i := range commits {
+			if commits[i].Seq == seq {
+				return nil
+			}
+		}
+		return &session.Error{Code: session.ErrNotFound, Operation: "create", SessionID: sid, Detail: fmt.Sprintf("segment %s commit %d is gone", id, seq)}
+	}
+	for _, span := range path {
+		if span.Segment == seg.ID() || span.End.Open {
+			continue
+		}
+		if err := check(span.Segment, span.End.Through); err != nil {
+			return err
+		}
+	}
+	if seg.Header.Parent != nil {
+		return check(seg.Header.Parent.Segment, seg.Header.Parent.Seq)
+	}
+	return nil
 }
 
 func (s *Store) Record(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {
@@ -876,28 +857,38 @@ func (s *Store) Release(ctx context.Context, lease session.Lease) error {
 	return nil // releasing a superseded lease is a no-op
 }
 
-func (s *Store) DeleteRecord(ctx context.Context, sid session.SessionID) error {
+func (s *Store) DeleteRecord(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return session.SessionRecord{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, owner, err := s.loadRoot(sid, "delete")
 	if err != nil {
-		return err
+		return session.SessionRecord{}, err
 	}
 	if owner.Owned {
-		return kerr(session.ErrOwned, "delete", sid, fmt.Sprintf("owned by epoch %d", owner.Epoch))
+		return session.SessionRecord{}, kerr(session.ErrOwned, "delete", sid, fmt.Sprintf("owned by epoch %d", owner.Epoch))
 	}
-	// A tombstone, not a removal: the SessionID stays taken (SES-GC-1). The
-	// Tip and path stay so a reader of the file can tell what it was.
-	// ListRecords skips the root, so Collect does not cover it.
+	prior := owner.SessionRecord
+	if len(prior.Path) > 0 {
+		if err := prior.Path.Validate(prior.Tip); err != nil {
+			return session.SessionRecord{}, kerr(session.ErrCorrupt, "delete", sid, err.Error())
+		}
+	}
+	// A tombstone, not a removal: the SessionID stays taken (SES-GC-1).
+	// The path is cleared in the same write, so this root stops naming
+	// segments. Tip stays: a tombstone may name a segment Collect removes.
+	owner.Path = nil
 	owner.Deleted, owner.Owned, owner.Owner, owner.LeaseUntilUnixMilli, owner.Failed = true, false, "", 0, ""
 	if err := s.saveRoot(sid, owner); err != nil {
-		return err
+		return session.SessionRecord{}, err
 	}
 	// The Session's derived data goes with its root.
-	return os.RemoveAll(s.sessionDir(sid))
+	if err := os.RemoveAll(s.sessionDir(sid)); err != nil {
+		return session.SessionRecord{}, err
+	}
+	return prior, nil
 }
 
 func headOf(h session.SegmentHeader, commits []session.Commit) session.Head {

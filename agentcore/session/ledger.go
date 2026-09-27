@@ -11,25 +11,19 @@ import (
 // Session lineage tree in code. A root stores the path of spans it reads
 // and names the last span's segment as its tip. Segments stay append-only
 // logs and keep one parent edge, recorded when the segment is created.
-// Each segment also stores the right endpoints of the live paths that cover
-// it. Fork copies the parent's path, closes the span that contains the fork
-// seq, and appends a new open segment. Delete tombstones the root and drops
-// its endpoints; Collect rebuilds endpoints from the live paths. Every
-// adapter gets these semantics from here and implements none of them.
+// Fork copies the parent's path, closes the span that contains the fork
+// seq, and appends a new open segment. The stored path is the reference
+// relation: Delete drops that root's spans and reclaims from the greatest
+// span that remains; Collect truncates and removes from those same spans.
+// Every adapter gets these semantics from here and implements none of them.
 type Ledger struct {
 	be        Backend
 	segmentID func() (SegmentID, error)
-	// graph serializes this process's operations that change the set of
-	// roots and nodes; across processes the adapter's own consistency
-	// (CreateSession's parent check, RemoveSegment's reference check) is
-	// the authority (SES-GC-4).
-	// graph serializes the operations that change the set of roots and
-	// nodes (Create, Delete, Collect) against each other (SES-GC-4): a
-	// Create's check that its parent is live, and its write, cannot
-	// interleave with a Collect that would reclaim that parent or the new
-	// node. Append and reads never take it; a live root's segments are never
-	// touched by Collect. The lock is per process: a Backend shared by
-	// several processes must provide this exclusion itself.
+	// graph serializes this process's Create, Delete and Collect (SES-GC-4).
+	// Append and reads never take it. Across processes, TruncateSegment and
+	// CreateSession share the per-segment lock: truncation re-reads the live
+	// span under that lock, and creation checks the retained commits still
+	// exist before inserting a span.
 	graph sync.Mutex
 }
 
@@ -117,13 +111,10 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	segment := Segment{Header: header}
 	root := SessionRecord{ID: req.SessionID, Tip: segment.ID(), CreatedAtUnixMilli: req.CreatedAtUnixMilli, Path: path}
 	if err := l.be.CreateSession(ctx, segment, root); err != nil {
-		// The parent was checked above, but another replica's Collect may
-		// have removed it since (SES-GC-4): the adapter's own check inside
-		// the write is the authority, and the fork is refused as of a
-		// parent that is gone.
-		if header.Parent != nil && IsCode(err, ErrNotFound) {
-			return SegmentHeader{}, newError(ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", req.Fork.Session))
-		}
+		// The parent was checked above. Another replica may have removed
+		// the parent segment or truncated a retained commit since
+		// (SES-GC-4). CreateSession re-checks both under the segment lock
+		// and writes nothing when either is gone.
 		return SegmentHeader{}, err
 	}
 	return header, nil
@@ -329,24 +320,21 @@ func (l *Ledger) Delete(ctx context.Context, sid SessionID) (CollectReport, erro
 	}
 	l.graph.Lock()
 	defer l.graph.Unlock()
-	root, err := l.be.Record(ctx, sid)
+	// DeleteRecord tombstones and drops this session's spans in one write.
+	// ErrOwned, ErrNotFound and ErrCorrupt return before that write.
+	rec, err := l.be.DeleteRecord(ctx, sid)
 	if err != nil {
 		return CollectReport{}, err
 	}
-	// Resolve the path before the tombstone. ErrOwned and ErrNotFound from
-	// DeleteRecord then leave every endpoint where it was.
-	path, err := l.sessionPath(ctx, root)
+	path, err := l.sessionPath(ctx, rec)
 	if err != nil {
-		return CollectReport{}, err
-	}
-	if err := l.be.DeleteRecord(ctx, sid); err != nil {
 		return CollectReport{}, err
 	}
 	report := CollectReport{Truncated: map[SegmentID]CommitSeq{}, Dropped: map[SegmentID][]CommitID{}}
 	// Tip first: a segment is removed only after the child edge that names
 	// its parent has been removed with the child.
 	for i := len(path) - 1; i >= 0; i-- {
-		if err := l.reclaim(ctx, path[i].Segment, sid, &report); err != nil {
+		if err := l.reclaim(ctx, path[i].Segment, &report); err != nil {
 			return report, err
 		}
 	}
@@ -359,6 +347,9 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	}
 	l.graph.Lock()
 	defer l.graph.Unlock()
+	if err := l.be.DropOrphanSpans(ctx); err != nil {
+		return CollectReport{}, err
+	}
 	ids, err := l.be.ListSegments(ctx)
 	if err != nil {
 		return CollectReport{}, err
@@ -374,42 +365,35 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 		}
 		nodes[id] = seg
 	}
-	roots, err := l.be.ListRecords(ctx)
+	// A root stored before paths has no spans. Its edge walk is still a
+	// reference, merged with whatever spans name the same segment.
+	legacy, err := l.legacyBounds(ctx)
 	if err != nil {
 		return CollectReport{}, err
 	}
-	need := make(map[SegmentID][]Endpoint)
-	for i := range roots {
-		path, err := l.sessionPath(ctx, roots[i])
-		if err != nil {
-			return CollectReport{}, err
-		}
-		for _, span := range path {
-			need[span.Segment] = append(need[span.Segment], Endpoint{Session: roots[i].ID, End: span.End})
-		}
-	}
 	report := CollectReport{Truncated: map[SegmentID]CommitSeq{}, Dropped: map[SegmentID][]CommitID{}}
-	reached := make(map[SegmentID]Bound, len(need))
-	for id, covers := range need {
-		if _, ok := nodes[id]; !ok {
-			continue
-		}
-		if err := l.be.ReplaceEndpoints(ctx, id, covers); err != nil {
-			if IsCode(err, ErrNotFound) {
-				continue
-			}
+	reached := make(map[SegmentID]Bound, len(nodes))
+	for id := range nodes {
+		bound, ok, err := l.be.SpanBound(ctx, id)
+		if err != nil {
 			return report, err
 		}
-		cov, ok := MaxBound(covers)
+		if leg, has := legacy[id]; has {
+			if ok {
+				bound = mergeBound(bound, leg)
+			} else {
+				bound, ok = leg, true
+			}
+		}
 		if !ok {
 			continue
 		}
-		reached[id] = cov
-		if err := l.clip(ctx, id, cov, &report); err != nil {
+		reached[id] = bound
+		if err := l.clip(ctx, id, bound, &report); err != nil {
 			return report, err
 		}
 	}
-	// Segments no live path covers go children first: the adapter refuses to
+	// Segments no live path names go children first: the adapter refuses to
 	// remove a node a child's edge still names (SES-GC-4).
 	for _, id := range removalOrder(nodes, reached) {
 		if err := l.be.RemoveSegment(ctx, id); err != nil {
@@ -423,15 +407,42 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	return report, nil
 }
 
-// reclaim drops sid's endpoint on id. An empty set removes the segment. A
-// closed maximum truncates the segment to that commit. ErrReferenced leaves
-// the segment for a later Collect.
-func (l *Ledger) reclaim(ctx context.Context, id SegmentID, sid SessionID, report *CollectReport) error {
-	covers, err := l.be.RemoveEndpoint(ctx, id, sid)
+// legacyBounds is the retention of roots whose path was never stored.
+// Roots that have spans are already visible through SpanBound.
+func (l *Ledger) legacyBounds(ctx context.Context) (map[SegmentID]Bound, error) {
+	roots, err := l.be.ListRecords(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[SegmentID]Bound{}
+	for i := range roots {
+		if len(roots[i].Path) > 0 {
+			continue
+		}
+		path, err := l.sessionPath(ctx, roots[i])
+		if err != nil {
+			return nil, err
+		}
+		for _, span := range path {
+			if cur, ok := out[span.Segment]; ok {
+				out[span.Segment] = mergeBound(cur, span.End)
+			} else {
+				out[span.Segment] = span.End
+			}
+		}
+	}
+	return out, nil
+}
+
+// reclaim applies the greatest span that still names id. No span removes
+// the segment. A closed maximum truncates the segment to that commit.
+// ErrReferenced leaves the segment for a later Collect.
+func (l *Ledger) reclaim(ctx context.Context, id SegmentID, report *CollectReport) error {
+	bound, ok, err := l.be.SpanBound(ctx, id)
 	if err != nil {
 		return err
 	}
-	if len(covers) == 0 {
+	if !ok {
 		if err := l.be.RemoveSegment(ctx, id); err != nil {
 			if IsCode(err, ErrReferenced) {
 				return nil
@@ -441,43 +452,25 @@ func (l *Ledger) reclaim(ctx context.Context, id SegmentID, sid SessionID, repor
 		report.Removed = append(report.Removed, id)
 		return nil
 	}
-	cov, ok := MaxBound(covers)
-	if !ok {
-		return nil
-	}
-	return l.clip(ctx, id, cov, report)
+	return l.clip(ctx, id, bound, report)
 }
 
-// clip drops id's commits after cov. An open coverage retains the live head.
+// clip drops id's commits after cov. TruncateSegment re-reads the live span
+// under the segment lock and may keep a higher suffix than cov; the report
+// records only the commits that call actually removed.
 func (l *Ledger) clip(ctx context.Context, id SegmentID, cov Bound, report *CollectReport) error {
 	if cov.Open {
 		return nil
 	}
-	_, head, _, err := l.be.ReadSegment(ctx, id, cov.Through+1, 1)
+	head, dropped, err := l.be.TruncateSegment(ctx, id, cov.Through)
 	if err != nil {
 		return err
 	}
-	if head.Next <= cov.Through+1 {
+	if len(dropped) == 0 {
 		return nil
 	}
-	idx, _, err := l.be.Index(ctx, id)
-	if err != nil {
-		return err
-	}
-	var dropped []CommitID
-	for i := range idx.Entries {
-		if idx.Entries[i].Seq > cov.Through {
-			dropped = append(dropped, idx.Entries[i].CommitID)
-		}
-	}
-	newHead, err := l.be.TruncateSegment(ctx, id, cov.Through)
-	if err != nil {
-		return err
-	}
-	if len(dropped) > 0 {
-		report.Dropped[id] = dropped
-	}
-	report.Truncated[id] = newHead.Next
+	report.Dropped[id] = dropped
+	report.Truncated[id] = head.Next
 	return nil
 }
 

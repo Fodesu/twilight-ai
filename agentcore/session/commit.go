@@ -140,8 +140,8 @@ func (c *Commit) Validate() error {
 }
 
 // Validate checks the shape of a parent edge. A nil edge is a root segment;
-// otherwise it names a parent segment. Whether the parent holds the commit
-// is the loaded Session's check at Create (SES-FRK-1).
+// otherwise it names a parent segment. Whether the parent still holds the
+// commit is checked again inside CreateSession (SES-GC-4).
 func (edge *CommitRef) Validate() error {
 	if edge == nil {
 		return nil

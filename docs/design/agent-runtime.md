@@ -91,7 +91,7 @@ func (h *Handle) Close(ctx) error
 
 **OWN-FRK-2** `ForkBeforeTurn(parent, turnID, child)` 以 `turn.History.StartCommit` 找到携带该 Turn `twilight/turn/started` 的 Commit `k`，在 `k-1` 处 fork：子的对话止于该 Turn 的输入仍为 `submitted` 的状态。`Drain` 或 `Route` 把这些输入投递给新 Turn 即重新生成；`chatlog.Commands.Withdraw`（经子的 Handle）写 `input_withdrawn`（CHT-EVT-2，要求输入为 `submitted`）后再 `Send` 即编辑。`k = 0` 时没有可 fork 的前缀，返回 `ErrInvalid`；未知 Turn 返回 conflict。edit / retry / regenerate 三种动作因此都归到同一个 fork 原语加输入投递上（TRN 第 1 节）。fork 只复制 Session 的已提交事实：子 Session 不恢复父在 `k-1` 时刻的 workspace 状态，父 Session 在 `k` 之后的工具调用对 workspace 的效果不会被撤销（TRN-DUR-3、agent-workspace.md）。
 
-**OWN-FRK-3** `DeleteSession` 先停止该 Session 的恢复监听并关闭其 Writer，再以 `writer.Delete(store, admission, sid)` 标 tombstone、沿路径收回端点，并按报告释放 claim（EXT-WRT-9）。被另一进程持有的 Session 为 `ErrOwned`，端点与 claim 都不动。其他 Session 的路径仍覆盖的前缀继续可读，这些 commit 的 claim 保持 Active。`Collect` 调 `writer.Collect`，按存活路径修复端点：删掉没有端点的段，截掉超出最大右端点的 commit，并释放报告中的 claim（SES-GC-2/3）。
+**OWN-FRK-3** `DeleteSession` 先停止该 Session 的恢复监听并关闭其 Writer，再以 `writer.Delete(store, admission, sid)` 标 tombstone、删除该 Session 的路径区间并沿路径收回，并按报告释放 claim（EXT-WRT-9）。被另一进程持有的 Session 为 `ErrOwned`，路径区间与 claim 都不动。其他 Session 的路径仍覆盖的前缀继续可读，这些 commit 的 claim 保持 Active。`Collect` 调 `writer.Collect`，按现存路径引用回收：删掉没有引用的段，截掉超出最大 Through 的 commit，并释放报告中的 claim（SES-GC-2/3）。
 
 ## 5. AgentPreset 注册（preset）
 

@@ -23,7 +23,7 @@ type ForkRequest struct {
 // (SES-FRK-1). It holds no claim of its
 // own (EXT-WRT-8): the content the inherited prefix references is retained
 // by the commit claims of the segments that hold those commits. Those
-// commits stay while a live path's endpoint still covers them (SES-GC-3).
+// commits stay while a live path's span still covers them (SES-GC-3).
 // Fork is idempotent: a repeat with the same arguments returns the same
 // header.
 func Fork(ctx context.Context, store session.Store, registry *extension.Registry, req ForkRequest) (session.SegmentHeader, error) {

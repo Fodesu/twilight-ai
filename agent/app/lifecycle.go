@@ -35,7 +35,7 @@ func (app *Application) DeleteSession(ctx context.Context, sid session.SessionID
 	return app.Owner.DeleteSession(ctx, sid)
 }
 
-// Collect repairs endpoints from live paths and reclaims what they no longer cover (SES-GC-2).
+// Collect reclaims segments no live path still names, and truncates the rest to the greatest remaining span (SES-GC-2).
 func (app *Application) Collect(ctx context.Context) (session.CollectReport, error) {
 	return app.Owner.Collect(ctx)
 }

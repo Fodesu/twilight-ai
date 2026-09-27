@@ -23,8 +23,8 @@ type SegmentID string
 // SegmentHeader is the immutable creation record of a commit segment
 // (agent-session.md section 8): a node of the lineage tree. It names no
 // Session: which roots append to or include the segment is the roots'
-// business (SessionRecord). The segment remains while an endpoint or a child
-// edge still names it. ID is the segment's identity,
+// business (SessionRecord). The segment remains while a live path span or a
+// child edge still names it. ID is the segment's identity,
 // drawn at random, so two otherwise identical records are two segments.
 // Readers of a Session see the header of the segment its root names as its
 // tip.

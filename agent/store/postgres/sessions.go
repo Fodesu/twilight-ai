@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -71,9 +72,10 @@ func (d *DB) Sessions(opts ...session.LedgerOption) *SessionStore {
 
 // sessionBackend is session.Backend over the session tables. Every write
 // holds the Session's advisory lock (Append, Acquire, Renew, Release,
-// CreateSession) or the segment's (Truncate, Remove), so replicas serialize
-// per Session; the root row is the ownership authority Append re-reads
-// under that lock (SES-OWN-2).
+// CreateSession) or the segment's (Truncate, Remove). CreateSession also
+// takes each retained segment's lock, the same key Truncate holds, before
+// it inserts a span (SES-GC-4). The root row is the ownership authority
+// Append re-reads under the session lock (SES-OWN-2).
 type sessionBackend struct{ d *DB }
 
 var _ session.Backend = (*sessionBackend)(nil)
@@ -372,23 +374,69 @@ func (b *sessionBackend) Append(ctx context.Context, lease session.Lease, id ses
 	})
 }
 
-func (b *sessionBackend) TruncateSegment(ctx context.Context, id session.SegmentID, through session.CommitSeq) (session.Head, error) {
+func (b *sessionBackend) TruncateSegment(ctx context.Context, id session.SegmentID, through session.CommitSeq) (session.Head, []session.CommitID, error) {
 	var head session.Head
+	var dropped []session.CommitID
 	err := b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
 		header, err := b.header(ctx, q, "collect", id)
 		if err != nil {
 			return err
 		}
-		if err := q.DeleteSegmentCommitStreamsAbove(ctx, db.DeleteSegmentCommitStreamsAboveParams{Segment: string(id), Seq: int64(through)}); err != nil { //nolint:gosec // G115: seq values fit int64
+		// A span inserted under this same lock can only raise the cut. The
+		// caller's through was read in another transaction.
+		cut, truncate, err := spanCut(ctx, q, id, through)
+		if err != nil {
 			return err
 		}
-		if err := q.DeleteSegmentCommitsAbove(ctx, db.DeleteSegmentCommitsAboveParams{Segment: string(id), Seq: int64(through)}); err != nil { //nolint:gosec // G115: seq values fit int64
+		if truncate {
+			rows, err := q.SegmentIndex(ctx, string(id))
+			if err != nil {
+				return err
+			}
+			for i := range rows {
+				if rows[i].Seq > int64(cut) { //nolint:gosec // G115: seq values fit int64
+					dropped = append(dropped, session.CommitID(rows[i].CommitID))
+				}
+			}
+		}
+		if len(dropped) == 0 {
+			head, err = b.head(ctx, q, &header)
+			return err
+		}
+		if err := q.DeleteSegmentCommitStreamsAbove(ctx, db.DeleteSegmentCommitStreamsAboveParams{Segment: string(id), Seq: int64(cut)}); err != nil { //nolint:gosec // G115: seq values fit int64
+			return err
+		}
+		if err := q.DeleteSegmentCommitsAbove(ctx, db.DeleteSegmentCommitsAboveParams{Segment: string(id), Seq: int64(cut)}); err != nil { //nolint:gosec // G115: seq values fit int64
 			return err
 		}
 		head, err = b.head(ctx, q, &header)
 		return err
 	})
-	return head, err
+	if err != nil {
+		return session.Head{}, nil, err
+	}
+	return head, dropped, nil
+}
+
+// spanCut is the last seq truncation may keep. truncate is false when an
+// open span still names the segment: that span retains every commit. A
+// closed span raises the caller's through when it covers further.
+func spanCut(ctx context.Context, q *db.Queries, id session.SegmentID, through session.CommitSeq) (session.CommitSeq, bool, error) {
+	v, err := q.SegmentSpanBound(ctx, string(id))
+	if noRows(err) {
+		return through, true, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	bound := boundOf(v)
+	if bound.Open {
+		return 0, false, nil
+	}
+	if bound.Through > through {
+		return bound.Through, true, nil
+	}
+	return through, true, nil
 }
 
 // RemoveSegment deletes the node unless a live root's tip or a child's
@@ -405,9 +453,6 @@ func (b *sessionBackend) RemoveSegment(ctx context.Context, id session.SegmentID
 		if referenced {
 			return &session.Error{Code: session.ErrReferenced, Operation: "collect", Detail: fmt.Sprintf("segment %s is still referenced", id)}
 		}
-		if err := q.DeleteSegmentCovers(ctx, string(id)); err != nil {
-			return err
-		}
 		if err := q.DeleteSegmentCommitStreams(ctx, string(id)); err != nil {
 			return err
 		}
@@ -416,7 +461,7 @@ func (b *sessionBackend) RemoveSegment(ctx context.Context, id session.SegmentID
 		}
 		err = q.DeleteSegment(ctx, string(id))
 		if isForeignKeyViolation(err) {
-			return &session.Error{Code: session.ErrReferenced, Operation: "collect", Detail: fmt.Sprintf("segment %s gained a child", id)}
+			return &session.Error{Code: session.ErrReferenced, Operation: "collect", Detail: fmt.Sprintf("segment %s is still referenced", id)}
 		}
 		return err
 	})
@@ -439,44 +484,41 @@ func (b *sessionBackend) root(ctx context.Context, q *db.Queries, op string, sid
 	return r, nil
 }
 
-func recordOf(r *db.SessionRoot) (session.SessionRecord, error) {
-	rec := session.SessionRecord{ID: session.SessionID(r.ID), Tip: session.SegmentID(r.Tip), CreatedAtUnixMilli: r.CreatedAt}
-	if r.Path != "" {
-		if err := json.Unmarshal([]byte(r.Path), &rec.Path); err != nil {
-			return session.SessionRecord{}, kerr(session.ErrCorrupt, "record", rec.ID, fmt.Sprintf("path: %v", err))
-		}
+func boundOf(v pgtype.Int8) session.Bound {
+	if !v.Valid {
+		return session.OpenBound()
 	}
-	return rec, nil
+	return session.ThroughBound(session.CommitSeq(v.Int64)) //nolint:gosec // G115: seq values fit int64
 }
 
-func coverColumns(end session.Bound) (bool, int64) {
+func throughValue(end session.Bound) pgtype.Int8 {
 	if end.Open {
-		return true, 0
+		return pgtype.Int8{}
 	}
-	return false, int64(end.Through) //nolint:gosec // G115: seq values fit int64
+	return pgtype.Int8{Int64: int64(end.Through), Valid: true} //nolint:gosec // G115: seq values fit int64
 }
 
-func coversOf(rows []db.SegmentCoversRow) []session.Endpoint {
-	out := make([]session.Endpoint, len(rows))
-	for i := range rows {
-		end := session.ThroughBound(session.CommitSeq(rows[i].Through)) //nolint:gosec // G115: seq values fit int64
-		if rows[i].Open {
-			end = session.OpenBound()
-		}
-		out[i] = session.Endpoint{Session: session.SessionID(rows[i].Session), End: end}
+func spanOf(segment string, from int64, through pgtype.Int8) session.Span {
+	return session.Span{
+		Segment: session.SegmentID(segment),
+		From:    session.CommitSeq(from), //nolint:gosec // G115: seq values fit int64
+		End:     boundOf(through),
 	}
-	return out
 }
 
-func marshalPath(path session.Path) (string, error) {
-	if path == nil {
-		path = session.Path{}
-	}
-	raw, err := json.Marshal(path)
+func (b *sessionBackend) recordOf(ctx context.Context, q *db.Queries, r *db.SessionRoot) (session.SessionRecord, error) {
+	rows, err := q.SessionPathSpans(ctx, r.ID)
 	if err != nil {
-		return "", err
+		return session.SessionRecord{}, err
 	}
-	return string(raw), nil
+	var path session.Path
+	if len(rows) > 0 {
+		path = make(session.Path, len(rows))
+		for i := range rows {
+			path[i] = spanOf(rows[i].Segment, rows[i].FromSeq, rows[i].ThroughSeq)
+		}
+	}
+	return session.SessionRecord{ID: session.SessionID(r.ID), Tip: session.SegmentID(r.Tip), CreatedAtUnixMilli: r.CreatedAt, Path: path}, nil
 }
 
 func leaseOf(r *db.SessionRoot) session.Lease {
@@ -509,6 +551,18 @@ func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment,
 		if seg.Header.Parent != nil {
 			parent = pgtype.Text{String: string(seg.Header.Parent.Segment), Valid: true}
 		}
+		// Same keys TruncateSegment holds. Sorted so two creates that retain
+		// overlapping segments cannot deadlock. The checks below and the span
+		// inserts stay inside this transaction, so a truncation cannot remove
+		// a commit between the check and the insert.
+		for _, id := range retainedSegmentIDs(seg.ID(), seg.Header.Parent, rec.Path) {
+			if err := q.AdvisoryLock(ctx, "segment:"+id); err != nil {
+				return err
+			}
+		}
+		if err := requireRetainedCommits(ctx, q, rec.ID, seg, rec.Path); err != nil {
+			return err
+		}
 		if err := q.InsertSegment(ctx, db.InsertSegmentParams{ID: string(seg.ID()), Header: string(header), ParentSegment: parent}); err != nil {
 			if isUniqueViolation(err) {
 				return kerr(session.ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID()))
@@ -518,17 +572,18 @@ func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment,
 			}
 			return err
 		}
-		path, err := marshalPath(rec.Path)
-		if err != nil {
-			return err
-		}
-		for _, span := range rec.Path {
-			open, through := coverColumns(span.End)
-			if err := q.InsertCover(ctx, db.InsertCoverParams{Segment: string(span.Segment), Session: string(rec.ID), Open: open, Through: through}); err != nil {
+		for i, span := range rec.Path {
+			if err := q.InsertPathSpan(ctx, db.InsertPathSpanParams{
+				Session:    string(rec.ID),
+				Ordinal:    int64(i),
+				Segment:    string(span.Segment),
+				FromSeq:    int64(span.From), //nolint:gosec // G115: seq values fit int64
+				ThroughSeq: throughValue(span.End),
+			}); err != nil {
 				return err
 			}
 		}
-		err = q.InsertSessionRoot(ctx, db.InsertSessionRootParams{ID: string(rec.ID), Tip: string(rec.Tip), CreatedAt: rec.CreatedAtUnixMilli, Path: path})
+		err = q.InsertSessionRoot(ctx, db.InsertSessionRootParams{ID: string(rec.ID), Tip: string(rec.Tip), CreatedAt: rec.CreatedAtUnixMilli})
 		if isUniqueViolation(err) {
 			return kerr(session.ErrConflict, "create", rec.ID, "session exists")
 		}
@@ -536,40 +591,70 @@ func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment,
 	})
 }
 
-func (b *sessionBackend) RemoveEndpoint(ctx context.Context, id session.SegmentID, sid session.SessionID) ([]session.Endpoint, error) {
-	var out []session.Endpoint
-	err := b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
-		if err := q.DeleteCover(ctx, db.DeleteCoverParams{Segment: string(id), Session: string(sid)}); err != nil {
-			return err
+// retainedSegmentIDs lists the segments a new path keeps, except the new
+// tip. Parent is included even when the path omits it. Order is the lock
+// order.
+func retainedSegmentIDs(tip session.SegmentID, parent *session.CommitRef, path session.Path) []string {
+	seen := map[string]struct{}{}
+	add := func(id session.SegmentID) {
+		if id == "" || id == tip {
+			return
 		}
-		rows, err := q.SegmentCovers(ctx, string(id))
-		if err != nil {
-			return err
-		}
-		out = coversOf(rows)
-		return nil
-	})
-	return out, err
+		seen[string(id)] = struct{}{}
+	}
+	for _, span := range path {
+		add(span.Segment)
+	}
+	if parent != nil {
+		add(parent.Segment)
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
-func (b *sessionBackend) ReplaceEndpoints(ctx context.Context, id session.SegmentID, covers []session.Endpoint) error {
-	return b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
-		if _, err := q.Segment(ctx, string(id)); err != nil {
-			if noRows(err) {
-				return &session.Error{Code: session.ErrNotFound, Operation: "collect", Detail: fmt.Sprintf("segment %s not found", id)}
-			}
+// requireRetainedCommits reports ErrNotFound when a closed span's Through,
+// or the parent edge's commit, is no longer in the segment. The caller
+// holds those segments' locks.
+func requireRetainedCommits(ctx context.Context, q *db.Queries, sid session.SessionID, seg session.Segment, path session.Path) error {
+	check := func(id session.SegmentID, seq session.CommitSeq) error {
+		_, err := q.SegmentCommitAt(ctx, db.SegmentCommitAtParams{Segment: string(id), Seq: int64(seq)}) //nolint:gosec // G115: seq values fit int64
+		if noRows(err) {
+			return kerr(session.ErrNotFound, "create", sid, fmt.Sprintf("segment %s commit %d is gone", id, seq))
+		}
+		return err
+	}
+	for _, span := range path {
+		if span.Segment == seg.ID() || span.End.Open {
+			continue
+		}
+		if err := check(span.Segment, span.End.Through); err != nil {
 			return err
 		}
-		if err := q.DeleteSegmentCovers(ctx, string(id)); err != nil {
-			return err
-		}
-		for _, c := range covers {
-			open, through := coverColumns(c.End)
-			if err := q.InsertCover(ctx, db.InsertCoverParams{Segment: string(id), Session: string(c.Session), Open: open, Through: through}); err != nil {
-				return err
-			}
-		}
-		return nil
+	}
+	if seg.Header.Parent != nil {
+		return check(seg.Header.Parent.Segment, seg.Header.Parent.Seq)
+	}
+	return nil
+}
+
+func (b *sessionBackend) SpanBound(ctx context.Context, id session.SegmentID) (session.Bound, bool, error) {
+	v, err := b.d.q.SegmentSpanBound(ctx, string(id))
+	if noRows(err) {
+		return session.Bound{}, false, nil
+	}
+	if err != nil {
+		return session.Bound{}, false, err
+	}
+	return boundOf(v), true, nil
+}
+
+func (b *sessionBackend) DropOrphanSpans(ctx context.Context) error {
+	return b.d.tx(ctx, "path-spans", func(q *db.Queries) error {
+		return q.DeleteOrphanPathSpans(ctx)
 	})
 }
 
@@ -578,7 +663,7 @@ func (b *sessionBackend) Record(ctx context.Context, sid session.SessionID) (ses
 	if err != nil {
 		return session.SessionRecord{}, err
 	}
-	return recordOf(&r)
+	return b.recordOf(ctx, b.d.q, &r)
 }
 
 func (b *sessionBackend) ListRecords(ctx context.Context) ([]session.SessionRecord, error) {
@@ -586,13 +671,22 @@ func (b *sessionBackend) ListRecords(ctx context.Context) ([]session.SessionReco
 	if err != nil {
 		return nil, err
 	}
+	spans, err := b.d.q.LivePathSpans(ctx)
+	if err != nil {
+		return nil, err
+	}
+	paths := make(map[string]session.Path, len(rows))
+	for i := range spans {
+		paths[spans[i].Session] = append(paths[spans[i].Session], spanOf(spans[i].Segment, spans[i].FromSeq, spans[i].ThroughSeq))
+	}
 	out := make([]session.SessionRecord, 0, len(rows))
 	for i := range rows {
-		rec, err := recordOf(&rows[i])
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, rec)
+		out = append(out, session.SessionRecord{
+			ID:                 session.SessionID(rows[i].ID),
+			Tip:                session.SegmentID(rows[i].Tip),
+			CreatedAtUnixMilli: rows[i].CreatedAt,
+			Path:               paths[rows[i].ID],
+		})
 	}
 	return out, nil
 }
@@ -703,8 +797,9 @@ func (b *sessionBackend) Release(ctx context.Context, lease session.Lease) error
 	})
 }
 
-func (b *sessionBackend) DeleteRecord(ctx context.Context, sid session.SessionID) error {
-	return b.d.tx(ctx, "session:"+string(sid), func(q *db.Queries) error {
+func (b *sessionBackend) DeleteRecord(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {
+	var rec session.SessionRecord
+	err := b.d.tx(ctx, "session:"+string(sid), func(q *db.Queries) error {
 		r, err := b.root(ctx, q, "delete", sid)
 		if err != nil {
 			return err
@@ -712,13 +807,31 @@ func (b *sessionBackend) DeleteRecord(ctx context.Context, sid session.SessionID
 		if r.Owned {
 			return kerr(session.ErrOwned, "delete", sid, fmt.Sprintf("owned by epoch %d", r.Epoch))
 		}
+		rec, err = b.recordOf(ctx, q, &r)
+		if err != nil {
+			return err
+		}
+		if len(rec.Path) > 0 {
+			if err := rec.Path.Validate(rec.Tip); err != nil {
+				return kerr(session.ErrCorrupt, "delete", sid, err.Error())
+			}
+		}
 		if err := q.DeleteProjectionEntries(ctx, string(sid)); err != nil {
 			return err
 		}
 		// A tombstone, not a removal (SES-GC-1): the row stays so the id is
-		// never reused; every read of it is not found.
-		return q.TombstoneSessionRoot(ctx, string(sid))
+		// never reused; every read of it is not found. The spans go in the
+		// same transaction, so a crash before reclaim leaves the segments
+		// and nothing that still names them except other sessions' paths.
+		if err := q.TombstoneSessionRoot(ctx, string(sid)); err != nil {
+			return err
+		}
+		return q.DeleteSessionPathSpans(ctx, string(sid))
 	})
+	if err != nil {
+		return session.SessionRecord{}, err
+	}
+	return rec, nil
 }
 
 // RemoveSegment exposes the backend's conditional node removal (SES-GC-4)

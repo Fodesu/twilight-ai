@@ -130,6 +130,22 @@ CREATE TABLE session_roots (
 CREATE INDEX session_roots_owned ON session_roots (owned);
 -- The activation scan's read (APP-ACT-3): held leases by expiry.
 CREATE INDEX session_roots_expiry ON session_roots (lease_until) WHERE owned;
+-- A root's path is the reference relation: one span per segment that
+-- session retains. through_seq NULL is an open end. path_by_segment
+-- answers the greatest remaining reference for a segment. segment
+-- references the node, so a span still naming it keeps RemoveSegment from
+-- deleting it. session has no foreign key: spans are inserted before the
+-- root row.
+CREATE TABLE session_path_spans (
+	session     TEXT NOT NULL,
+	ordinal     BIGINT NOT NULL,
+	segment     TEXT NOT NULL REFERENCES session_segments (id),
+	from_seq    BIGINT NOT NULL,
+	through_seq BIGINT,
+	PRIMARY KEY (session, ordinal)
+);
+CREATE INDEX path_by_segment
+	ON session_path_spans (segment, through_seq DESC NULLS FIRST);
 
 -- Folded projection states (EXT-PRJ-3), so a Session reopened on another
 -- replica folds only the tail.

@@ -47,6 +47,9 @@ DELETE FROM session_commit_streams WHERE segment = $1;
 -- name: SegmentHead :one
 SELECT COALESCE(MAX(seq), -1)::bigint AS last_seq FROM session_commits WHERE segment = $1;
 
+-- name: SegmentCommitAt :one
+SELECT seq FROM session_commits WHERE segment = $1 AND seq = $2;
+
 -- name: SegmentCommitSeq :one
 SELECT seq FROM session_commits WHERE segment = $1 AND commit_id = $2;
 
@@ -63,33 +66,46 @@ DELETE FROM session_commits WHERE segment = $1 AND seq > $2;
 DELETE FROM session_commits WHERE segment = $1;
 
 -- name: SessionRoot :one
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots WHERE id = $1;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE id = $1;
 
 -- name: SessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots WHERE NOT deleted ORDER BY id;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE NOT deleted ORDER BY id;
 
 -- name: HeldSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots WHERE owned AND NOT deleted ORDER BY id;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE owned AND NOT deleted ORDER BY id;
 
 -- name: ExpiredSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots
 WHERE owned AND NOT deleted AND lease_until > 0 AND lease_until <= @before ORDER BY lease_until, id LIMIT @row_limit;
 
 -- name: InsertSessionRoot :exec
-INSERT INTO session_roots (id, tip, created_at, path) VALUES ($1, $2, $3, $4);
+INSERT INTO session_roots (id, tip, created_at) VALUES ($1, $2, $3);
 
--- name: InsertCover :exec
-INSERT INTO session_covers (segment, session, open, through) VALUES ($1, $2, $3, $4)
-ON CONFLICT (segment, session) DO UPDATE SET open = EXCLUDED.open, through = EXCLUDED.through;
+-- name: InsertPathSpan :exec
+INSERT INTO session_path_spans (session, ordinal, segment, from_seq, through_seq) VALUES ($1, $2, $3, $4, $5);
 
--- name: DeleteCover :exec
-DELETE FROM session_covers WHERE segment = $1 AND session = $2;
+-- name: SessionPathSpans :many
+SELECT ordinal, segment, from_seq, through_seq FROM session_path_spans WHERE session = $1 ORDER BY ordinal;
 
--- name: SegmentCovers :many
-SELECT session, open, through FROM session_covers WHERE segment = $1 ORDER BY session;
+-- name: LivePathSpans :many
+SELECT s.session, s.ordinal, s.segment, s.from_seq, s.through_seq
+FROM session_path_spans s
+JOIN session_roots r ON r.id = s.session
+WHERE NOT r.deleted
+ORDER BY s.session, s.ordinal;
 
--- name: DeleteSegmentCovers :exec
-DELETE FROM session_covers WHERE segment = $1;
+-- name: DeleteSessionPathSpans :exec
+DELETE FROM session_path_spans WHERE session = $1;
+
+-- name: DeleteOrphanPathSpans :exec
+DELETE FROM session_path_spans AS s
+WHERE NOT EXISTS (
+	SELECT 1 FROM session_roots AS r
+	WHERE r.id = s.session AND NOT r.deleted
+);
+
+-- name: SegmentSpanBound :one
+SELECT through_seq FROM session_path_spans WHERE segment = $1 ORDER BY through_seq DESC NULLS FIRST LIMIT 1;
 
 -- name: UpdateSessionOwnership :exec
 UPDATE session_roots SET epoch = $1, owned = $2, owner = $3, lease_until = $4, failed = $5 WHERE id = $6;

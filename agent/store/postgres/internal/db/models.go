@@ -104,11 +104,12 @@ type SessionCommitStream struct {
 	Events   int64
 }
 
-type SessionCover struct {
-	Segment string
-	Session string
-	Open    bool
-	Through int64
+type SessionPathSpan struct {
+	Session    string
+	Ordinal    int64
+	Segment    string
+	FromSeq    int64
+	ThroughSeq pgtype.Int8
 }
 
 type SessionRoot struct {
@@ -121,7 +122,6 @@ type SessionRoot struct {
 	LeaseUntil int64
 	Failed     string
 	Deleted    bool
-	Path       string
 }
 
 type SessionSegment struct {

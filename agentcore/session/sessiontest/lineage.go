@@ -8,10 +8,10 @@ import (
 )
 
 // SES-GC-1/2: Sessions are roots into a forest of immutable segments. Delete
-// tombstones a root and reclaims along its path: a segment stays through the
-// greatest right endpoint any remaining path still covers, and an empty
-// endpoint set removes it. Collect rebuilds those endpoints from the live
-// paths and is a no-op once Delete has reclaimed.
+// tombstones a root, drops its path spans, and reclaims along that path: a
+// segment stays through the greatest end any remaining path still names, and
+// no remaining span removes it. Collect applies the same bounds and is a
+// no-op once Delete has reclaimed.
 //
 //	A: a0 a1 a2 a3        B -> A@1        C -> A@2        D -> C@(c3)
 func testLineage(t *testing.T, f Fixture) {
@@ -49,7 +49,7 @@ func testLineage(t *testing.T, f Fixture) {
 		t.Fatalf("delete unknown = %v", err)
 	}
 	_ = aw.Close(ctx)
-	// A's segment stays through the furthest remaining endpoint (C and D at
+	// A's segment stays through the furthest remaining span (C and D at
 	// a2) and drops a3. B, C and D are untouched.
 	report, err := store.Delete(ctx, "A")
 	if err != nil {
@@ -90,7 +90,7 @@ func testLineage(t *testing.T, f Fixture) {
 			t.Fatalf("%s after deleting A = %s %v, want %s", sid, ids(page.Commits), err, want)
 		}
 	}
-	// Delete already reclaimed. Collect rebuilds the same endpoints and changes nothing.
+	// Delete already reclaimed. Collect sees the same spans and changes nothing.
 	if report, err := store.Collect(ctx); err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
 		t.Fatalf("collect after deleting A = %+v %v, want nothing", report, err)
 	}
@@ -177,13 +177,13 @@ func testLineage(t *testing.T, f Fixture) {
 	if report, err := store.Collect(ctx); err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
 		t.Fatalf("final collect = %+v %v, want nothing", report, err)
 	}
-	testEndpointBound(t, store)
+	testSpanBound(t, store)
 }
 
-// testEndpointBound: two children fork the same segment at different commits.
-// Deleting the child with the greater endpoint lowers the bound to the other
-// child's endpoint; deleting the last cover removes the segment.
-func testEndpointBound(t *testing.T, store session.Stores) {
+// testSpanBound: two children fork the same segment at different commits.
+// Deleting the child with the greater end lowers the bound to the other
+// child's end; deleting the last span removes the segment.
+func testSpanBound(t *testing.T, store session.Stores) {
 	t.Helper()
 	ctx := context.Background()
 	header := create(t, store, "P")

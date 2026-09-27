@@ -61,11 +61,11 @@ func TestMaxBound(t *testing.T) {
 	if _, ok := MaxBound(nil); ok {
 		t.Fatal("empty cover set reported a bound")
 	}
-	got, ok := MaxBound([]Endpoint{{Session: "a", End: ThroughBound(1)}, {Session: "b", End: ThroughBound(4)}})
+	got, ok := MaxBound([]Bound{ThroughBound(1), ThroughBound(4)})
 	if !ok || got != ThroughBound(4) {
 		t.Fatalf("max = %+v %v", got, ok)
 	}
-	got, ok = MaxBound([]Endpoint{{Session: "a", End: ThroughBound(4)}, {Session: "b", End: OpenBound()}})
+	got, ok = MaxBound([]Bound{ThroughBound(4), OpenBound()})
 	if !ok || got != OpenBound() {
 		t.Fatalf("open max = %+v %v", got, ok)
 	}

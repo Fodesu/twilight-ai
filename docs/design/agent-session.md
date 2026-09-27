@@ -67,11 +67,10 @@ Session lineage 树（第 8 节；每个根段下的节点为一棵树，全部�
   节点  = Segment：一份创建记录（SegmentHeader，不含 Session 身份）和从 Seed 起的只追加 commit 日志。日志可以为空。一条路径用 Span 标明该段计入拼接序列的区间。身份为 kernel 随机抽取的 SegmentID
   边    = CommitRef：子 Segment 到父 Segment 某个 commit 的引用（SegmentHeader.Parent，每段至多一条）。边在段创建时写入，供父段存在性检查和删除顺序使用
   根    = SessionRecord：SessionID、追加目标 Tip、创建时间，以及该 Session 的 Path
-  路径  = Path：从根段到 tip 段的 Span 序列。每个 Span 是一个段及其在拼接序列中的区间；最后一段的 Bound 开放，该段是这个 Session 的追加目标
-  端点  = Endpoint：一个存活 Session 在某段上的右端点。段保存覆盖它的全部右端点；保留上界是这些右端点的最大值，集合为空则整段可删除
+  路径  = Path：从根段到 tip 段的 Span 序列。每个 Span 是一个段及其在拼接序列中的区间；最后一段的 Bound 开放，该段是这个 Session 的追加目标。存活 Session 的 Path 同时是段的引用：某段的保留上界是仍引用它的 Span 的最大 Through，开放 Span 保留整段，没有引用则整段可删除
 
-kernel 负责：Segment/CommitRef/SessionRecord/Path/LoadedPath 的语义、Commit（Seq、CommitID、批次）、原子的 Commit 追加、根级写者独占、按路径拼接的 CommitSeq 顺序读与流读、fork、删除时沿路径收回端点、Collect 按存活路径修复端点
-adapter 负责：Backend——SegmentStore（存节点：段的创建记录、自身 commit 与索引）、RootStore（存根：记录、Path 与 Lease）与 MaintenanceStore（枚举、创建、端点、截断、删除）
+kernel 负责：Segment/CommitRef/SessionRecord/Path/LoadedPath 的语义、Commit（Seq、CommitID、批次）、原子的 Commit 追加、根级写者独占、按路径拼接的 CommitSeq 顺序读与流读、fork、删除时沿路径按剩余引用收回、Collect 按现存引用截断并删除没有引用的段
+adapter 负责：Backend——SegmentStore（存节点：段的创建记录、自身 commit 与索引）、RootStore（存根：记录与 Lease）与 MaintenanceStore（枚举、创建、路径区间、按段读取最大引用、截断、删除）
 modules 负责：event ontology、typed codec、payload 版本、投影、投影缓存、幂等重放、并发串行
 ```
 
@@ -84,7 +83,7 @@ modules 负责：event ontology、typed codec、payload 版本、投影、投影
 | `segment.go` | 节点：`SegmentID`、`SegmentHeader`、`Segment`、`SegmentHeader.Seed`、`SegmentHeader.Validate`、`NewSegmentID` |
 | `index.go` | 段的 `CommitIndex`、`IndexEntry`、`IndexSummary`（SES-REP-5） |
 | `root.go` | 根与所有权：`SessionRecord`、`Lease`、`OpenOptions` |
-| `path.go` | 路径：`Span`、`Path`、`Bound`、`Endpoint`、`Path.Branch`、`Path.Validate`、`MaxBound`、`LoadedPath`、`LoadedSpan`、拼接读。`loadPathFromEdges` 只给空 Path 的旧根沿父边装载 |
+| `path.go` | 路径：`Span`、`Path`、`Bound`、`Path.Branch`、`Path.Validate`、`MaxBound`、`LoadedPath`、`LoadedSpan`、拼接读。`loadPathFromEdges` 只给空 Path 的旧根沿父边装载 |
 | `session.go` | 基本标识符与 `Session`：根与 `Loaded()`、`Ledger.Load`、拼接读、fork 边、tip 索引修复 |
 | `backend.go` | adapter 端口：`SegmentStore`、`RootStore`、`MaintenanceStore`，`Backend` 为三者之和 |
 | `store.go` | kernel 对外端口：`Store`（单 Session 的创建、打开、读）、`LeaseDirectory`（跨 Session 的租约读，SES-OWN-5）、`Maintenance`（删除与回收，SES-GC）、`Stores` 为三者之和、`Handle` |
@@ -101,9 +100,9 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），它持有 kernel 的所有权句柄 `session.Handle`。kernel 只拒绝不持有有效所有权的 `Append`。
 
-**SES-SCP-3** kernel 的范围是 Session lineage 树：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、fork、删除时沿路径收回端点、Collect 按存活路径修复端点（第 8、9 节）。lineage 的单父不变量见 SES-LIN-1：多父 merge 被排除在模型之外；canonical import 不属于当前合同，若日后加入，它与 fork 一样只能新建根段或子段，不得为已有 Session 增加第二个父节点。
+**SES-SCP-3** kernel 的范围是 Session lineage 树：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、fork、删除时沿路径按剩余引用收回、Collect 按现存引用截断并删除没有引用的段（第 8、9 节）。lineage 的单父不变量见 SES-LIN-1：多父 merge 被排除在模型之外；canonical import 不属于当前合同，若日后加入，它与 fork 一样只能新建根段或子段，不得为已有 Session 增加第二个父节点。
 
-**SES-SCP-4** adapter 端口是 `Backend = SegmentStore + RootStore + MaintenanceStore`，三者共享一个一致性域，因此 `Append` 能与 Lease 检查一起完成。`SegmentStore` 存节点并只读写段自身：`Segment`、`ReadSegment`、`ReadSegmentStream`（只返回携带某流的 commit，SES-REP-2）、`Locate`、`LookupCommit`、`StreamHead`（段内一个流在给定 Seq 之前的事件计数，SES-REP-3）、`Summarize`、`Index`、`PutIndex`（段的 CommitIndex 摘要、全量与重建写回，SES-REP-5）、只插入的 `Append(lease, segment, commit)`。`RootStore` 存根与所有权：`Record`、`Acquire`（所有权、租约与 torn tail 修复）、`Renew`、`Release`、`LeaseOf`、`ListLeases`、`ExpiredLeases`。`MaintenanceStore` 改变节点、端点与根的集合（SES-GC-4）：`ListSegments`、`ListRecords`、`CreateSession`（同一一致性域内写下段、该路径在各段上的右端点、以及根，根最后写）、`RemoveEndpoint`、`ReplaceEndpoints`、`TruncateSegment`、`RemoveSegment`、`DeleteRecord`。`ListRecords` 返回存活根及其路径，供 `Collect` 重写端点。`RemoveEndpoint` 去掉一个 Session 在某段上的右端点并返回剩余端点，没有端点记录时返回空切片；`ReplaceEndpoints` 把某段的端点换成给定列表。adapter 不知道 fork、前缀与端点如何合并；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
+**SES-SCP-4** adapter 端口是 `Backend = SegmentStore + RootStore + MaintenanceStore`，三者共享一个一致性域，因此 `Append` 能与 Lease 检查一起完成。`SegmentStore` 存节点并只读写段自身：`Segment`、`ReadSegment`、`ReadSegmentStream`（只返回携带某流的 commit，SES-REP-2）、`Locate`、`LookupCommit`、`StreamHead`（段内一个流在给定 Seq 之前的事件计数，SES-REP-3）、`Summarize`、`Index`、`PutIndex`（段的 CommitIndex 摘要、全量与重建写回，SES-REP-5）、只插入的 `Append(lease, segment, commit)`。`RootStore` 存根与所有权：`Record`、`Acquire`（所有权、租约与 torn tail 修复）、`Renew`、`Release`、`LeaseOf`、`ListLeases`、`ExpiredLeases`。`MaintenanceStore` 改变节点、路径区间与根的集合（SES-GC-4）：`ListSegments`、`ListRecords`、`CreateSession`（同一一致性域内写下段、该根的路径区间、以及根，根最后写）、`SpanBound`、`DropOrphanSpans`、`TruncateSegment`、`RemoveSegment`、`DeleteRecord`。`ListRecords` 返回存活根及其路径。`SpanBound` 返回某段上现存路径区间的最大 Through，没有引用时 ok 为假；开放区间保留整段。`DropOrphanSpans` 删除不属于存活根的路径区间。`DeleteRecord` 在同一次写入里把根标成 tombstone、删除该 Session 的路径区间，并返回删除前的记录。adapter 不知道 fork 与前缀如何拼接；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
 
 ## 2. 版本
 
@@ -218,7 +217,7 @@ type Store interface {
 }
 ```
 
-**SES-CRT-1** `Create` 建立一个根与它的 tip 段：kernel 解析 `Fork`（SES-FRK-1）、抽取 128 位随机 `SegmentID`、写入 `SegmentHeader`，以 `Backend.CreateSession` 在同一一致性域内先写段，再写该路径在每一段上的右端点，最后写根（SES-GC-4）。SegmentID 只由 kernel 抽取，调用方不能指定：可写节点的身份不对外开放，因此两个根不可能被构造成共用一个 tip（SES-FRK-4）；`CreateSession` 对已存在的 SegmentID 也返回 `ErrConflict`。对已存在的 SessionID，请求所决定的段字段（解析后的边、CausationID、Ext）都与现有 Session 相同则幂等返回现有 tip 的 header，否则 `ErrConflict`；幂等判定不比较 SegmentID，因为 ID 每次不同，也不比较 `CreatedAtUnixMilli`：它记录首次成功创建时调用方给出的时刻，超时后带新时钟重试的 Create 是重放，不是冲突。wire 夹具以 `NewLedger(be, WithSegmentIDSource(...))` 注入确定性 ID。
+**SES-CRT-1** `Create` 建立一个根与它的 tip 段：kernel 解析 `Fork`（SES-FRK-1）、抽取 128 位随机 `SegmentID`、写入 `SegmentHeader`，以 `Backend.CreateSession` 在同一一致性域内先写段，再写该根的路径区间，最后写根（SES-GC-4）。SegmentID 只由 kernel 抽取，调用方不能指定：可写节点的身份不对外开放，因此两个根不可能被构造成共用一个 tip（SES-FRK-4）；`CreateSession` 对已存在的 SegmentID 也返回 `ErrConflict`。对已存在的 SessionID，请求所决定的段字段（解析后的边、CausationID、Ext）都与现有 Session 相同则幂等返回现有 tip 的 header，否则 `ErrConflict`；幂等判定不比较 SegmentID，因为 ID 每次不同，也不比较 `CreatedAtUnixMilli`：它记录首次成功创建时调用方给出的时刻，超时后带新时钟重试的 Create 是重放，不是冲突。wire 夹具以 `NewLedger(be, WithSegmentIDSource(...))` 注入确定性 ID。
 
 **SES-OWN-1** 同一 Session 同一时刻至多一个有效 Handle，有效性由租约定义：`Acquire` 记录 `Lease{Session, Epoch, Owner, UntilUnixMilli}`，`Until = now + LeaseDuration`（`LeaseDuration` 为 0 时 `Until` 为 0，表示直到 Release 才失效）；`Renew` 把 `Until` 推到 `now + LeaseDuration`，只对当前 Lease 生效，被接管的 Lease 得到 `ErrOwnershipLost`。`Open` 在租约存活（已持有且 `Until` 为 0 或晚于 now）且未声明 `Takeover` 时返回 `ErrOwned`；租约已过期时 Open 直接接管；声明 `Takeover` 的 Open 接管存活的租约。三种接管都使 Epoch 加一，安全性一律由 Epoch fencing（SES-OWN-2）承担：过期本身不终止所有权，未被接管的过期持有者仍可写入，被接管的持有者在下一次 `Append` 或 `Renew` 被围栏。时钟由 `OpenOptions.Clock` 给出，adapter 不自带时钟；这与 Execution Store 的 record 租约（RUN-EXE-6）形状相同。
 
@@ -294,7 +293,7 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 - **SES-APP-1/2/3**：整 Commit 可见性；在 Commit 中途注入崩溃后打开，尾 Commit 不出现；拒绝项无写入；注入持久化失败后句柄返回 `ErrHandleFailed`，重开后已落盘的完整 Commit 在索引中、同 CommitID 的 Append 为 `ErrConflict`；
 - **SES-REP-5**：索引与 commit 一致、落后一个、落后全部、缺失四种情形下 Open 成功且 Head、Committed、StreamHead、LookupCommit、重复 CommitID 的拒绝与 ReadCommits 都与从 commit 得到的答案相同；fork 子对继承 CommitID 的 Committed 经父段索引回答；
 - **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致；`From` 取到 `CommitSeq` 最大值仍为空页；header 归属另一段或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`；
-- **SES-GC-1/2**：Delete 对持有中的 Session 为 `ErrOwned`、对未知 Session 为 `ErrNotFound`，这两种失败都不改端点；删除后不可见、不可开、不可 fork，再次 Delete 为 `ErrNotFound`，同名 Create 为 `ErrDeleted`，另建的 Session 得到新段；子仍读到已删除父在其路径内的前缀；Delete 去掉该 Session 的端点后，按剩余右端点的最大值截掉其后的 commit（`Truncated` 为新的 `Head.Next`，`Dropped` 为被截掉的 CommitID），端点集合为空则整段进入 `Removed`；两个子覆盖同一段的不同右端点时，删除提供较大端点的子会把保留上界降到另一个子的端点并截掉其间的 commit，删除最后一个端点则整段删除；Collect 在 Delete 已收回之后不删除、不截断，端点记录缺失时按存活路径重写端点并截到最大右端点；Collect 幂等，不改变存活 Session 读到的 commit；
+- **SES-GC-1/2**：Delete 对持有中的 Session 为 `ErrOwned`、对未知 Session 为 `ErrNotFound`，路径无法通过校验时为 `ErrCorrupt`，这三种失败都不改路径区间、也不截断；删除后不可见、不可开、不可 fork，再次 Delete 为 `ErrNotFound`，同名 Create 为 `ErrDeleted`，另建的 Session 得到新段；子仍读到已删除父在其路径内的前缀；Delete 删掉该 Session 的路径区间后，按剩余引用的最大 Through 截掉其后的 commit（`Truncated` 为新的 `Head.Next`，`Dropped` 为被截掉的 CommitID），没有剩余引用则整段进入 `Removed`；两个子引用同一段的不同 Through 时，删除提供较大 Through 的子会把保留上界降到另一个子的 Through 并截掉其间的 commit，删除最后一个引用则整段删除；Collect 在 Delete 已收回之后不删除、不截断；Delete 在 tombstone 之后、收回之前停止时，Collect 按剩余引用截断或删除；Collect 幂等，不改变存活 Session 读到的 commit；
 - **SES-WIR-4**：段 header 与 commit 不含 SessionID；删除后重建同名 Session 得到新的 SegmentID；
 - **SES-WIR-5**：Ext 条目经 Store 往返后键与字节不变；空值、非法 JSON 或非法模块键为 `ErrInvalid`；
 - **SES-FRK-1/2/3**：未知父、超出父 history 的 Seq、自身为父的 fork 被拒且不留根；相同 origin 重复 Create 幂等，不同 origin 为 `ErrConflict`；边指向贡献该 commit 的 Segment（在继承 commit 处 fork 的边直指持有它的祖先段）；空 fork 的 head 为 seed；`ReadCommits` 返回前缀加自身，`From`/`Limit` 跨越前缀边界计数；`ReadStream` 以 `LineageSession` 读取时返回前缀加自身且流内位置计入继承事件，以 `LineageSegment` 读取时只返回自身段的事件、父的同名流不受影响，未指定 lineage 为 `ErrInvalid`（SES-FRK-5）；首个自身 commit 的 Seq 为 `Seq+1`；继承的 CommitID 对 `Committed`/`LookupCommit` 可见、对 `Append` 为 `ErrConflict`；父在 fork 之后的追加对子不可见，反之亦然；fork 的 fork 读穿两层前缀；
@@ -307,15 +306,14 @@ Session 的历史是从根段到 tip 段的一条路径（`Path`）。路径由�
 
 节点是 commit 段（`Segment`）。边是段到其父段某个 commit 的引用（`SegmentHeader.Parent`，类型 `CommitRef`）。每个段至多一条父边（SES-LIN-1），因此每个根段下的节点构成一棵树，全部根段构成森林。Session 是指向自身 tip 段的根（`SessionRecord`），根上保存这条路径。fork 的单位是整条 ledger 的前缀 `Session @ CommitSeq N`：全部逻辑流到该 Commit 为止的事实。对话与 Turn 状态是 run 事实的投影（第 11 条），只复制其中部分流得不到完整的 canonical history。fork 复制父路径中包含该序号的 Span 及其之前的 Span，把该 Span 闭合到该序号，再追加一个从 `seq+1` 起的开放 Span；commit 字节留在原段。新段的 `Seed` 为 `Parent.Seq+1`。fork 序号落在父路径最后一段时，子路径比父路径多一段；落在更早的 Span 时，该 Span 之后的 Span 不进入子路径。包含该序号的 Span 留在子路径中。`(SegmentID, Seq)` 不因 fork 而改变（SES-APP-5）：同一段在 fork 序号之后的 commit 仍留在原段。
 
-段上另存覆盖它的存活 Session 的右端点（`Endpoint`）。保留上界是这些右端点的最大值。开放端点保留整段。端点集合为空则整段可删除（第 9 节）。
+段留下哪些 commit，由仍引用它的路径区间决定（第 9 节）。保留上界是这些区间的最大 Through。开放区间保留整段。没有引用则整段可删除。
 
 ```go
 type Span struct { Segment SegmentID; From CommitSeq; End Bound } // 一段在拼接序列中的区间；最后一段 End 开放
 type Path []Span                                                      // 严格递增、段不重复、首段 From 为 0、仅末段开放且其段等于 Tip
 func (Path) Validate(tip SegmentID) error
 func (Path) Branch(seq CommitSeq, next SegmentID) (Path, CommitRef, error) // 留到含 seq 的 Span，闭合到 seq，再追加从 seq+1 起的开放 Span
-type Endpoint struct { Session SessionID; End Bound }                 // 一个存活 Session 在某段上的右端点
-func MaxBound(endpoints []Endpoint) (Bound, bool)                     // 有开放端点则保留整段，否则取最大 Through；空集合的 ok 为假
+func MaxBound(ends []Bound) (Bound, bool)                            // 有开放 Bound 则保留整段，否则取最大 Through；空集合的 ok 为假
 type Bound struct { Open bool; Through CommitSeq }
 func OpenBound() Bound
 func ThroughBound(seq CommitSeq) Bound
@@ -333,9 +331,9 @@ func (*LoadedPath) Read / Lookup / Contains / At(seq)
 func (SegmentHeader) Seed() Head                                      // 根段 0；子段 Parent.Seq+1
 ```
 
-**SES-LIN-1（单父不变量）** 一个段至多一条父边：`SegmentHeader.Parent` 是单个可空引用，记录在段的创建记录中，创建后不可修改。一个 Session 的 `Path` 与装载后的 `LoadedPath` 是从根段到其 tip 段的唯一路径。建立边的操作只有 fork（SES-FRK-1），它只为新建的段设置父边：fork 新建子段并使其成为新根的 tip。已有段的父边不可修改，任何操作都不得为已有 Session 增加第二个父节点；多父 merge 被排除在模型之外，canonical import 若进入合同也只能新建根段或子段。因此 lineage 是森林，读路径只拼接一条前缀（SES-FRK-2）。段的保留上界是覆盖它的存活路径右端点的最大值（SES-GC-2）。父边决定删除顺序：子段的父边仍指向父段时，`RemoveSegment` 返回 `ErrReferenced`，收回从 tip 走向根。Delete 与 Collect 用存活路径的右端点决定保留上界。Session 之间的其他关系不进入 lineage：spawn 子代理的派生来源记录在子段创建 `Metadata` 的 `twilight/spawn` 键下（SPN-2/3），以 fork 模式 spawn 的子 Session 只有 fork 点这一条父边，其 spawn 来源与 lineage 分开建模。
+**SES-LIN-1（单父不变量）** 一个段至多一条父边：`SegmentHeader.Parent` 是单个可空引用，记录在段的创建记录中，创建后不可修改。一个 Session 的 `Path` 与装载后的 `LoadedPath` 是从根段到其 tip 段的唯一路径。建立边的操作只有 fork（SES-FRK-1），它只为新建的段设置父边：fork 新建子段并使其成为新根的 tip。已有段的父边不可修改，任何操作都不得为已有 Session 增加第二个父节点；多父 merge 被排除在模型之外，canonical import 若进入合同也只能新建根段或子段。因此 lineage 是森林，读路径只拼接一条前缀（SES-FRK-2）。段的保留上界是仍引用它的路径区间的最大 Through；开放区间保留整段（SES-GC-2）。父边决定删除顺序：子段的父边仍指向父段时，`RemoveSegment` 返回 `ErrReferenced`，收回从 tip 走向根。Delete 与 Collect 用仍引用该段的路径区间决定保留上界。Session 之间的其他关系不进入 lineage：spawn 子代理的派生来源记录在子段创建 `Metadata` 的 `twilight/spawn` 键下（SPN-2/3），以 fork 模式 spawn 的子 Session 只有 fork 点这一条父边，其 spawn 来源与 lineage 分开建模。
 
-**SES-FRK-1（创建）** `Create` 携带 `Fork{Session, Seq}` 时建立 fork。`Ledger` 装载父 Session，以 `EdgeAt` 读出贡献 commit `Seq` 的段，把边记为 `Parent = CommitRef{Segment: 该段, Seq}`。父路径取根上的 `Path`；`Path` 为空时由已装载的 `LoadedPath` 合成。`Path.Branch(seq, 新段)` 按顺序找到包含该序号的 Span，复制该 Span 及其之前的 Span，把该 Span 闭合到 `seq`，再追加 `{新段, From: seq+1, End: OpenBound()}`，并返回这条父边。Branch 返回的边必须等于 `header.Parent`，否则为 `ErrCorrupt`，不写段、端点与根。开放 Span 的区间包含一切不小于 `From` 的序号；`Branch` 之前 `EdgeAt` 已经读出该 commit，序号超出父 history 时 `Create` 不写。然后 `Backend.CreateSession` 在同一一致性域内先写新段，再写该路径在每一段上的右端点，最后写根（SES-GC-4）。必须核对：父 Session 存活（否则 `ErrNotFound`）、`Seq` 在父的 history 内（否则 `ErrInvalid`）、父不是子自身。任一不满足则不写段、端点与根。根 Session 的路径是一段开放 Span `{新段, From: 0, End: OpenBound()}`。相同 origin 的重复 Create 幂等并返回现有 tip 的 header，不同 origin 为 `ErrConflict`（SES-CRT-1）。父段只追加，已接受的 commit 不被改写（SES-APP-5）。边一经建立，所记的 `(SegmentID, Seq)` 不改变。在继承 commit 处 fork 时，边直指持有该 commit 的祖先段。fork 序号落在父路径最后一段时，子路径比父路径多一段；落在更早的 Span 时，该 Span 之后的 Span 不进入子路径。包含 fork 序号的 Span 留在子路径中，commit 字节留在原段。
+**SES-FRK-1（创建）** `Create` 携带 `Fork{Session, Seq}` 时建立 fork。`Ledger` 装载父 Session，以 `EdgeAt` 读出贡献 commit `Seq` 的段，把边记为 `Parent = CommitRef{Segment: 该段, Seq}`。父路径取根上的 `Path`；`Path` 为空时由已装载的 `LoadedPath` 合成。`Path.Branch(seq, 新段)` 按顺序找到包含该序号的 Span，复制该 Span 及其之前的 Span，把该 Span 闭合到 `seq`，再追加 `{新段, From: seq+1, End: OpenBound()}`，并返回这条父边。Branch 返回的边必须等于 `header.Parent`，否则为 `ErrCorrupt`，不写段、路径区间与根。开放 Span 的区间包含一切不小于 `From` 的序号；`Branch` 之前 `EdgeAt` 已经读出该 commit，序号超出父 history 时 `Create` 不写。然后 `Backend.CreateSession` 在同一一致性域内先写新段，再写该根的路径区间，最后写根（SES-GC-4）。必须核对：父 Session 存活（否则 `ErrNotFound`）、`Seq` 在父的 history 内（否则 `ErrInvalid`）、父不是子自身。任一不满足则不写段、路径区间与根。根 Session 的路径是一段开放 Span `{新段, From: 0, End: OpenBound()}`。相同 origin 的重复 Create 幂等并返回现有 tip 的 header，不同 origin 为 `ErrConflict`（SES-CRT-1）。父段只追加，已接受的 commit 不被改写（SES-APP-5）。边一经建立，所记的 `(SegmentID, Seq)` 不改变。在继承 commit 处 fork 时，边直指持有该 commit 的祖先段。fork 序号落在父路径最后一段时，子路径比父路径多一段；落在更早的 Span 时，该 Span 之后的 Span 不进入子路径。包含 fork 序号的 Span 留在子路径中，commit 字节留在原段。
 
 **SES-FRK-2（读）** 段只存自身 commit，从 `header.Seed()` 起连续编号：首个自身 Commit 的 `Seq = Parent.Seq+1`。`Open`、`ReadCommits`、`ReadStream` 经 `Ledger.Load` 把根上的 `Path` 装成 `LoadedPath`：校验通过后按 Span 读取各段。`Path` 为空的根写于路径入存储之前，仍由 `loadPathFromEdges` 沿父边装载。读在这条路径上迭代：每段读取一次自己贡献的区间，不递归读 Store。`From`、`Limit`、`HasMore` 与 `StreamSeq` 都按拼接后的序列计数（`ReadStream` 按请求的 lineage 所见的序列，SES-FRK-5），`Head` 为 tip 段的 head。父在 fork 之后追加的 Commit 不属于子；子的 Commit 不属于父。
 
@@ -347,7 +345,7 @@ func (SegmentHeader) Seed() Head                                      // 根段 
 
 ## 9. 删除与回收
 
-删除先把根标成 tombstone，再从 tip 到根去掉该 Session 在路径各段上的右端点。段留下哪些 commit，由剩余右端点的最大值决定：开放端点保留整段，闭合端点保留到该序号，端点集合为空则整段删除。
+删除在一次写入里把根标成 tombstone，并删掉该 Session 的路径区间，返回删除前的路径。提交之后从 tip 到根查看每一段的剩余引用。段留下哪些 commit，由剩余引用的最大 Through 决定：开放引用保留整段，闭合引用保留到该序号，没有引用则整段删除。收回中途崩溃时，该 Session 的区间已经删除，段暂时仍在；之后的 Collect 按剩余引用处理。
 
 ```go
 func (Maintenance) Delete(ctx, SessionID) (CollectReport, error)
@@ -355,15 +353,15 @@ func (Maintenance) Collect(ctx) (CollectReport, error)
 type CollectReport struct { Removed []SegmentID; Truncated map[SegmentID]CommitSeq; Dropped map[SegmentID][]CommitID }
 ```
 
-**SES-GC-1（删除）** `Delete(sid)` 先读取根与路径，再调用 `DeleteRecord`。持有中的 Session 为 `ErrOwned`，未知 Session 为 `ErrNotFound`。这两种失败发生在 tombstone 之前，端点保持原样。成功后根记录保留为 tombstone（`deleted`）：`Record`、`ListRecords`、`ListLeases` 不返回它；`Header`、`Open`、`ReadCommits`、`ReadStream`、以它为 origin 的 `Create` 都返回 `ErrNotFound`；第二次 `Delete` 为 `ErrNotFound`；以该 ID 再次 `Create` 为 `ErrDeleted`。SessionID 不复用。inbox 命令、路由与外部引用都以裸 SessionID 为键，立即重建会使一条为旧 Session 发出的在途命令作用于新 Session。tombstone 之后，`Delete` 从 tip 向根收回路径上的端点（SES-GC-2）。段没有单独的已删除标记。其他 Session 的路径仍覆盖的前缀继续可读。
+**SES-GC-1（删除）** `Delete(sid)` 调用 `DeleteRecord`。持有中的 Session 为 `ErrOwned`，未知 Session 为 `ErrNotFound`。路径无法通过校验时为 `ErrCorrupt`。这三种失败发生在写入之前，路径区间与段保持原样。成功时同一次写入把根标成 tombstone（`deleted`）并删除该 Session 的路径区间，返回删除前的记录。`Record`、`ListRecords`、`ListLeases` 不返回 tombstone；`Header`、`Open`、`ReadCommits`、`ReadStream`、以它为 origin 的 `Create` 都返回 `ErrNotFound`；第二次 `Delete` 为 `ErrNotFound`；以该 ID 再次 `Create` 为 `ErrDeleted`。SessionID 不复用。inbox 命令、路由与外部引用都以裸 SessionID 为键，立即重建会使一条为旧 Session 发出的在途命令作用于新 Session。写入提交后，`Delete` 从 tip 向根收回路径上的段（SES-GC-2）。段没有单独的已删除标记。其他 Session 的路径仍覆盖的前缀继续可读。`Path` 为空的旧根在返回后沿父边装载路径，再按同样的顺序收回。
 
-**SES-GC-2（端点与截断）** 每个段保存覆盖它的存活 Session 的右端点（`Endpoint`）。`Delete` 对路径上每一段调用 `RemoveEndpoint`，去掉该 Session 的端点并取回剩余端点；没有端点记录时返回空切片。剩余为空则 `RemoveSegment`，该段进入 `Removed`。段仍被子段的父边或某个存活根的 tip 引用时，adapter 返回 `ErrReferenced`，本次跳过，留给之后的 `Collect`。剩余非空时，保留上界为 `MaxBound`：任一端点开放则保留整段，包括活 head；否则保留到最大的 `Through`。`Head.Next` 大于 `Through+1` 时，先从索引读出 `Seq` 大于 `Through` 的 CommitID，再 `TruncateSegment`：`Truncated` 记下新的 `Head.Next`，`Dropped` 记下这些 CommitID。`Head.Next` 已经不大于 `Through+1` 时不截断。因此另一个 Session 的 `Delete` 不截断带开放端点的存活 tip。
+**SES-GC-2（引用与截断）** 路径区间是段的引用。Postgres 把它们存在 `session_path_spans(session, ordinal, segment, from_seq, through_seq)`，`through_seq` 为 NULL 表示开放；索引 `(segment, through_seq DESC NULLS FIRST)` 用 `LIMIT 1` 取出最大引用。文件存储的 Path 写在根文件上，`SpanBound` 在存活根里取同一结果。`DeleteRecord` 已经删掉本 Session 的区间，所以 `Delete` 对路径上每一段调用 `SpanBound`。没有引用则 `RemoveSegment`，该段进入 `Removed`。段仍被子段的父边或某个存活根的 tip 引用时，adapter 返回 `ErrReferenced`，本次跳过，留给之后的 `Collect`。仍有引用时，保留上界为该 Bound：开放则保留整段，包括活 head；否则保留到 `Through`。`TruncateSegment` 在持有该段锁的同一事务内再次读取最大区间，删除其后的 commit，并返回实际删除的 CommitID 与新 head。开放区间不删除。现存 `Through` 高于调用方传入的上界时，只删除超过现存 `Through` 的 commit。有删除时 `Truncated` 记下新的 `Head.Next`，`Dropped` 记下这些 CommitID；没有删除时两者都不记。因此另一个 Session 的 `Delete` 不截断带开放引用的存活 tip。
 
-`Collect` 修复端点，幂等，可以在有写者打开时运行。它列出全部段与存活根，对每条存活路径合成端点：`Path` 为空的根沿父边装载后再合成。对仍存在的段调用 `ReplaceEndpoints` 写成这些端点；段已不在时 `ErrNotFound`，跳过。然后按最大右端点截断，规则与 `Delete` 相同。没有任何存活路径覆盖的段按子先于父调用 `RemoveSegment`，`ErrReferenced` 跳过。`Delete` 已经按剩余端点截断或删除之后，随后的 `Collect` 不再删除、不再截断；被 `ErrReferenced` 跳过的段仍由之后的 `Collect` 删除。端点记录缺失时，`Collect` 按存活路径写回端点并截到最大右端点。
+`Collect` 幂等，可以在有写者打开时运行。它先 `DropOrphanSpans`，删掉不属于存活根的路径区间。然后列出全部段，对每段调用 `SpanBound`。`Path` 为空的存活根沿父边装载，这些区间并入该段的保留上界。有上界的段按与 `Delete` 相同的规则截断。没有上界的段按子先于父调用 `RemoveSegment`，`ErrReferenced` 跳过。`Delete` 已经按剩余引用截断或删除之后，随后的 `Collect` 不再删除、不再截断。`DeleteRecord` 已提交而收回未完成时，本 Session 的区间已经不在，`Collect` 按其他存活路径的引用截断或删除。被 `ErrReferenced` 跳过的段仍由之后的 `Collect` 删除。
 
-**SES-GC-4（图变更的串行）** 改变根、端点与节点集合的操作（`Create`、`Delete`、`Collect`）在 kernel 内由同一把图锁串行：`Create` 对父存活的核对与它的写入不会与收回该父端点的 `Delete` 或 `Collect` 交错。adapter 的 `CreateSession` 在同一一致性域内先写段，再写该路径在每一段上的右端点，最后写根。根未写下时，这个 Session 对读侧不可见；已经写下的段与端点由下一次 `Collect` 处理：没有存活路径覆盖的段被删除，仍被存活路径覆盖的段按那些路径重写端点。`Append` 与读不取该锁。存活 tip 的端点开放，另一个 Session 的 `Delete` 与 `Collect` 都不截断它。
+**SES-GC-4（图变更的串行）** 改变根、路径区间与节点集合的操作（`Create`、`Delete`、`Collect`）在 kernel 内由同一把图锁串行：`Create` 对父存活的核对与它的写入不会与收回该父的 `Delete` 或 `Collect` 交错。adapter 的 `CreateSession` 在同一一致性域内先写段，再写该根的路径区间，最后写根。根未写下时，这个 Session 对读侧不可见。数据库的一次事务在提交前不会留下段或区间。文件存储的根文件是最后一次原子写，根未写下时只留下没有根的段，下一次 `Collect` 删除它。`Append` 与读不取该锁。存活 tip 的区间开放，另一个 Session 的 `Delete` 与 `Collect` 都不截断它。
 
-该互斥只在一个进程内。跨进程时，每个 `Backend` 调用各自成事务，图锁不跨进程持有。`CreateSession` 在写入子段的同一事务内确认父段存在（Postgres 以 `parent_segment` 外键实现，父段消失时插入失败并映射为 `ErrNotFound`）。`RemoveSegment` 在删除的同一事务内确认没有存活根以该段为 tip、没有段以它为父（Postgres 查 `session_roots` 与 `parent_segment` 索引，外键在删除时兜底），仍被引用返回 `ErrReferenced` 且不删除。端点不引用 `session_roots`：端点在根行之前写入，不能把尚未插入的根当作外键目标。`Delete` 与 `Collect` 按子先于父收回或删除，把 `ErrReferenced` 留给下一次 `Collect`。因此一个副本的 fork 与另一副本的删除无论怎样交错，都不会留下父边指向已删除段的子段。一次截断读到的是当时的剩余端点，与另一进程正在写入的新端点可能交错；已经截掉的 commit 不会被写回。`CreateSession` 不在父段存在之外再检查 fork 序号上的 commit 仍在。漏记的端点由之后的 `Collect` 按存活路径重写，并按重写后的最大右端点再截一次。
+该互斥只在一个进程内。跨进程时，每个 `Backend` 调用各自成事务，图锁不跨进程持有。`CreateSession` 在写入子段的同一事务内确认父段存在（Postgres 以 `parent_segment` 外键实现，父段消失时插入失败并映射为 `ErrNotFound`）。路径区间的 `segment` 引用 `session_segments`；`session` 列不设外键，区间在根行之前写入。`RemoveSegment` 在删除的同一事务内确认没有存活根以该段为 tip、没有段以它为父（Postgres 查 `session_roots` 与 `parent_segment` 索引，外键在删除时兜底）。仍被引用，或仍有路径区间指向该段，返回 `ErrReferenced` 且不删除。`DeleteRecord` 在同一事务内 tombstone 并删除该 Session 的区间。`Delete` 与 `Collect` 按子先于父收回或删除，把 `ErrReferenced` 留给下一次 `Collect`。因此一个副本的 fork 与另一副本的删除无论怎样交错，都不会留下父边指向已删除段的子段。`TruncateSegment` 删除 commit 时持有该段的锁，并在同一事务内再次读取最大路径区间：区间开放则不删除；现存 `Through` 大于调用方传入的上界时，只截到现存 `Through`。返回的 CommitID 是这次实际删除的。`CreateSession` 写入路径区间之前，按段 ID 顺序取得这些段的同一把锁，确认每个闭合区间的 `Through` 和父边上的 commit 仍在。其中任一 commit 不在，则整次创建回滚并返回 `ErrNotFound`。新区间先提交时，随后的截断能看到它。截断先提交时，创建看不到那个 commit，不会写下指向已删除 commit 的区间。
 
-**SES-GC-3（claim 与回收的分工）** 一个 commit 的 retention claim 以持有它的段为 owner（EXT-WRT-5）。`Delete` 与 `Collect` 在 `CollectReport` 中报告整段删除的段（`Removed`）和截断丢掉的 CommitID（`Dropped`）。`writer.Delete` 与 `writer.Collect` 按这份报告释放 claim（EXT-WRT-9）：整段删除释放该段 scope 下的全部 Active claim；截断只释放 `Dropped` 中的 CommitID。其他路径的右端点仍覆盖的 commit 不进入报告，其 claim 保持 Active。fork 不建立自己的 claim（EXT-WRT-8）。
+**SES-GC-3（claim 与回收的分工）** 一个 commit 的 retention claim 以持有它的段为 owner（EXT-WRT-5）。`Delete` 与 `Collect` 在 `CollectReport` 中报告整段删除的段（`Removed`）和截断丢掉的 CommitID（`Dropped`）。`writer.Delete` 与 `writer.Collect` 按这份报告释放 claim（EXT-WRT-9）：整段删除释放该段 scope 下的全部 Active claim；截断只释放 `Dropped` 中的 CommitID。其他路径的区间仍覆盖的 commit 不进入报告，其 claim 保持 Active。fork 不建立自己的 claim（EXT-WRT-8）。
 
