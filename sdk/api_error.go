@@ -72,13 +72,21 @@ func NewAPIError(statusCode int, status string, body []byte) *APIError {
 	return e
 }
 
+// truncateAPIErrorBody returns b as a string, capped at
+// apiErrorMaxBodyDisplay bytes of complete runes plus a truncation marker.
+// Invalid bytes decode as width-1 units and pass through; only a rune that
+// would straddle the budget is dropped.
 func truncateAPIErrorBody(b []byte) string {
 	if len(b) <= apiErrorMaxBodyDisplay {
 		return string(b)
 	}
-	b = b[:apiErrorMaxBodyDisplay]
-	for !utf8.Valid(b) {
-		b = b[:len(b)-1]
+	size := 0
+	for size < apiErrorMaxBodyDisplay {
+		_, w := utf8.DecodeRune(b[size:])
+		if size+w > apiErrorMaxBodyDisplay {
+			break
+		}
+		size += w
 	}
-	return string(b) + "...(truncated)"
+	return string(b[:size]) + "...(truncated)"
 }

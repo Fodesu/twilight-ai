@@ -61,13 +61,29 @@ func TestAPIErrorErrorBodyTruncation(t *testing.T) {
 }
 
 func TestAPIErrorErrorBodyTruncationUTF8(t *testing.T) {
-	// A multi-byte rune straddling the 1024-byte cutoff must not be split.
-	body := append([]byte(strings.Repeat("a", 1022)), []byte("中文")...)
-	err := &sdk.APIError{StatusCode: 500, RawBody: body}
-	got := err.Error()
-	if !utf8.ValidString(got) {
-		t.Errorf("Error() contains invalid UTF-8: %q", got)
-	}
+	t.Run("rune straddling cutoff is dropped", func(t *testing.T) {
+		// "中" is 3 bytes: a byte cut at 1024 would land inside it.
+		body := append([]byte(strings.Repeat("a", 1022)), []byte("中文")...)
+		got := (&sdk.APIError{StatusCode: 500, RawBody: body}).Error()
+		if !utf8.ValidString(got) {
+			t.Errorf("Error() contains invalid UTF-8: %q", got)
+		}
+	})
+	t.Run("pre-existing invalid byte is kept", func(t *testing.T) {
+		// A latin-1/GBK error page must not trigger over-truncation: the
+		// excerpt keeps its full byte budget even with a bad byte in it.
+		body := append([]byte{0xff}, []byte(strings.Repeat("a", 2000))...)
+		got := (&sdk.APIError{StatusCode: 500, RawBody: body}).Error()
+		const marker = " [body: "
+		i := strings.Index(got, marker)
+		if i < 0 {
+			t.Fatalf("Error() = %q, want body excerpt", got)
+		}
+		excerpt := strings.TrimSuffix(got[i+len(marker):], "...(truncated)]")
+		if len(excerpt) != 1024 {
+			t.Errorf("excerpt length = %d, want 1024", len(excerpt))
+		}
+	})
 }
 
 func TestNewAPIError(t *testing.T) {
