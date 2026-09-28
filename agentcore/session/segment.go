@@ -8,45 +8,26 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 )
 
-// The Session lineage is a tree (agent-session.md section 8, SES-LIN-1):
-// immutable commit segments are its nodes, a segment's single parent anchor
-// is an edge, and a Session is a root that names the segment it appends to.
-// A segment has at most one parent, so the segments under one root segment
-// form a tree and all of them a forest; no operation gives an existing
-// segment a second parent. These are the domain types; the Ledger implements
-// every operation over them and the adapters store them.
-
-// SegmentID identifies one commit segment independently of any Session: 128
-// random bits the kernel draws when the segment is created (SES-WIR-4).
+// SegmentID identifies one commit segment independently of any Session
+// (SES-WIR-4).
 type SegmentID string
 
-// SegmentHeader is the immutable creation record of a commit segment
-// (agent-session.md section 8): a node of the lineage tree. It names no
-// Session: which roots append to or include the segment is the roots'
-// business (SessionRecord). The segment remains while a live path span or a
-// child edge still names it. ID is the segment's identity,
-// drawn at random, so two otherwise identical records are two segments.
-// Readers of a Session see the header of the segment its root names as its
-// tip.
+// SegmentHeader is the immutable creation record of a commit segment. It
+// names no Session: which roots append to or include the segment is the
+// roots' business (SessionRecord).
 type SegmentHeader struct {
-	// ID is the segment's identity: 128 random bits the kernel draws at
-	// Create, hex encoded. Nothing derives it, so two segments
-	// with otherwise equal records are two nodes (SES-WIR-4).
+	// ID is the segment's identity, drawn at random: two segments with
+	// equal records are still two nodes (SES-WIR-4).
 	ID          SegmentID          `json:"id"`
 	Parent      *CommitRef         `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
 	CausationID ledger.CausationID `json:"causationId,omitempty"`
-	// Ext holds the module extension slots of the creation record, one raw
-	// value per module (SES-WIR-5); a reader that knows none of the modules
-	// keeps them.
+	// Ext are the module extension slots of the creation record, opaque to
+	// readers that know no module (SES-WIR-5).
 	Ext Extensions `json:"ext,omitempty"`
 }
 
-// Segment is one node of the lineage forest. It stores a creation record
-// and the append-only log of commits written to this node, numbered from
-// Header.Seed(). The log may be empty. A session path names the segment in
-// one span and includes only that span's range, so commits past a closed
-// bound are not part of that session. Header.Parent is the edge to the
-// parent segment; a root segment has none. The segment's identity is Header.ID.
+// Segment is one node of the lineage forest: a creation record. Its
+// commits live in the store, numbered from Header.Seed().
 type Segment struct {
 	Header SegmentHeader
 }
