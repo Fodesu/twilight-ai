@@ -107,3 +107,24 @@
 | ART-ARC-1 | manifest 为精确 canonical wire、只携带 Active claims；inspection 无损接受未知 scheme 但不建 Binding/claim | agent-artifact.md · manifest 与 inspection |
 | ART-ARC-2 | ImportActiveClaims 是 all-or-nothing 校验边界，不接受 Prepared/Released，逐字段相同幂等 | agent-artifact.md · verified import 的 all-or-nothing 边界 |
 | ART-PRO-2 | adapter 迁移保持 locator resolution 不变，以 generation/fence 防止旧位置提前回收 | agent-artifact.md · adapter 迁移不变量 |
+
+## agent-session-chatlog.md
+
+| ID | 一句话规则 | 位置 |
+|---|---|---|
+| CHT-SCP-1 | chatlog 拥有对话事实与 surface/context 两投影；声明单例流 domain chatlog（LineageSession）；Requires 为 run 的六类事实 | agent-session-chatlog.md · 模块边界 |
+| CHT-LIF-1 | reducer 拒绝 identity mutation、非法迁移、replacement conflict 与重复 ID；失败 Turn 条目全保留进 ContextFold | agent-session-chatlog.md · reducer 拒绝项与失败 Turn 的保留 |
+| CHT-ENT-1 | assistant 条目 = ModelStepCompleted 结构投影，AssistantID=StepID，CallIDs 由同 commit ToolStepOpened 按序补入 | agent-session-chatlog.md · assistant 条目 |
+| CHT-ENT-2 | tool_result 条目 = call 终态事实投影；unknown 视为未决，supersede 原位替换，每个条目至多一个 replacement | agent-session-chatlog.md · tool_result 条目与 supersede |
+| CHT-ENT-3 | Summary 的 Parts 为单层 TextPart 或 ReferencePart | agent-session-chatlog.md · Summary 的 Parts |
+| CHT-ENT-4 | 用户侧内容是 Input；input_delivered 挂 TurnID 后进入 Context | agent-session-chatlog.md · 用户侧内容是 Input |
+| CHT-COD-1 | Parts 的 wire 是 discriminated union；v 由 Registry 处理，本模块 codec 不读写 | agent-session-chatlog.md · Parts 的 wire |
+| CHT-COD-2 | PartsExtractor 提取 summary 引用；tool_result_superseded 的提取器返回 FrozenBindingID(OutputDigest) | agent-session-chatlog.md · Binding 提取器 |
+| CHT-COD-3 | 事件 digest domain 与 EventType 相同；条目 digest domain 为 chatlog/assistant 与 chatlog/tool_result，覆盖全部结构字段不含 v | agent-session-chatlog.md · Digest domain |
+| CHT-EVT-1 | EventType 清单：input_submitted/delivered/withdrawn/rejected、tool_result_superseded、summary、compaction_created/invalidated | agent-session-chatlog.md · EventType 清单 |
+| CHT-EVT-2 | input_submitted 创建 Input，三种终结各一次；input_delivered 与交给 Run 的事实同组 | agent-session-chatlog.md · 输入生命周期事件 |
+| CHT-EVT-3 | compaction 压缩 active Context 为 [Summary]+Retained；提交前预折叠校验四项；invalidate 只回退最近的 active compaction | agent-session-chatlog.md · compaction |
+| CHT-SUR-1 | SurfaceFold 跨 chatlog 与 run/<RunID> 流折叠；EntryOrder 带 ledger Position；run_ended 释放 Runs 表 | agent-session-chatlog.md · SurfaceFold |
+| CHT-CTX-1 | ContextFold 纯函数：chatlog+run 事件 → 经 supersession/compaction 处理的有序条目；不读 ContentStore | agent-session-chatlog.md · ContextFold 的输入输出 |
+| CHT-CTX-2 | fold 执行 ID 单次创建、CallIDs 补入、原位 replacement；只含已 delivered 的 Input | agent-session-chatlog.md · ContextFold 的规则 |
+| CHT-MAT-1 | materializer 是 IO 边界：每 digest 至多读一次，正文缺失返回 frozen.ErrMissing 不影响投影 | agent-session-chatlog.md · materializer 是 IO 边界 |
