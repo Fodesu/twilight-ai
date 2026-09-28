@@ -3,6 +3,7 @@ package copilot_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -226,8 +227,12 @@ func isEndpointForbidden(err error) bool {
 	if err == nil {
 		return false
 	}
+	var apiErr *sdk.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+		return true
+	}
 	msg := err.Error()
-	return strings.Contains(msg, "403 Forbidden") ||
+	return strings.Contains(msg, "api error 403") ||
 		strings.Contains(msg, "Access to this endpoint is forbidden")
 }
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"strconv"
@@ -41,8 +40,7 @@ func (p *Provider) doEditMultipart(ctx context.Context, params *sdk.ImageEditPar
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai images: edit request failed: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, respBody))
+		return nil, fmt.Errorf("openai images: edit request failed: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	var result imagesResponse

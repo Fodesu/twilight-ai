@@ -17,7 +17,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -99,8 +98,7 @@ func getToken(ctx context.Context, accessKey, secretKey, appKey string, httpClie
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", 0, fmt.Errorf("volcengine speech: token request: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, b))
+		return "", 0, fmt.Errorf("volcengine speech: token request: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	var result struct {

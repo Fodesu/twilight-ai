@@ -100,8 +100,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.SpeechModel, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openrouter speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
+		return nil, fmt.Errorf("openrouter speech: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	rawModels, err := decodeOpenRouterModels(resp.Body)
@@ -238,8 +237,7 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg audioConfig)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openrouter speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
+		return nil, fmt.Errorf("openrouter speech: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	chunks, err := collectPCMChunks(resp.Body)

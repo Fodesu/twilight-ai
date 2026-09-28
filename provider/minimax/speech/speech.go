@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -169,8 +168,7 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg *audioConfig
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("minimax speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
+		return nil, fmt.Errorf("minimax speech: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	var result t2aResponse

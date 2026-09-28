@@ -171,9 +171,8 @@ func (p *Provider) doRequest(ctx context.Context, reqBody map[string]any) (*http
 		return nil, fmt.Errorf("mimo speech: request: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("mimo speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
+		return nil, fmt.Errorf("mimo speech: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 	return resp, nil
 }

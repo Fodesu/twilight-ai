@@ -178,8 +178,7 @@ func (p *Provider) DoDownload(ctx context.Context, _ *sdk.VideoModel, output sdk
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, "", fmt.Errorf("openrouter videos: download failed: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
+		return nil, "", fmt.Errorf("openrouter videos: download failed: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 	data, err = io.ReadAll(resp.Body)
 	if err != nil {

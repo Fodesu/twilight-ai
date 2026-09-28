@@ -86,8 +86,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.SpeechModel, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("elevenlabs speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
+		return nil, fmt.Errorf("elevenlabs speech: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	rawModels, err := decodeModelsResponse(resp.Body)
@@ -230,9 +229,8 @@ func (p *Provider) doRequest(ctx context.Context, endpoint, text string, cfg *au
 		return nil, fmt.Errorf("elevenlabs speech: request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		apiErr := sdk.NewAPIErrorFromResponse(resp)
 		_ = resp.Body.Close()
-		apiErr := sdk.NewAPIError(resp.StatusCode, resp.Status, respBody)
 		requestID := resp.Header.Get("x-request-id")
 		if requestID == "" {
 			requestID = resp.Header.Get("request-id")

@@ -1,6 +1,7 @@
 package sdk_test
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -100,8 +101,8 @@ func TestNewAPIError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := sdk.NewAPIError(400, "400 Bad Request", tt.body)
-			if e.StatusCode != 400 || e.Status != "400 Bad Request" {
+			e := sdk.NewAPIError(http.StatusBadRequest, "400 Bad Request", tt.body)
+			if e.StatusCode != http.StatusBadRequest || e.Status != "400 Bad Request" {
 				t.Errorf("got (StatusCode=%d, Status=%q)", e.StatusCode, e.Status)
 			}
 			if e.Message != tt.wantMsg {

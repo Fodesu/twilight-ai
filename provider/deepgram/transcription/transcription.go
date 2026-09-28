@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -61,8 +60,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("deepgram transcription: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
+		return nil, fmt.Errorf("deepgram transcription: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	var payload deepgramModelsResponse
@@ -169,8 +167,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("deepgram transcription: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
+		return nil, fmt.Errorf("deepgram transcription: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	var payload struct {

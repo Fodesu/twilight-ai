@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"unicode/utf8"
 )
@@ -13,6 +14,10 @@ const (
 	// APIError retains; a misbehaving upstream cannot make an error value
 	// carry an unbounded buffer.
 	apiErrorMaxBodyBytes = 64 << 10
+	// apiErrorReadBudget bounds the transient read used for message
+	// extraction, so a multi-megabyte upstream error page still costs
+	// bounded memory; retention stays at apiErrorMaxBodyBytes.
+	apiErrorReadBudget = 1 << 20
 	// apiErrorMaxBodyDisplay caps the body excerpt Error() appends. Sized to
 	// keep whole the 1-3 KB error documents that message extraction misses
 	// (nested Google/Azure shapes); Message stays the uncapped primary
@@ -49,15 +54,11 @@ func (e *APIError) Error() string {
 }
 
 // NewAPIError builds the APIError for a non-2xx HTTP response whose body has
-// already been read, extracting the upstream's message when the body carries
-// one of the recognized JSON shapes ({"error":{"message":...}} or
-// {"message":...}); data trailing the JSON value is ignored. body is retained
-// capped at apiErrorMaxBodyBytes.
+// already been read. The upstream message is extracted from the full body
+// before retention is capped, and the retained RawBody is a copy capped at
+// apiErrorMaxBodyBytes, so the error never pins the caller's buffer.
 func NewAPIError(statusCode int, status string, body []byte) *APIError {
-	if len(body) > apiErrorMaxBodyBytes {
-		body = body[:apiErrorMaxBodyBytes]
-	}
-	e := &APIError{StatusCode: statusCode, Status: status, RawBody: body}
+	e := &APIError{StatusCode: statusCode, Status: status}
 	var parsed struct {
 		Error struct {
 			Message string `json:"message"`
@@ -72,7 +73,22 @@ func NewAPIError(statusCode int, status string, body []byte) *APIError {
 			e.Message = parsed.Message
 		}
 	}
+	if len(body) > apiErrorMaxBodyBytes {
+		body = body[:apiErrorMaxBodyBytes]
+	}
+	e.RawBody = bytes.Clone(body)
 	return e
+}
+
+// NewAPIErrorFromResponse builds the APIError for a non-2xx HTTP response.
+// It reads the body up to apiErrorReadBudget for message extraction, retains
+// at most apiErrorMaxBodyBytes, and drains up to another apiErrorMaxBodyBytes
+// so a keep-alive connection stays reusable; larger bodies are abandoned and
+// the connection closed.
+func NewAPIErrorFromResponse(resp *http.Response) *APIError {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, apiErrorReadBudget))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, apiErrorMaxBodyBytes))
+	return NewAPIError(resp.StatusCode, resp.Status, body)
 }
 
 // truncateAPIErrorBody returns b as a string, capped at

@@ -143,9 +143,8 @@ func (p *Provider) doRequest(ctx context.Context, text string, cfg *audioConfig)
 		return nil, fmt.Errorf("microsoft speech: request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("microsoft speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, respBody))
+		return nil, fmt.Errorf("microsoft speech: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 	return resp.Body, nil
 }

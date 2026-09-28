@@ -90,7 +90,7 @@ func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOpt
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, parseAPIError(resp)
+		return nil, sdk.NewAPIErrorFromResponse(resp)
 	}
 
 	var result T
@@ -116,7 +116,7 @@ func FetchRaw(ctx context.Context, client *http.Client, opts *RequestOptions) (*
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		return nil, parseAPIError(resp)
+		return nil, sdk.NewAPIErrorFromResponse(resp)
 	}
 
 	return resp, nil
@@ -179,9 +179,4 @@ func buildURLWithQuery(baseURL, path string, query map[string]string) (string, e
 	}
 
 	return u.String(), nil
-}
-
-func parseAPIError(resp *http.Response) *sdk.APIError {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	return sdk.NewAPIError(resp.StatusCode, resp.Status, body)
 }
