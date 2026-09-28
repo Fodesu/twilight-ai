@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/decision"
-	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -365,7 +364,7 @@ func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, 
 	if d.MissingEffects == reconcile.RedispatchMissing {
 		// Missing effects are handed to the Executor again within the
 		// budget; the dispatch ledger remembers the attempts (RUN-EXE-15).
-		rec.Attempts, rec.Epoch, rec.MaxRedispatches = d.Processes, ledger.Epoch(w.Epoch()), d.MaxRedispatches
+		rec.Attempts, rec.Epoch, rec.MaxRedispatches = d.Processes, w.Epoch(), d.MaxRedispatches
 		rec.Redispatch = func(ctx context.Context, key effect.AssignmentKey) error { return d.redispatch(ctx, lt.w, key) }
 	}
 	return d.Runs.RecoverInterrupted(ctx, w, rec)

@@ -4,29 +4,27 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 )
+
+// The commit vocabulary is the kernel's (agentcore/ledger); the Session
+// kernel speaks those CommitSeq/Head/Event types directly and adds stream
+// attribution inside one Commit on top of them.
 
 // CommitSeq is the position of one Commit in the ledger and the canonical
 // total order of the authority. Per-stream local positions are read
 // optimizations derived from the ledger, never a second ordering.
-type CommitSeq uint64
+type CommitSeq = ledger.CommitSeq
 
 // Head is the ledger head after the last commit: the next CommitSeq to
 // assign. A segment with no commits of its own has head header.Seed():
 // 0 for a root segment, Parent.Seq+1 for a child.
-type Head struct {
-	Next CommitSeq
-}
+type Head = ledger.Head
 
 // Event is one committed payload. Unlike the v1 row it carries no transaction
 // metadata: canonical order comes from CommitSeq plus the event's position
 // inside its batch.
-type Event struct {
-	Type                EventType        `json:"type"`
-	RecordedAtUnixMilli int64            `json:"recordedAtUnixMilli"`
-	Payload             jsonstable.Value `json:"payload"`
-}
+type Event = ledger.Event
 
 // Position is the ledger position of one event: the commit it landed in and
 // its index among that commit's events in batch order. Positions order every
@@ -95,8 +93,9 @@ type CommitRef struct {
 	Seq     CommitSeq `json:"seq"`
 }
 
-// Validate checks one event before it is stored.
-func (e *Event) Validate() error {
+// ValidateEvent checks one event before it is stored. It is a free function
+// because Event is the shared ledger vocabulary, not a Session type.
+func ValidateEvent(e Event) error {
 	return validateEventShape(e.Type, e.Payload)
 }
 
@@ -121,7 +120,7 @@ func ValidateBatches(batches []StreamBatch) error {
 			return fmt.Errorf("batch %d: no events", i)
 		}
 		for j := range b.Events {
-			if err := b.Events[j].Validate(); err != nil {
+			if err := ValidateEvent(b.Events[j]); err != nil {
 				return fmt.Errorf("batch %d event %d: %w", i, j, err)
 			}
 		}

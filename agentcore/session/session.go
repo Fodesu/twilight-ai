@@ -6,14 +6,20 @@
 // interpret.
 package session
 
-import "context"
+import (
+	"context"
+
+	"github.com/felinics/twilight/agentcore/ledger"
+)
 
 type (
 	SessionID string
-	CommitID  string
-	EventType string
+	// The commit vocabulary is the kernel's (agentcore/ledger), shared with
+	// every event-sourced authority of the agent core.
+	CommitID  = ledger.CommitID
+	EventType = ledger.EventType
 	// Epoch is the writer ownership generation of a stream, from 1.
-	Epoch uint64
+	Epoch = ledger.Epoch
 )
 
 // Session is one live root and its loaded path. Reads and fork-point
