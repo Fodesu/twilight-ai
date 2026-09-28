@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -34,7 +33,7 @@ func runStep(runID run.RunID, f run.Fact) step {
 	return step{runmod.EventType(f), runmod.Event{RunID: runID, Fact: f}}
 }
 
-func completed(runID run.RunID, stepID run.StepID, digest es.Digest) step {
+func completed(runID run.RunID, stepID run.StepID, digest jsonstable.Digest) step {
 	return runStep(runID, run.ModelStepCompleted{StepID: stepID, FinishReason: model.FinishReasonStop, ResultDigest: digest})
 }
 
@@ -287,12 +286,12 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 // --- materialization (CHT-MAT-1) ---------------------------------------------
 
 type fakeContent struct {
-	results map[es.Digest]model.ModelResult
-	outputs map[es.Digest]run.CanonicalJSON
+	results map[jsonstable.Digest]model.ModelResult
+	outputs map[jsonstable.Digest]run.CanonicalJSON
 	reads   int
 }
 
-func (c *fakeContent) ModelResult(_ context.Context, d es.Digest) (model.ModelResult, error) {
+func (c *fakeContent) ModelResult(_ context.Context, d jsonstable.Digest) (model.ModelResult, error) {
 	c.reads++
 	r, ok := c.results[d]
 	if !ok {
@@ -301,7 +300,7 @@ func (c *fakeContent) ModelResult(_ context.Context, d es.Digest) (model.ModelRe
 	return r, nil
 }
 
-func (c *fakeContent) ToolOutput(_ context.Context, d es.Digest) (run.CanonicalJSON, error) {
+func (c *fakeContent) ToolOutput(_ context.Context, d jsonstable.Digest) (run.CanonicalJSON, error) {
 	c.reads++
 	o, ok := c.outputs[d]
 	if !ok {
@@ -310,7 +309,7 @@ func (c *fakeContent) ToolOutput(_ context.Context, d es.Digest) (run.CanonicalJ
 	return o, nil
 }
 
-func (c *fakeContent) ToolResponse(ctx context.Context, d es.Digest) (run.CanonicalJSON, error) {
+func (c *fakeContent) ToolResponse(ctx context.Context, d jsonstable.Digest) (run.CanonicalJSON, error) {
 	return c.ToolOutput(ctx, d)
 }
 
@@ -330,11 +329,11 @@ func TestMaterialize(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := &fakeContent{
-		results: map[es.Digest]model.ModelResult{"sha256:res": {Text: "calling", ToolCalls: []model.ModelToolCall{
+		results: map[jsonstable.Digest]model.ModelResult{"sha256:res": {Text: "calling", ToolCalls: []model.ModelToolCall{
 			{ToolCallID: "p1", ToolName: "echo", Input: model.ToolArguments{JSON: jsonstable.MustParse(`{"a":1}`)}},
 			{ToolCallID: "p2", ToolName: "ask", Input: model.ToolArguments{JSON: jsonstable.MustParse(`{}`)}},
 		}}},
-		outputs: map[es.Digest]run.CanonicalJSON{"sha256:out": jsonstable.MustParse(`{"ok":true}`), "sha256:ans": jsonstable.MustParse(`"yes"`)},
+		outputs: map[jsonstable.Digest]run.CanonicalJSON{"sha256:out": jsonstable.MustParse(`{"ok":true}`), "sha256:ans": jsonstable.MustParse(`"yes"`)},
 	}
 	entries, err := NewMaterializer(content).Entries(context.Background(), ctxState.Entries)
 	if err != nil {
@@ -380,7 +379,7 @@ func mustSummary(t *testing.T, id SummaryID, text string) Summary {
 
 // entryDigest is the digest the fold assigns to the assistant of one
 // model_step_completed under Turn t1 in Run r1, with no tool step.
-func entryDigest(t *testing.T, stepID run.StepID, result es.Digest) es.Digest {
+func entryDigest(t *testing.T, stepID run.StepID, result jsonstable.Digest) jsonstable.Digest {
 	t.Helper()
 	a, err := assistantOf(RunOwner{TurnID: "t1"}, "r1", &run.ModelStepCompleted{StepID: stepID, FinishReason: model.FinishReasonStop, ResultDigest: result})
 	if err != nil {

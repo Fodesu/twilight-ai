@@ -15,7 +15,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
@@ -65,7 +65,7 @@ type GivenUp struct {
 // deriveCommitID names a command on one key; the naming rule is this
 // domain's, the ledger only enforces uniqueness.
 func deriveCommitID(key effect.AssignmentKey, command, discriminator string) CommitID {
-	d, err := es.DigestCanonical(struct {
+	d, err := jsonstable.DigestCanonical(struct {
 		Key           effect.AssignmentKey `json:"scope"`
 		Command       string               `json:"command"`
 		Discriminator string               `json:"discriminator,omitempty"`

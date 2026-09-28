@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
@@ -61,7 +61,7 @@ const PresetDigestDomain = "twilight/turn/preset"
 // DigestPreset covers the fields that change what the decision layer does
 // for a Turn: SchemaVersion, Model, Tools, Streaming, Prompt, Scheduling and
 // MalformedRetries and SystemPrompt (TRN-PST-1).
-func DigestPreset(p *AgentPreset) (es.Digest, error) {
+func DigestPreset(p *AgentPreset) (jsonstable.Digest, error) {
 	body := struct {
 		SchemaVersion    uint16             `json:"schemaVersion"`
 		Model            run.ModelRef       `json:"model"`
@@ -72,11 +72,11 @@ func DigestPreset(p *AgentPreset) (es.Digest, error) {
 		MalformedRetries uint8              `json:"malformedRetries,omitempty"`
 		SystemPrompt     string             `json:"systemPrompt,omitempty"`
 	}{p.SchemaVersion, p.Model, p.Tools, p.Streaming, p.Prompt, p.Scheduling, p.MalformedRetries, p.SystemPrompt}
-	raw, err := es.EncodeTypedPayload(1, PresetDigestDomain, body)
+	raw, err := jsonstable.EncodeTypedPayload(1, PresetDigestDomain, body)
 	if err != nil {
 		return "", err
 	}
-	return es.DigestBytes(raw), nil
+	return jsonstable.DigestBytes(raw), nil
 }
 
 // ValidatePreset checks the identity fields a registry must refuse to record

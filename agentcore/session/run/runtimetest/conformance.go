@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -321,7 +321,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 	}
 	// The assistant entry is a projection of the fact: it names the frozen
 	// result by the fact's ResultDigest, and the body is readable under it.
-	var resultDigest es.Digest
+	var resultDigest jsonstable.Digest
 	for _, f := range h.record("r1").Facts {
 		if c, ok := f.(run.ModelStepCompleted); ok {
 			resultDigest = c.ResultDigest

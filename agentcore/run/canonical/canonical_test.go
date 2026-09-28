@@ -3,7 +3,7 @@ package canonical
 import (
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/wire"
@@ -70,12 +70,12 @@ func TestCanonicalJSON(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := es.Canonicalize([]byte(c.in))
+			got, err := jsonstable.Canonicalize([]byte(c.in))
 			if err != nil {
-				t.Fatalf("es.Canonicalize(%q): %v", c.in, err)
+				t.Fatalf("jsonstable.Canonicalize(%q): %v", c.in, err)
 			}
 			if string(got) != c.want {
-				t.Fatalf("es.Canonicalize(%q) = %q, want %q", c.in, got, c.want)
+				t.Fatalf("jsonstable.Canonicalize(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
 	}
@@ -89,8 +89,8 @@ func TestCanonicalJSONRejects(t *testing.T) {
 		`{"x":1}]`, `{"a":1}}}`, `[1,2]]`,
 		"{\"a\":\"\xff\"}",
 	} {
-		if _, err := es.Canonicalize([]byte(in)); err == nil {
-			t.Fatalf("es.Canonicalize(%q): expected error", in)
+		if _, err := jsonstable.Canonicalize([]byte(in)); err == nil {
+			t.Fatalf("jsonstable.Canonicalize(%q): expected error", in)
 		}
 	}
 }
@@ -98,12 +98,12 @@ func TestCanonicalJSONRejects(t *testing.T) {
 func TestCanonicalDeterminism(t *testing.T) {
 	// Map iteration order must not leak into canonical bytes.
 	v := map[string]any{"z": 1, "a": map[string]any{"y": []any{1, "s"}, "b": true}, "m": nil}
-	first, err := es.MarshalCanonical(v)
+	first, err := jsonstable.MarshalCanonical(v)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 50; i++ {
-		got, err := es.MarshalCanonical(v)
+		got, err := jsonstable.MarshalCanonical(v)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -115,11 +115,11 @@ func TestCanonicalDeterminism(t *testing.T) {
 
 func TestDigestPreimageCoversVersionPrefix(t *testing.T) {
 	cmd := run.StartToolCall{StepID: "s1", CallID: "c1", Effect: "effect-1"}
-	body1, err := es.EncodeTypedPayload(1, "start_tool_call", cmd)
+	body1, err := jsonstable.EncodeTypedPayload(1, "start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body2, err := es.EncodeTypedPayload(2, "start_tool_call", cmd)
+	body2, err := jsonstable.EncodeTypedPayload(2, "start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestDeriveResponseIDPerKind(t *testing.T) {
 // preimages; a change here is a change to every digest ever written.
 func TestCanonicalGolden(t *testing.T) {
 	cmd := run.CancelRun{Reason: run.ReasonCancelled}
-	body, err := es.EncodeTypedPayload(1, "cancel_run", cmd)
+	body, err := jsonstable.EncodeTypedPayload(1, "cancel_run", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}

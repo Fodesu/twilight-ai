@@ -15,7 +15,6 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -190,10 +189,10 @@ const (
 )
 
 type Input struct {
-	ID      InputID          `json:"id"`
-	TurnID  TurnID           `json:"turnId,omitempty"`
-	Content jsonstable.Value `json:"content"`
-	Digest  es.Digest        `json:"digest"`
+	ID      InputID           `json:"id"`
+	TurnID  TurnID            `json:"turnId,omitempty"`
+	Content jsonstable.Value  `json:"content"`
+	Digest  jsonstable.Digest `json:"digest"`
 }
 
 // Assistant is the structural projection of one ModelStepCompleted
@@ -213,24 +212,24 @@ type Assistant struct {
 	RunID        run.RunID          `json:"runId"`
 	StepID       run.StepID         `json:"stepId"`
 	FinishReason model.FinishReason `json:"finishReason"`
-	ResultDigest es.Digest          `json:"resultDigest"`
+	ResultDigest jsonstable.Digest  `json:"resultDigest"`
 	CallIDs      []CallID           `json:"callIds,omitempty"`
-	Digest       es.Digest          `json:"digest"`
+	Digest       jsonstable.Digest  `json:"digest"`
 }
 
 // ToolResult is the structural projection of one call's terminal outcome
 // (CHT-ENT-2): success names the frozen output or response by digest;
 // error and unknown carry the Run-recorded failure.
 type ToolResult struct {
-	ID           ToolResultID     `json:"id"`
-	TurnID       TurnID           `json:"turnId,omitempty"`
-	RunID        run.RunID        `json:"runId"`
-	CallID       CallID           `json:"callId"`
-	Status       ToolResultStatus `json:"status"`
-	Source       ToolResultSource `json:"source,omitempty"`
-	OutputDigest es.Digest        `json:"outputDigest,omitempty"`
-	Failure      *run.ToolFailure `json:"failure,omitempty"`
-	Digest       es.Digest        `json:"digest"`
+	ID           ToolResultID      `json:"id"`
+	TurnID       TurnID            `json:"turnId,omitempty"`
+	RunID        run.RunID         `json:"runId"`
+	CallID       CallID            `json:"callId"`
+	Status       ToolResultStatus  `json:"status"`
+	Source       ToolResultSource  `json:"source,omitempty"`
+	OutputDigest jsonstable.Digest `json:"outputDigest,omitempty"`
+	Failure      *run.ToolFailure  `json:"failure,omitempty"`
+	Digest       jsonstable.Digest `json:"digest"`
 }
 
 // FailureText renders an error or unknown result's failure the way the
@@ -246,9 +245,9 @@ func (r *ToolResult) FailureText() string {
 }
 
 type Summary struct {
-	ID     SummaryID `json:"id"`
-	Parts  Parts     `json:"parts"`
-	Digest es.Digest `json:"digest"`
+	ID     SummaryID         `json:"id"`
+	Parts  Parts             `json:"parts"`
+	Digest jsonstable.Digest `json:"digest"`
 }
 
 // AssistantIDFor is the entry identity of a model step's result: the StepID
@@ -266,39 +265,39 @@ func SupersedingToolResultID(id ToolResultID) ToolResultID { return id + "/super
 // Digests (CHT-COD-3): the domain is the EventType or the entry domain; `v`
 // is not covered.
 
-func DigestInput(id InputID, content jsonstable.Value) (es.Digest, error) {
+func DigestInput(id InputID, content jsonstable.Value) (jsonstable.Digest, error) {
 	return digestDomain(string(TypeInputSubmitted), struct {
 		ID      InputID          `json:"id"`
 		Content jsonstable.Value `json:"content"`
 	}{id, content})
 }
 
-func DigestAssistant(a *Assistant) (es.Digest, error) {
+func DigestAssistant(a *Assistant) (jsonstable.Digest, error) {
 	return digestDomain(assistantDomain, struct {
 		ID           AssistantID        `json:"id"`
 		TurnID       TurnID             `json:"turnId,omitempty"`
 		RunID        run.RunID          `json:"runId"`
 		StepID       run.StepID         `json:"stepId"`
 		FinishReason model.FinishReason `json:"finishReason"`
-		ResultDigest es.Digest          `json:"resultDigest"`
+		ResultDigest jsonstable.Digest  `json:"resultDigest"`
 		CallIDs      []CallID           `json:"callIds,omitempty"`
 	}{a.ID, a.TurnID, a.RunID, a.StepID, a.FinishReason, a.ResultDigest, a.CallIDs})
 }
 
-func DigestToolResult(r *ToolResult) (es.Digest, error) {
+func DigestToolResult(r *ToolResult) (jsonstable.Digest, error) {
 	return digestDomain(toolResultDomain, struct {
-		ID           ToolResultID     `json:"id"`
-		TurnID       TurnID           `json:"turnId,omitempty"`
-		RunID        run.RunID        `json:"runId"`
-		CallID       CallID           `json:"callId"`
-		Status       ToolResultStatus `json:"status"`
-		Source       ToolResultSource `json:"source,omitempty"`
-		OutputDigest es.Digest        `json:"outputDigest,omitempty"`
-		Failure      *run.ToolFailure `json:"failure,omitempty"`
+		ID           ToolResultID      `json:"id"`
+		TurnID       TurnID            `json:"turnId,omitempty"`
+		RunID        run.RunID         `json:"runId"`
+		CallID       CallID            `json:"callId"`
+		Status       ToolResultStatus  `json:"status"`
+		Source       ToolResultSource  `json:"source,omitempty"`
+		OutputDigest jsonstable.Digest `json:"outputDigest,omitempty"`
+		Failure      *run.ToolFailure  `json:"failure,omitempty"`
 	}{r.ID, r.TurnID, r.RunID, r.CallID, r.Status, r.Source, r.OutputDigest, r.Failure})
 }
 
-func DigestSummary(s *Summary) (es.Digest, error) {
+func DigestSummary(s *Summary) (jsonstable.Digest, error) {
 	return digestDomain(string(TypeSummary), struct {
 		ID    SummaryID `json:"id"`
 		Parts Parts     `json:"parts"`
@@ -307,14 +306,14 @@ func DigestSummary(s *Summary) (es.Digest, error) {
 
 // EntryDigestPair names one active Context entry (CHT-EVT-3).
 type EntryDigestPair struct {
-	Kind   EntryKind `json:"kind"`
-	ID     string    `json:"id"`
-	Digest es.Digest `json:"digest"`
+	Kind   EntryKind         `json:"kind"`
+	ID     string            `json:"id"`
+	Digest jsonstable.Digest `json:"digest"`
 }
 
 // DigestBaseContext covers the ordered active Context sequence a compaction
 // replaces. An empty base digests as nil (empty and nil are one wire value).
-func DigestBaseContext(pairs []EntryDigestPair) (es.Digest, error) {
+func DigestBaseContext(pairs []EntryDigestPair) (jsonstable.Digest, error) {
 	if len(pairs) == 0 {
 		pairs = nil
 	}
@@ -324,7 +323,7 @@ func DigestBaseContext(pairs []EntryDigestPair) (es.Digest, error) {
 }
 
 // DigestCompaction covers every compaction field except Digest itself.
-func DigestCompaction(p *CompactionCreatedPayload) (es.Digest, error) {
+func DigestCompaction(p *CompactionCreatedPayload) (jsonstable.Digest, error) {
 	retained := p.Retained
 	if len(retained) == 0 {
 		retained = nil
@@ -332,19 +331,19 @@ func DigestCompaction(p *CompactionCreatedPayload) (es.Digest, error) {
 	return digestDomain(string(TypeCompactionCreated), struct {
 		CompactionID      CompactionID      `json:"compactionId"`
 		CoveredThrough    session.Position  `json:"coveredThrough"`
-		BaseContextDigest es.Digest         `json:"baseContextDigest"`
+		BaseContextDigest jsonstable.Digest `json:"baseContextDigest"`
 		SummaryID         SummaryID         `json:"summaryId"`
-		SummaryDigest     es.Digest         `json:"summaryDigest"`
+		SummaryDigest     jsonstable.Digest `json:"summaryDigest"`
 		Retained          []EntryDigestPair `json:"retained,omitempty"`
 	}{p.CompactionID, p.CoveredThrough, p.BaseContextDigest, p.SummaryID, p.SummaryDigest, retained})
 }
 
-func digestDomain(domain string, body any) (es.Digest, error) {
-	raw, err := es.EncodeTypedPayload(1, domain, body)
+func digestDomain(domain string, body any) (jsonstable.Digest, error) {
+	raw, err := jsonstable.EncodeTypedPayload(1, domain, body)
 	if err != nil {
 		return "", err
 	}
-	return es.DigestBytes(raw), nil
+	return jsonstable.DigestBytes(raw), nil
 }
 
 // --- payloads (CHT 5) -----------------------------------------------------------
@@ -379,10 +378,10 @@ type InputRejectedPayload struct {
 // through the run frozen.Store) or error. The Run fact is untouched; the
 // substitution is a conversation decision.
 type ToolResultSupersededPayload struct {
-	ToolResultID ToolResultID     `json:"toolResultId"`
-	Status       ToolResultStatus `json:"status"`
-	OutputDigest es.Digest        `json:"outputDigest,omitempty"`
-	Reason       string           `json:"reason,omitempty"`
+	ToolResultID ToolResultID      `json:"toolResultId"`
+	Status       ToolResultStatus  `json:"status"`
+	OutputDigest jsonstable.Digest `json:"outputDigest,omitempty"`
+	Reason       string            `json:"reason,omitempty"`
 }
 type SummaryPayload struct {
 	Summary Summary `json:"summary"`
@@ -394,11 +393,11 @@ type SummaryPayload struct {
 type CompactionCreatedPayload struct {
 	CompactionID      CompactionID      `json:"compactionId"`
 	CoveredThrough    session.Position  `json:"coveredThrough"`
-	BaseContextDigest es.Digest         `json:"baseContextDigest"`
+	BaseContextDigest jsonstable.Digest `json:"baseContextDigest"`
 	SummaryID         SummaryID         `json:"summaryId"`
-	SummaryDigest     es.Digest         `json:"summaryDigest"`
+	SummaryDigest     jsonstable.Digest `json:"summaryDigest"`
 	Retained          []EntryDigestPair `json:"retained,omitempty"`
-	Digest            es.Digest         `json:"digest"`
+	Digest            jsonstable.Digest `json:"digest"`
 }
 
 type CompactionInvalidatedPayload struct {

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
 )
 
@@ -12,7 +12,7 @@ import (
 // context digest and the summary text, so a Compaction retried over the same
 // base replays the same CommitID.
 func TestCompactionIDsAreDerived(t *testing.T) {
-	base := es.DigestBytes([]byte("base"))
+	base := jsonstable.DigestBytes([]byte("base"))
 	ckpt, sum, err := compactionIDs("s", base, "summary")
 	if err != nil {
 		t.Fatal(err)
@@ -24,13 +24,13 @@ func TestCompactionIDsAreDerived(t *testing.T) {
 	cases := []struct {
 		name    string
 		sid     session.SessionID
-		base    es.Digest
+		base    jsonstable.Digest
 		summary string
 		same    bool
 	}{
 		{"same inputs", "s", base, "summary", true},
 		{"other session", "s2", base, "summary", false},
-		{"other base", "s", es.DigestBytes([]byte("other")), "summary", false},
+		{"other base", "s", jsonstable.DigestBytes([]byte("other")), "summary", false},
 		{"other summary", "s", base, "summary 2", false},
 	}
 	for _, tc := range cases {

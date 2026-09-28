@@ -3,7 +3,7 @@ package session
 import (
 	"context"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/ledger"
 )
 
 // CreateRequest establishes a Session: a root naming a new segment. A
@@ -20,7 +20,7 @@ type CreateRequest struct {
 	SessionID          SessionID
 	CreatedAtUnixMilli int64
 	Fork               *ForkOrigin
-	CausationID        es.CausationID
+	CausationID        ledger.CausationID
 	// Ext are the module extension slots stored as SegmentHeader.Ext
 	// (SES-WIR-5): a module records what it needs about the segment's
 	// creation under its own key.

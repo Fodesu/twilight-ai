@@ -3,7 +3,7 @@ package run
 import (
 	"encoding/json"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
 // Deep-copy helpers: Runtime return values must be read-only snapshots
@@ -54,7 +54,7 @@ func cloneToolSpecs(specs []ToolSpec) []ToolSpec {
 
 func snapshotJSONStable[T any](v T) (T, error) {
 	var out T
-	raw, err := es.MarshalCanonical(v)
+	raw, err := jsonstable.MarshalCanonical(v)
 	if err != nil {
 		return out, err
 	}

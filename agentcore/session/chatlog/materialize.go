@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -14,9 +14,9 @@ import (
 // digest (RUN-WIR-4). agent/session/run.Content is the first-party
 // implementation; the projections never call it (CHT-MAT-1).
 type ContentResolver interface {
-	ModelResult(context.Context, es.Digest) (model.ModelResult, error)
-	ToolOutput(context.Context, es.Digest) (run.CanonicalJSON, error)
-	ToolResponse(context.Context, es.Digest) (run.CanonicalJSON, error)
+	ModelResult(context.Context, jsonstable.Digest) (model.ModelResult, error)
+	ToolOutput(context.Context, jsonstable.Digest) (run.CanonicalJSON, error)
+	ToolResponse(context.Context, jsonstable.Digest) (run.CanonicalJSON, error)
 }
 
 // Call is one tool call of a materialized assistant: the Run's CallID paired
@@ -62,12 +62,12 @@ func (m *Materialized) Text() string {
 // digest at most once per Materializer (CHT-MAT-1).
 type Materializer struct {
 	content ContentResolver
-	results map[es.Digest]*model.ModelResult
-	outputs map[es.Digest]*run.CanonicalJSON
+	results map[jsonstable.Digest]*model.ModelResult
+	outputs map[jsonstable.Digest]*run.CanonicalJSON
 }
 
 func NewMaterializer(content ContentResolver) *Materializer {
-	return &Materializer{content: content, results: map[es.Digest]*model.ModelResult{}, outputs: map[es.Digest]*run.CanonicalJSON{}}
+	return &Materializer{content: content, results: map[jsonstable.Digest]*model.ModelResult{}, outputs: map[jsonstable.Digest]*run.CanonicalJSON{}}
 }
 
 // Entries materializes every entry in order.
@@ -117,7 +117,7 @@ func (m *Materializer) Entry(ctx context.Context, e *Entry) (Materialized, error
 	return out, nil
 }
 
-func (m *Materializer) result(ctx context.Context, digest es.Digest) (*model.ModelResult, error) {
+func (m *Materializer) result(ctx context.Context, digest jsonstable.Digest) (*model.ModelResult, error) {
 	if r, ok := m.results[digest]; ok {
 		return r, nil
 	}

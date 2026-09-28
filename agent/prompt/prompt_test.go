@@ -10,7 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agentcore/decision"
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -39,11 +39,11 @@ func (s fixedSource) Load(_ context.Context, _ session.SessionID, id extension.P
 // fixedContent is the frozen store as the prompt builder sees it: bodies by
 // digest.
 type fixedContent struct {
-	results map[es.Digest]model.ModelResult
-	outputs map[es.Digest]run.CanonicalJSON
+	results map[jsonstable.Digest]model.ModelResult
+	outputs map[jsonstable.Digest]run.CanonicalJSON
 }
 
-func (c fixedContent) ModelResult(_ context.Context, d es.Digest) (model.ModelResult, error) {
+func (c fixedContent) ModelResult(_ context.Context, d jsonstable.Digest) (model.ModelResult, error) {
 	r, ok := c.results[d]
 	if !ok {
 		return model.ModelResult{}, fmt.Errorf("%w: %s", frozen.ErrMissing, d)
@@ -51,7 +51,7 @@ func (c fixedContent) ModelResult(_ context.Context, d es.Digest) (model.ModelRe
 	return r, nil
 }
 
-func (c fixedContent) ToolOutput(_ context.Context, d es.Digest) (run.CanonicalJSON, error) {
+func (c fixedContent) ToolOutput(_ context.Context, d jsonstable.Digest) (run.CanonicalJSON, error) {
 	o, ok := c.outputs[d]
 	if !ok {
 		return run.CanonicalJSON{}, fmt.Errorf("%w: %s", frozen.ErrMissing, d)
@@ -59,7 +59,7 @@ func (c fixedContent) ToolOutput(_ context.Context, d es.Digest) (run.CanonicalJ
 	return o, nil
 }
 
-func (c fixedContent) ToolResponse(ctx context.Context, d es.Digest) (run.CanonicalJSON, error) {
+func (c fixedContent) ToolResponse(ctx context.Context, d jsonstable.Digest) (run.CanonicalJSON, error) {
 	return c.ToolOutput(ctx, d)
 }
 
@@ -74,7 +74,7 @@ func preset() turn.AgentPreset {
 func entries() (chatlog.Context, fixedContent) {
 	in := chatlog.Input{ID: "in-1", TurnID: "t1", Content: input.Text("hello")}
 	as := chatlog.Assistant{ID: "a-1", TurnID: "t1", StepID: "a-1", ResultDigest: "sha256:r1"}
-	content := fixedContent{results: map[es.Digest]model.ModelResult{"sha256:r1": {Text: "hi", FinishReason: model.FinishReasonStop}}}
+	content := fixedContent{results: map[jsonstable.Digest]model.ModelResult{"sha256:r1": {Text: "hi", FinishReason: model.FinishReasonStop}}}
 	return chatlog.Context{Entries: []chatlog.Entry{
 		{Kind: chatlog.EntryInput, ID: "in-1", Position: session.Position{Commit: 1}, Input: &in},
 		{Kind: chatlog.EntryAssistant, ID: "a-1", Position: session.Position{Commit: 2}, Assistant: &as},
@@ -155,7 +155,7 @@ func TestInputContentRoundTrip(t *testing.T) {
 }
 
 func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
-	content := fixedContent{results: map[es.Digest]model.ModelResult{
+	content := fixedContent{results: map[jsonstable.Digest]model.ModelResult{
 		"sha256:call": {FinishReason: model.FinishReasonToolCalls, ToolCalls: []model.ModelToolCall{{ToolCallID: "provider-call", ToolName: "tool", Input: model.ToolArguments{JSON: run.MustParseCanonicalJSON(`{}`)}}}},
 		"sha256:none": {Text: "plain", FinishReason: model.FinishReasonStop},
 	}}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/felinics/twilight/agentcore/es"
 	"sync"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
@@ -199,14 +198,14 @@ const checkpointDomain = "twilight/projection-checkpoint"
 // sealedCheckpoint is the cache Value of an authoritative projection: the
 // encoded state and a digest over (projection, version, through, state).
 type sealedCheckpoint struct {
-	State  json.RawMessage `json:"state"`
-	Digest es.Digest       `json:"digest"`
+	State  json.RawMessage   `json:"state"`
+	Digest jsonstable.Digest `json:"digest"`
 }
 
 // checkpointDigest is the digest an authoritative entry must carry.
-func checkpointDigest(id ProjectionID, v ProjectionVersion, through session.Head, state jsonstable.Value) es.Digest {
-	preimage, _ := es.EncodeTypedPayload(1, checkpointDomain, []string{string(id), fmt.Sprint(uint64(v)), fmt.Sprint(uint64(through.Next)), string(state.Bytes())})
-	return es.DigestBytes(preimage)
+func checkpointDigest(id ProjectionID, v ProjectionVersion, through session.Head, state jsonstable.Value) jsonstable.Digest {
+	preimage, _ := jsonstable.EncodeTypedPayload(1, checkpointDomain, []string{string(id), fmt.Sprint(uint64(v)), fmt.Sprint(uint64(through.Next)), string(state.Bytes())})
+	return jsonstable.DigestBytes(preimage)
 }
 
 // SealCheckpoint wraps an authoritative projection's encoded state with its

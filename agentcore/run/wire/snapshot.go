@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 )
@@ -115,7 +115,7 @@ func encodeMachineState(s *run.MachineState) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return es.MarshalCanonical(w)
+	return jsonstable.MarshalCanonical(w)
 }
 
 // decodeMachineState parses v1 snapshot bytes, rejecting unknown fields,
@@ -123,7 +123,7 @@ func encodeMachineState(s *run.MachineState) ([]byte, error) {
 // structural invariants of the restored state.
 func decodeMachineState(raw []byte) (run.MachineState, error) {
 	var w machineStateWire
-	if err := es.DecodeStrict(raw, &w); err != nil {
+	if err := jsonstable.DecodeStrict(raw, &w); err != nil {
 		return run.MachineState{}, fmt.Errorf("agent: snapshot: %w", err)
 	}
 	s, err := machineStateFromWire(&w)

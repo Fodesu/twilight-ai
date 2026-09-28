@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 )
 
@@ -45,7 +45,7 @@ type commandEnvelopeMarshal struct {
 // rejected before it can enter a RunStore.
 func DecodeCommandEnvelope(raw []byte) (CommandEnvelope, error) {
 	var env CommandEnvelope
-	if err := es.DecodeStrict(raw, &env); err != nil {
+	if err := jsonstable.DecodeStrict(raw, &env); err != nil {
 		return CommandEnvelope{}, err
 	}
 	return env, nil
@@ -69,7 +69,7 @@ func (e CommandEnvelope) MarshalJSON() ([]byte, error) {
 
 func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	var wire commandEnvelopeWire
-	if err := es.DecodeStrict(raw, &wire); err != nil {
+	if err := jsonstable.DecodeStrict(raw, &wire); err != nil {
 		return err
 	}
 	codec := Facts{}
@@ -87,11 +87,11 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 }
 
 func requireCanonicalEquivalent(raw []byte, canonicalShape any) error {
-	rawCanonical, err := es.Canonicalize(raw)
+	rawCanonical, err := jsonstable.Canonicalize(raw)
 	if err != nil {
 		return err
 	}
-	shapeCanonical, err := es.MarshalCanonical(canonicalShape)
+	shapeCanonical, err := jsonstable.MarshalCanonical(canonicalShape)
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func (Facts) EncodeFact(typ string, fact run.Fact) ([]byte, error) {
 	if typ == "" || typ != variants.factType(fact) {
 		return nil, fmt.Errorf("agent: encode: type %q does not match fact variant", typ)
 	}
-	return es.EncodeTypedPayload(payloadVersion, typ, fact)
+	return jsonstable.EncodeTypedPayload(payloadVersion, typ, fact)
 }
 
 func (Facts) Envelope(runID run.RunID, id run.CommandID, cmd run.AgentCommand) (CommandEnvelope, error) {

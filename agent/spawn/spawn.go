@@ -27,7 +27,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -88,7 +88,7 @@ type Provenance struct {
 // function of the invocation alone, so a takeover recomputes it from the
 // Executing call it finds (RUN-CMT-7).
 func ChildID(parent session.SessionID, runID run.RunID, callID run.CallID) session.SessionID {
-	raw, err := es.EncodeTypedPayload(1, "twilight/spawn/child", struct {
+	raw, err := jsonstable.EncodeTypedPayload(1, "twilight/spawn/child", struct {
 		Parent session.SessionID `json:"parent"`
 		Run    run.RunID         `json:"run"`
 		Call   run.CallID        `json:"call"`
@@ -96,7 +96,7 @@ func ChildID(parent session.SessionID, runID run.RunID, callID run.CallID) sessi
 	if err != nil {
 		panic(err) // three strings always encode
 	}
-	return session.SessionID("spawn-" + string(es.DigestBytes(raw))[len("sha256:"):])
+	return session.SessionID("spawn-" + string(jsonstable.DigestBytes(raw))[len("sha256:"):])
 }
 
 // DecodeArguments decodes and validates the tool arguments.

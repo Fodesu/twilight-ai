@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/sdk"
@@ -106,7 +106,7 @@ func (a Assignment) Tool() (ToolAssignment, bool) {
 }
 
 func (a Assignment) Digest() (run.Digest, error) {
-	return es.DigestCanonical(a)
+	return jsonstable.DigestCanonical(a)
 }
 
 // assignmentWire is the JSON shape: the kind discriminator with one body

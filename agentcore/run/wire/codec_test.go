@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/canonical"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -78,7 +78,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 	}
 	for _, fact := range facts {
 		typ := wire.FactType(fact)
-		raw, err := es.MarshalCanonical(fact)
+		raw, err := jsonstable.MarshalCanonical(fact)
 		if err != nil {
 			t.Fatalf("marshal(%T): %v", fact, err)
 		}
@@ -89,7 +89,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 		if reflect.TypeOf(decoded) != reflect.TypeOf(fact) {
 			t.Fatalf("decoded fact type = %T, want %T", decoded, fact)
 		}
-		again, err := es.MarshalCanonical(decoded)
+		again, err := jsonstable.MarshalCanonical(decoded)
 		if err != nil || string(again) != string(raw) {
 			t.Fatalf("re-encode of %T differs:\n%s\n%s", fact, raw, again)
 		}

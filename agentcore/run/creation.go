@@ -4,7 +4,7 @@ import (
 	"errors"
 	"unicode/utf8"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/ledger"
 )
 
 // NewRun is the immutable creation data for a Run. RunID is caller-supplied
@@ -12,12 +12,12 @@ import (
 // which attempt, is the attempt module's fact (twilight/attempt/started),
 // written in the same commit; the Run itself is one execution.
 type NewRun struct {
-	RunID       RunID          `json:"runId"`
-	CausationID es.CausationID `json:"causationId,omitempty"`
+	RunID       RunID              `json:"runId"`
+	CausationID ledger.CausationID `json:"causationId,omitempty"`
 }
 
 // BuildNewRun constructs a Run creation value.
-func BuildNewRun(runID RunID, causationID es.CausationID) (NewRun, error) {
+func BuildNewRun(runID RunID, causationID ledger.CausationID) (NewRun, error) {
 	run := NewRun{RunID: runID, CausationID: causationID}
 	if err := ValidateNewRun(run); err != nil {
 		return NewRun{}, err

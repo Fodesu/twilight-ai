@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
 // Operation names and shared details of artifact errors.
@@ -98,7 +98,7 @@ func (r Ref) Identity() (string, error) {
 	if err := r.Validate(); err != nil {
 		return "", err
 	}
-	raw, err := es.EncodeTypedPayload(uint16(WireVersion1), "twilight/artifact/ref", r)
+	raw, err := jsonstable.EncodeTypedPayload(uint16(WireVersion1), "twilight/artifact/ref", r)
 	if err != nil {
 		return "", err
 	}
@@ -118,14 +118,14 @@ func DigestBinding(id BindingID, ref Ref) (BindingDigest, error) {
 	if err != nil {
 		return "", err
 	}
-	raw, err := es.EncodeTypedPayload(uint16(WireVersion1), "twilight/artifact/binding", struct {
+	raw, err := jsonstable.EncodeTypedPayload(uint16(WireVersion1), "twilight/artifact/binding", struct {
 		ID       BindingID `json:"id"`
 		Identity string    `json:"identity"`
 	}{id, identity})
 	if err != nil {
 		return "", err
 	}
-	return BindingDigest(es.DigestBytes(raw)), nil
+	return BindingDigest(jsonstable.DigestBytes(raw)), nil
 }
 
 // NewBinding builds a Binding with its digest.
@@ -212,11 +212,11 @@ func (b SetBuilder) Build(ctx context.Context, ids []BindingID) (BindingSet, err
 		}
 		pairs = append(pairs, pair{id, binding.Digest})
 	}
-	raw, err := es.EncodeTypedPayload(uint16(WireVersion1), "twilight/artifact/ref-set", pairs)
+	raw, err := jsonstable.EncodeTypedPayload(uint16(WireVersion1), "twilight/artifact/ref-set", pairs)
 	if err != nil {
 		return BindingSet{}, err
 	}
-	return BindingSet{BindingIDs: sorted, RefSetDigest: RefSetDigest(es.DigestBytes(raw))}, nil
+	return BindingSet{BindingIDs: sorted, RefSetDigest: RefSetDigest(jsonstable.DigestBytes(raw))}, nil
 }
 
 func SortedUniqueBindingIDs(ids []BindingID) []BindingID {

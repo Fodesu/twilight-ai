@@ -3,7 +3,7 @@ package wire_test
 import (
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
@@ -54,7 +54,7 @@ func fold(t *testing.T, s run.MachineState, facts []run.Fact) run.MachineState {
 
 // inputDigest names an input body in tests: the Run stores only the digest,
 // so any content-derived digest stands in for the chatlog's.
-func inputDigest(raw string) run.Digest { return es.DigestBytes([]byte(raw)) }
+func inputDigest(raw string) run.Digest { return jsonstable.DigestBytes([]byte(raw)) }
 
 // makeBinding builds the binding for the index-th tool call of source, whose
 // provider id is providerID. Tests address calls by the derived CallID.

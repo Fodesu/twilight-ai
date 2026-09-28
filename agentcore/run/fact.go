@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run/model"
 )
 
@@ -23,8 +23,8 @@ type Fact interface{ fact() }
 // RunCreated is the first fact of a Run (RUN-NEW-1). Folding it onto the zero
 // MachineState yields the initial state; a second RunCreated is an error.
 type RunCreated struct {
-	RunID       RunID          `json:"runId"`
-	CausationID es.CausationID `json:"causationId,omitempty"`
+	RunID       RunID              `json:"runId"`
+	CausationID ledger.CausationID `json:"causationId,omitempty"`
 }
 
 func (RunCreated) fact() {}

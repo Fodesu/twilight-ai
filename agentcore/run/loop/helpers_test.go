@@ -5,9 +5,9 @@ import (
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -30,7 +30,7 @@ const (
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
 
 // inputDigest names an input body: the Run stores only the digest.
-func inputDigest(raw string) Digest { return es.DigestBytes([]byte(raw)) }
+func inputDigest(raw string) Digest { return jsonstable.DigestBytes([]byte(raw)) }
 
 // testStack is the minimal Session stack a Loop test drives: kernel Memory
 // Store, the run module, one owner process (Writers) and a Runtime.

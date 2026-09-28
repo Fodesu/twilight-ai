@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 )
 
@@ -34,7 +34,7 @@ func factOf[T run.Fact](name string) factVariant {
 	var zero T
 	return factVariant{name: name, goType: reflect.TypeOf(zero), decode: func(raw []byte) (run.Fact, error) {
 		var f T
-		err := es.DecodeStrict(raw, &f)
+		err := jsonstable.DecodeStrict(raw, &f)
 		return f, err
 	}}
 }
@@ -43,7 +43,7 @@ func commandOf[T run.AgentCommand](name string) commandVariant {
 	var zero T
 	return commandVariant{name: name, goType: reflect.TypeOf(zero), decode: func(raw []byte) (run.AgentCommand, error) {
 		var c T
-		err := es.DecodeStrict(raw, &c)
+		err := jsonstable.DecodeStrict(raw, &c)
 		return c, err
 	}}
 }

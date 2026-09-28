@@ -3,10 +3,10 @@ package run
 import (
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/ledger"
 )
 
-func mustNewRun(t testing.TB, id RunID, cause es.CausationID) NewRun {
+func mustNewRun(t testing.TB, id RunID, cause ledger.CausationID) NewRun {
 	t.Helper()
 	run, err := BuildNewRun(id, cause)
 	if err != nil {
@@ -23,7 +23,7 @@ func TestNewRunValidation(t *testing.T) {
 	for _, candidate := range []NewRun{
 		{},
 		{RunID: RunID(string([]byte{0xff}))},
-		{RunID: "run-1", CausationID: es.CausationID(string([]byte{0xff}))},
+		{RunID: "run-1", CausationID: ledger.CausationID(string([]byte{0xff}))},
 	} {
 		if err := ValidateNewRun(candidate); err == nil {
 			t.Fatalf("invalid NewRun accepted: %+v", candidate)

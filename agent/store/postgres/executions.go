@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/store/postgres/internal/db"
-	"github.com/felinics/twilight/agentcore/es"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
@@ -23,7 +23,7 @@ var _ executionstore.Store = (*ExecutionStore)(nil)
 func (d *DB) Executions() *ExecutionStore { return &ExecutionStore{d: d} }
 
 func ledgerKey(key effect.AssignmentKey) (string, error) {
-	digest, err := es.DigestCanonical(key)
+	digest, err := jsonstable.DigestCanonical(key)
 	if err != nil {
 		return "", err
 	}

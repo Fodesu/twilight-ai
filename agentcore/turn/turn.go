@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -55,8 +55,8 @@ type TurnRef struct {
 }
 
 type PresetRef struct {
-	ID     PresetID  `json:"id"`
-	Digest es.Digest `json:"digest"`
+	ID     PresetID          `json:"id"`
+	Digest jsonstable.Digest `json:"digest"`
 }
 
 type Settlement string
@@ -98,13 +98,13 @@ type SupersededPayload struct {
 
 // --- identity derivations (TRN-ID) ----------------------------------------------
 
-func digestOf(domain string, parts ...string) es.Digest {
-	raw, _ := es.EncodeTypedPayload(1, domain, parts)
-	return es.DigestBytes(raw)
+func digestOf(domain string, parts ...string) jsonstable.Digest {
+	raw, _ := jsonstable.EncodeTypedPayload(1, domain, parts)
+	return jsonstable.DigestBytes(raw)
 }
 
 // PlanDigest is TRN-ID-2.
-func PlanDigest(turnID TurnID, preset es.Digest, inputs []chatlog.InputID) es.Digest {
+func PlanDigest(turnID TurnID, preset jsonstable.Digest, inputs []chatlog.InputID) jsonstable.Digest {
 	parts := make([]string, 0, 2+len(inputs))
 	parts = append(parts, string(turnID), string(preset))
 	for _, id := range inputs {
@@ -114,7 +114,7 @@ func PlanDigest(turnID TurnID, preset es.Digest, inputs []chatlog.InputID) es.Di
 }
 
 // StartOperationDigest is TRN-ID-3; it is the Start commit's CommitID.
-func StartOperationDigest(sid session.SessionID, turnID TurnID, plan es.Digest) es.Digest {
+func StartOperationDigest(sid session.SessionID, turnID TurnID, plan jsonstable.Digest) jsonstable.Digest {
 	return digestOf("twilight/turn/start-operation", string(sid), string(turnID), string(plan))
 }
 

@@ -1,7 +1,7 @@
 package run
 
 import (
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
 type RunID string
@@ -23,7 +23,7 @@ type TargetRef struct {
 
 // Digest is "sha256:<64 lowercase hex>" over canonical protocol bytes.
 // It remains an alias while Run protocol types live in this package.
-type Digest = es.Digest
+type Digest = jsonstable.Digest
 
 // PromptToken is opaque to agent; the application uses it to identify the
 // context revision from which a Prompt was built.

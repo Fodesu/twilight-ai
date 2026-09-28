@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/es"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
@@ -29,7 +29,7 @@ type ExecutionStore struct {
 var _ executionstore.Store = (*ExecutionStore)(nil)
 
 func ledgerKey(key effect.AssignmentKey) (string, error) {
-	d, err := es.DigestCanonical(key)
+	d, err := jsonstable.DigestCanonical(key)
 	if err != nil {
 		return "", err
 	}

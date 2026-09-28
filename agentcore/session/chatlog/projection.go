@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -375,14 +375,14 @@ func clip[T any](s []T) []T { return s[:len(s):len(s)] }
 // gap by it (CHT-EVT-3). An assistant or tool_result entry is structural: it
 // names its frozen body by digest and is rendered through Materialize.
 type Entry struct {
-	Kind       EntryKind        `json:"kind"`
-	ID         string           `json:"id"`
-	Digest     es.Digest        `json:"digest"`
-	Position   session.Position `json:"position"`
-	Input      *Input           `json:"input,omitempty"`
-	Assistant  *Assistant       `json:"assistant,omitempty"`
-	ToolResult *ToolResult      `json:"toolResult,omitempty"`
-	Summary    *Summary         `json:"summary,omitempty"`
+	Kind       EntryKind         `json:"kind"`
+	ID         string            `json:"id"`
+	Digest     jsonstable.Digest `json:"digest"`
+	Position   session.Position  `json:"position"`
+	Input      *Input            `json:"input,omitempty"`
+	Assistant  *Assistant        `json:"assistant,omitempty"`
+	ToolResult *ToolResult       `json:"toolResult,omitempty"`
+	Summary    *Summary          `json:"summary,omitempty"`
 }
 
 // Pair names the entry for compaction base and retained sets.

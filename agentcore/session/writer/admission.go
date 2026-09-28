@@ -7,7 +7,7 @@ import (
 	"slices"
 
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 )
@@ -34,13 +34,13 @@ const claimDerivationVersion uint16 = 1
 // version enter it: the segment is the canonical owner of the commit, and a
 // Session that forks or advances keeps reading the same claim.
 func DeriveClaimID(segment session.SegmentID, commitID session.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
-	raw, _ := es.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/claim", []string{string(segment), string(commitID), string(refSet)})
-	return artifact.ClaimID(es.DigestBytes(raw))
+	raw, _ := jsonstable.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/claim", []string{string(segment), string(commitID), string(refSet)})
+	return artifact.ClaimID(jsonstable.DigestBytes(raw))
 }
 
 func nextClaimID(released artifact.ClaimID) artifact.ClaimID {
-	raw, _ := es.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/claim-successor", []string{string(released)})
-	return artifact.ClaimID(es.DigestBytes(raw))
+	raw, _ := jsonstable.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/claim-successor", []string{string(released)})
+	return artifact.ClaimID(jsonstable.DigestBytes(raw))
 }
 
 // CommitOwner is the ClaimOwner of a commit: the segment that holds it and

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/unit"
@@ -180,17 +180,17 @@ func (s *Commands) Compact(ctx context.Context, w writer.Writer, summaryText str
 // not a kernel version: the kernel has none (SES-VER-2).
 const compactionDerivationVersion uint16 = 1
 
-func compactionIDs(sid session.SessionID, base es.Digest, summaryText string) (CompactionID, SummaryID, error) {
-	raw, err := es.EncodeTypedPayload(compactionDerivationVersion, "twilight/chatlog/compaction", struct {
+func compactionIDs(sid session.SessionID, base jsonstable.Digest, summaryText string) (CompactionID, SummaryID, error) {
+	raw, err := jsonstable.EncodeTypedPayload(compactionDerivationVersion, "twilight/chatlog/compaction", struct {
 		SessionID session.SessionID `json:"sessionId"`
-		Base      es.Digest         `json:"base"`
+		Base      jsonstable.Digest `json:"base"`
 		Summary   string            `json:"summary"`
 	}{sid, base, summaryText})
 	if err != nil {
 		return "", "", err
 	}
 	// The digest is "sha256:<hex>"; the IDs carry the first 16 hex digits.
-	d := string(es.DigestBytes(raw))
+	d := string(jsonstable.DigestBytes(raw))
 	const prefix = "sha256:"
 	if len(d) > len(prefix) && d[:len(prefix)] == prefix {
 		d = d[len(prefix):]

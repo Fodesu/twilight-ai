@@ -10,7 +10,6 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/wire"
@@ -87,7 +86,7 @@ func (c factCodec) Encode(value any) (jsonstable.Value, error) {
 		return jsonstable.Value{}, err
 	}
 	ev, _ := value.(Event) // Validate checked the type
-	raw, err := es.MarshalCanonical(ev.Fact)
+	raw, err := jsonstable.MarshalCanonical(ev.Fact)
 	if err != nil {
 		return jsonstable.Value{}, err
 	}

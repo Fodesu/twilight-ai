@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
@@ -149,7 +149,7 @@ type Settled struct {
 // those that recur (a claim per Epoch, a restart per generation) take one,
 // so their identity is the command and the occasion, never the wall clock.
 func DeriveCommitID(key effect.AssignmentKey, command, discriminator string) CommitID {
-	d, err := es.DigestCanonical(struct {
+	d, err := jsonstable.DigestCanonical(struct {
 		Key           effect.AssignmentKey `json:"scope"`
 		Command       string               `json:"command"`
 		Discriminator string               `json:"discriminator,omitempty"`

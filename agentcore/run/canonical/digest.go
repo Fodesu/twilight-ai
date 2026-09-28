@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 )
@@ -28,19 +28,19 @@ const preimageVersion uint16 = 1
 type Digests struct{}
 
 func (Digests) DigestRequest(req model.ModelRequest) (run.Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ModelRequest value.
-	body, err := es.EncodeTypedPayload(preimageVersion, RequestType, req)
+	body, err := jsonstable.EncodeTypedPayload(preimageVersion, RequestType, req)
 	if err != nil {
 		return "", err
 	}
-	return es.DigestBytes(body), nil
+	return jsonstable.DigestBytes(body), nil
 }
 
 func (Digests) DigestToolDefinition(def model.ToolDefinition) (run.Digest, error) {
-	body, err := es.EncodeTypedPayload(preimageVersion, "tool_definition", def)
+	body, err := jsonstable.EncodeTypedPayload(preimageVersion, "tool_definition", def)
 	if err != nil {
 		return "", err
 	}
-	return es.DigestBytes(body), nil
+	return jsonstable.DigestBytes(body), nil
 }
 
 type toolResponseDecisionDigestBody struct {
@@ -64,31 +64,31 @@ func (Digests) DigestToolResponseDecision(kind run.ResponseKind, decision run.Re
 	if decision != run.ResponseDecisionApproved && decision != run.ResponseDecisionRejected {
 		return "", fmt.Errorf("agent: response decision: unsupported decision %q", decision)
 	}
-	body, err := es.EncodeTypedPayload(preimageVersion, "tool_response_decision", toolResponseDecisionDigestBody{
+	body, err := jsonstable.EncodeTypedPayload(preimageVersion, "tool_response_decision", toolResponseDecisionDigestBody{
 		Kind: kind, Decision: decision, Reason: reason,
 	})
 	if err != nil {
 		return "", err
 	}
-	return es.DigestBytes(body), nil
+	return jsonstable.DigestBytes(body), nil
 }
 
 func (Digests) DigestToolResponsePayload(payload run.CanonicalJSON) (run.Digest, error) {
-	body, err := es.EncodeTypedPayload(preimageVersion, ToolResponseType, ToolResponsePayloadBody{Payload: payload})
+	body, err := jsonstable.EncodeTypedPayload(preimageVersion, ToolResponseType, ToolResponsePayloadBody{Payload: payload})
 	if err != nil {
 		return "", err
 	}
-	return es.DigestBytes(body), nil
+	return jsonstable.DigestBytes(body), nil
 }
 
 // DigestModelResult names a frozen model result; ModelStepCompleted carries
 // this digest and the frozen store holds the body (RUN-WIR-4).
 func (Digests) DigestModelResult(result model.ModelResult) (run.Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ModelResult value.
-	body, err := es.EncodeTypedPayload(preimageVersion, ModelResultType, result)
+	body, err := jsonstable.EncodeTypedPayload(preimageVersion, ModelResultType, result)
 	if err != nil {
 		return "", err
 	}
-	return es.DigestBytes(body), nil
+	return jsonstable.DigestBytes(body), nil
 }
 
 // DigestToolOutput names one tool output; ToolCallCompleted carries it.
@@ -96,9 +96,9 @@ func (Digests) DigestToolOutput(output run.CanonicalJSON) (run.Digest, error) {
 	if output.IsZero() {
 		return "", errors.New("agent: tool output: empty output")
 	}
-	body, err := es.EncodeTypedPayload(preimageVersion, ToolOutputType, ToolOutputBody{Output: output})
+	body, err := jsonstable.EncodeTypedPayload(preimageVersion, ToolOutputType, ToolOutputBody{Output: output})
 	if err != nil {
 		return "", err
 	}
-	return es.DigestBytes(body), nil
+	return jsonstable.DigestBytes(body), nil
 }

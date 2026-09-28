@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/canonical"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -142,11 +142,11 @@ func DecodeToolResponse(raw []byte, want run.Digest) (run.CanonicalJSON, error) 
 }
 
 func encodeFrozen(version uint16, typ string, body any, want run.Digest) ([]byte, error) { //nolint:unparam // version is the caller schema's; only v1 exists today.
-	raw, err := es.EncodeTypedPayload(version, typ, body)
+	raw, err := jsonstable.EncodeTypedPayload(version, typ, body)
 	if err != nil {
 		return nil, err
 	}
-	if got := es.DigestBytes(raw); got != want {
+	if got := jsonstable.DigestBytes(raw); got != want {
 		return nil, fmt.Errorf("agent: frozen %s: body digest %s does not match %s", typ, got, want)
 	}
 	return raw, nil
@@ -154,7 +154,7 @@ func encodeFrozen(version uint16, typ string, body any, want run.Digest) ([]byte
 
 func decodeFrozen[T any](raw []byte, version uint16, typ string, want run.Digest) (T, error) {
 	var zero T
-	if got := es.DigestBytes(raw); got != want {
+	if got := jsonstable.DigestBytes(raw); got != want {
 		return zero, fmt.Errorf("agent: frozen %s: stored body digest %s does not match %s", typ, got, want)
 	}
 	prefix := envelopePrefix(version, typ)
@@ -162,7 +162,7 @@ func decodeFrozen[T any](raw []byte, version uint16, typ string, want run.Digest
 		return zero, fmt.Errorf("agent: frozen %s: stored body is not a %s envelope", typ, typ)
 	}
 	var out T
-	if err := es.DecodeStrict(raw[len(prefix):], &out); err != nil {
+	if err := jsonstable.DecodeStrict(raw[len(prefix):], &out); err != nil {
 		return zero, fmt.Errorf("agent: frozen %s: %w", typ, err)
 	}
 	return out, nil

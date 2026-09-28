@@ -6,7 +6,7 @@ package protocol
 import (
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
@@ -48,7 +48,7 @@ type OutcomeEnvelope struct {
 }
 
 func (o *OutcomeEnvelope) Digest() (run.Digest, error) {
-	return es.DigestCanonical(o)
+	return jsonstable.DigestCanonical(o)
 }
 
 // EncodeOutcome renders a sealed Outcome as the wire envelope: a model

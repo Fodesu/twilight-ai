@@ -39,6 +39,11 @@ type CommitSeq uint64
 // ledger's: it only enforces that one CommitID lands once.
 type CommitID string
 
+// CausationID is an opaque cross-domain lineage identifier. Its namespace and
+// meaning are owned by the domain or application that records it, never by
+// this package.
+type CausationID string
+
 // Epoch is a writer's fencing epoch, judged at Append.
 type Epoch uint64
 

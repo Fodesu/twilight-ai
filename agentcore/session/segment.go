@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/ledger"
 )
 
 // The Session lineage is a tree (agent-session.md section 8, SES-LIN-1):
@@ -32,9 +32,9 @@ type SegmentHeader struct {
 	// ID is the segment's identity: 128 random bits the kernel draws at
 	// Create, hex encoded. Nothing derives it, so two segments
 	// with otherwise equal records are two nodes (SES-WIR-4).
-	ID          SegmentID      `json:"id"`
-	Parent      *CommitRef     `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
-	CausationID es.CausationID `json:"causationId,omitempty"`
+	ID          SegmentID          `json:"id"`
+	Parent      *CommitRef         `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
+	CausationID ledger.CausationID `json:"causationId,omitempty"`
 	// Ext holds the module extension slots of the creation record, one raw
 	// value per module (SES-WIR-5); a reader that knows none of the modules
 	// keeps them.

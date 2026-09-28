@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/runtime"
@@ -174,7 +174,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 	p := PlanDigest(turnID, req.Preset.Digest, inputIDs)
 	commitID := session.CommitID(StartOperationDigest(sid, turnID, p))
 	runID := DeriveRunID(sid, turnID)
-	newRun, err := run.BuildNewRun(runID, es.CausationID(commitID))
+	newRun, err := run.BuildNewRun(runID, ledger.CausationID(commitID))
 	if err != nil {
 		return TurnResponse{}, err
 	}
