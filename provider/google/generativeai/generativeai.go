@@ -234,10 +234,6 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 		Body:    body,
 	})
 	if err != nil {
-		var apiErr *sdk.APIError
-		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %s", apiErr.Detail())
-		}
 		return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %w", err)
 	}
 
@@ -786,12 +782,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			var apiErr *sdk.APIError
-			if errors.As(err, &apiErr) {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %s", apiErr.Detail())})
-			} else {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %w", err)})
-			}
+			send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %w", err)})
 		}
 
 		flush()

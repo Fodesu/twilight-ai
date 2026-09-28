@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/felinics/twilight/sdk"
 )
 
 const (
@@ -98,7 +100,7 @@ func getToken(ctx context.Context, accessKey, secretKey, appKey string, httpClie
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return "", 0, fmt.Errorf("volcengine speech: token request status %d: %s", resp.StatusCode, string(b))
+		return "", 0, fmt.Errorf("volcengine speech: token request: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, b))
 	}
 
 	var result struct {

@@ -64,7 +64,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai transcription: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openai transcription: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
 	}
 
 	rawModels, err := decodeModelIDs(resp.Body)
@@ -152,7 +152,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai transcription: unexpected status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("openai transcription: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, respBody))
 	}
 
 	return decodeResponse(resp.Body)

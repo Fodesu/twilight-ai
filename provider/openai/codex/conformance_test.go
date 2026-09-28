@@ -95,9 +95,9 @@ func assertCodexRequest(t *testing.T, r *http.Request) {
 }
 
 // conformanceError is a provider-shaped failure. The Codex endpoint reports an
-// expired or invalid access token as a non-2xx JSON body, which FetchSSE turns
-// into *sdk.APIError (sse.go:58, fetch.go:184); the provider must surface
-// that as an error rather than an empty success (codex.go:378).
+// expired or invalid access token as a non-2xx JSON body, which utils.FetchSSE
+// promotes to *sdk.APIError (utils.parseAPIError); the provider must surface
+// that as an error rather than an empty success.
 func conformanceError(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)

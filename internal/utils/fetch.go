@@ -182,28 +182,6 @@ func buildURLWithQuery(baseURL, path string, query map[string]string) (string, e
 }
 
 func parseAPIError(resp *http.Response) *sdk.APIError {
-	body, _ := io.ReadAll(resp.Body)
-
-	apiErr := &sdk.APIError{
-		StatusCode: resp.StatusCode,
-		Status:     resp.Status,
-		RawBody:    body,
-	}
-
-	var parsed struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(body, &parsed) == nil {
-		switch {
-		case parsed.Error.Message != "":
-			apiErr.Message = parsed.Error.Message
-		case parsed.Message != "":
-			apiErr.Message = parsed.Message
-		}
-	}
-
-	return apiErr
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	return sdk.NewAPIError(resp.StatusCode, resp.Status, body)
 }

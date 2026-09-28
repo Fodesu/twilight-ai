@@ -195,7 +195,7 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg audioConfig)
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("volcengine speech: unexpected status %d: %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("volcengine speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, b))
 	}
 
 	// The Go JSON unmarshaler automatically base64-decodes []byte fields.

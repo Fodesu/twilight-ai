@@ -88,7 +88,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.SpeechModel, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai speech: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openai speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
 	}
 
 	rawModels, err := decodeModelIDs(resp.Body)
@@ -229,7 +229,7 @@ func (p *Provider) doRequest(ctx context.Context, model, text string, cfg audioC
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("openai speech: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openai speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
 	}
 	return resp.Body, nil
 }

@@ -76,8 +76,8 @@ func googleSSE(w http.ResponseWriter, chunks ...string) {
 
 // googleErrorHandler answers with the provider-shaped error body
 // generativeai_test.go:1544-1547 uses; utils.FetchJSON promotes a non-2xx
-// response carrying {"error":{...}} to an *sdk.APIError (fetch.go:93,
-// :184-208), which DoGenerate turns into a failure (generativeai.go:235-241).
+// response carrying {"error":{...}} to an *sdk.APIError (utils.parseAPIError),
+// which generativeai.DoGenerate surfaces as a failure.
 func googleErrorHandler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		assertGoogleRequest(t, r, "generateContent")

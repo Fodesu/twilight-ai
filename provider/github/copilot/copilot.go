@@ -145,10 +145,6 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 		Body:    wire,
 	})
 	if err != nil {
-		var apiErr *sdk.APIError
-		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %s", apiErr.Detail())
-		}
 		return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %w", err)
 	}
 
@@ -452,12 +448,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			var apiErr *sdk.APIError
-			if errors.As(err, &apiErr) {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %s", apiErr.Detail())})
-			} else {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %w", err)})
-			}
+			sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %w", err)})
 		}
 
 		sp.flush()

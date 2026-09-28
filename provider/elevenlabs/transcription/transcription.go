@@ -64,7 +64,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("elevenlabs transcription: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("elevenlabs transcription: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
 	}
 
 	rawModels, err := decodeTranscriptionModelsResponse(resp.Body)
@@ -170,7 +170,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("elevenlabs transcription: unexpected status %d: %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("elevenlabs transcription: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, b))
 	}
 
 	var payload struct {

@@ -170,7 +170,7 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg *audioConfig
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("minimax speech: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("minimax speech: %w", sdk.NewAPIError(resp.StatusCode, resp.Status, body))
 	}
 
 	var result t2aResponse
