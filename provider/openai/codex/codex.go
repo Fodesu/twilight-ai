@@ -85,7 +85,7 @@ func (p *Provider) ListModels(context.Context) ([]sdk.Model, error) {
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 	_, err := p.TestModel(ctx, Catalog()[0].ID)
 	if err != nil {
-		return classifyError(err)
+		return sdk.ClassifyProbeError(err)
 	}
 	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
 }

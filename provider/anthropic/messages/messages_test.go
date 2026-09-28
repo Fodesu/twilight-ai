@@ -36,6 +36,54 @@ func mustJSON(v any) json.RawMessage {
 	return encoded
 }
 
+// TestDoStreamUpstreamErrorExposesAPIError pins the classification contract
+// on the streaming path: a non-2xx answer surfaces as an ErrorPart whose
+// error still unwraps to *sdk.APIError.
+func TestDoStreamUpstreamErrorExposesAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer srv.Close()
+
+	p := messages.New(
+		messages.WithAPIKey("test-key"),
+		messages.WithBaseURL(srv.URL),
+	)
+
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
+		Messages: []sdk.Message{{
+			Role:    sdk.MessageRoleUser,
+			Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+
+	var streamErr error
+	for part := range sr {
+		if ep, ok := part.(*sdk.ErrorPart); ok {
+			streamErr = ep.Error
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected stream error for 429")
+	}
+	var apiErr *sdk.APIError
+	if !errors.As(streamErr, &apiErr) {
+		t.Fatalf("errors.As(*sdk.APIError) = false, err = %v", streamErr)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusTooManyRequests)
+	}
+	if apiErr.Message != "rate limited" {
+		t.Errorf("Message = %q, want %q", apiErr.Message, "rate limited")
+	}
+}
+
 // TestDoGenerateUpstreamErrorExposesAPIError pins the classification
 // contract: a non-2xx upstream answer crosses the provider boundary as an
 // *sdk.APIError reachable with errors.As, so callers above the provider can

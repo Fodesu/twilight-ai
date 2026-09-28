@@ -4,12 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
 	"strings"
-
-	"github.com/felinics/twilight/sdk"
 )
 
 const (
@@ -38,29 +34,6 @@ func generateID() string {
 		panic("openai-codex: generateID entropy failure: " + err.Error())
 	}
 	return fmt.Sprintf("call_%x", b)
-}
-
-func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *sdk.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
-			return &sdk.ProviderTestResult{
-				Status:  sdk.ProviderStatusUnhealthy,
-				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
-				Error:   err,
-			}
-		}
-		return &sdk.ProviderTestResult{
-			Status:  sdk.ProviderStatusUnhealthy,
-			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
-			Error:   err,
-		}
-	}
-	return &sdk.ProviderTestResult{
-		Status:  sdk.ProviderStatusUnreachable,
-		Message: fmt.Sprintf("connection failed: %s", err.Error()),
-		Error:   err,
-	}
 }
 
 func accountIDFromToken(token string) (string, error) {

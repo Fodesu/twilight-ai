@@ -3,7 +3,6 @@ package completions
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -158,7 +157,7 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 		Prepare: p.prepareRequest,
 	})
 	if err != nil {
-		return classifyError(err)
+		return sdk.ClassifyProbeError(err)
 	}
 	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
 }
@@ -174,8 +173,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	var apiErr *sdk.APIError
-	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+	if !sdk.IsStatus(err, http.StatusNotFound) {
 		return nil, fmt.Errorf("openai: test model request failed: %w", err)
 	}
 
@@ -746,28 +744,5 @@ func mapFinishReason(reason string) sdk.FinishReason {
 		return sdk.FinishReasonToolCalls
 	default:
 		return sdk.FinishReasonUnknown
-	}
-}
-
-func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *sdk.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
-			return &sdk.ProviderTestResult{
-				Status:  sdk.ProviderStatusUnhealthy,
-				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
-				Error:   err,
-			}
-		}
-		return &sdk.ProviderTestResult{
-			Status:  sdk.ProviderStatusUnhealthy,
-			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
-			Error:   err,
-		}
-	}
-	return &sdk.ProviderTestResult{
-		Status:  sdk.ProviderStatusUnreachable,
-		Message: fmt.Sprintf("connection failed: %s", err.Error()),
-		Error:   err,
 	}
 }

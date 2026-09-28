@@ -231,13 +231,6 @@ func (p *Provider) doRequest(ctx context.Context, endpoint, text string, cfg *au
 	if resp.StatusCode != http.StatusOK {
 		apiErr := sdk.NewAPIErrorFromResponse(resp)
 		_ = resp.Body.Close()
-		requestID := resp.Header.Get("x-request-id")
-		if requestID == "" {
-			requestID = resp.Header.Get("request-id")
-		}
-		if requestID != "" {
-			return nil, fmt.Errorf("elevenlabs speech: %w [request_id=%s]", apiErr, requestID)
-		}
 		return nil, fmt.Errorf("elevenlabs speech: %w", apiErr)
 	}
 	return resp.Body, nil

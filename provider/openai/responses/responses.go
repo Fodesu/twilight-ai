@@ -3,7 +3,6 @@ package responses
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -106,7 +105,7 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 		Prepare: p.prepareRequest,
 	})
 	if err != nil {
-		return classifyError(err)
+		return sdk.ClassifyProbeError(err)
 	}
 	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
 }
@@ -122,8 +121,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	var apiErr *sdk.APIError
-	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+	if !sdk.IsStatus(err, http.StatusNotFound) {
 		return nil, fmt.Errorf("openai-responses: test model request failed: %w", err)
 	}
 
@@ -188,7 +186,7 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	}
 
 	if resp.Error != nil {
-		return sdk.ModelResult{}, fmt.Errorf("openai-responses: api error [%s]: %s", resp.Error.Code, resp.Error.Message)
+		return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed [%s]: %s", resp.Error.Code, resp.Error.Message)
 	}
 
 	return p.parseResponse(resp)

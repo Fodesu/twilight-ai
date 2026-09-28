@@ -17,6 +17,7 @@ import (
 func TestFetchJSONNon2xxExposesAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req-123")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
 	}))
@@ -38,5 +39,8 @@ func TestFetchJSONNon2xxExposesAPIError(t *testing.T) {
 	}
 	if apiErr.Message != "rate limited" {
 		t.Errorf("Message = %q, want %q", apiErr.Message, "rate limited")
+	}
+	if apiErr.RequestID != "req-123" {
+		t.Errorf("RequestID = %q, want %q", apiErr.RequestID, "req-123")
 	}
 }

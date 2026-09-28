@@ -3,6 +3,7 @@ package sdk
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,7 +36,12 @@ type APIError struct {
 	StatusCode int    `json:"statusCode"`
 	Status     string `json:"status"`
 	Message    string `json:"message"`
-	RawBody    []byte `json:"-"`
+	// RequestID is the upstream request ID from the response headers
+	// (x-request-id or request-id), the key support teams use to trace a
+	// failure. Error() omits it to keep messages stable; log pipelines
+	// should record this field.
+	RequestID string `json:"requestId,omitempty"`
+	RawBody   []byte `json:"-"`
 }
 
 func (e *APIError) Error() string {
@@ -88,7 +94,21 @@ func NewAPIError(statusCode int, status string, body []byte) *APIError {
 func NewAPIErrorFromResponse(resp *http.Response) *APIError {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, apiErrorReadBudget))
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, apiErrorMaxBodyBytes))
-	return NewAPIError(resp.StatusCode, resp.Status, body)
+	e := NewAPIError(resp.StatusCode, resp.Status, body)
+	for _, h := range []string{"x-request-id", "request-id"} {
+		if v := resp.Header.Get(h); v != "" {
+			e.RequestID = v
+			break
+		}
+	}
+	return e
+}
+
+// IsStatus reports whether err carries an APIError with the given HTTP
+// status code.
+func IsStatus(err error, code int) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == code
 }
 
 // truncateAPIErrorBody returns b as a string, capped at

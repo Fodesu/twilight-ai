@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -20,6 +21,34 @@ type ProviderTestResult struct {
 	Status  ProviderStatus
 	Message string
 	Error   error
+}
+
+// ClassifyProbeError maps an error from a provider health-check probe to a
+// ProviderTestResult: an APIError carrying 401/403 is an authentication
+// failure, any other APIError is a service error, and anything else means
+// the endpoint was unreachable. Every provider's Test reports identical
+// semantics through this single helper.
+func ClassifyProbeError(err error) *ProviderTestResult {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
+			return &ProviderTestResult{
+				Status:  ProviderStatusUnhealthy,
+				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
+				Error:   err,
+			}
+		}
+		return &ProviderTestResult{
+			Status:  ProviderStatusUnhealthy,
+			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
+			Error:   err,
+		}
+	}
+	return &ProviderTestResult{
+		Status:  ProviderStatusUnreachable,
+		Message: fmt.Sprintf("connection failed: %s", err.Error()),
+		Error:   err,
+	}
 }
 
 // ModelTestResult holds the result of a model support check.
