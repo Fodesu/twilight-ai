@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -42,7 +41,7 @@ func generateID() string {
 }
 
 func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if errors.As(err, &apiErr) {
 		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
 			return &sdk.ProviderTestResult{

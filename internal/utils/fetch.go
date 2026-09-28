@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/felinics/twilight/sdk"
 )
 
 type RequestOptions struct {
@@ -18,36 +20,6 @@ type RequestOptions struct {
 	Query   map[string]string
 	Body    any
 	Prepare func(*http.Request) error
-}
-
-type APIError struct {
-	StatusCode int    `json:"status_code"`
-	Status     string `json:"status"`
-	Message    string `json:"message"`
-	RawBody    []byte `json:"-"`
-}
-
-func (e *APIError) Error() string {
-	if e.Message != "" {
-		return fmt.Sprintf("api error %d: %s", e.StatusCode, e.Message)
-	}
-	return fmt.Sprintf("api error %d: %s", e.StatusCode, e.Status)
-}
-
-// Detail returns the error message with the raw response body appended
-// when available, useful for diagnosing opaque upstream errors like
-// "Provider returned error".
-func (e *APIError) Detail() string {
-	base := e.Error()
-	if len(e.RawBody) == 0 {
-		return base
-	}
-	const maxBody = 1024
-	body := string(e.RawBody)
-	if len(body) > maxBody {
-		body = body[:maxBody] + "...(truncated)"
-	}
-	return fmt.Sprintf("%s [body: %s]", base, body)
 }
 
 func BuildRequest(ctx context.Context, opts *RequestOptions) (*http.Request, error) {
@@ -97,7 +69,7 @@ func BuildRequest(ctx context.Context, opts *RequestOptions) (*http.Request, err
 }
 
 // FetchJSON sends a JSON request and decodes the response into type T.
-// Non-2xx responses are returned as *APIError.
+// Non-2xx responses are returned as *sdk.APIError.
 func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOptions) (*T, error) {
 	if opts.Headers == nil {
 		opts.Headers = make(map[string]string)
@@ -130,7 +102,7 @@ func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOpt
 
 // FetchRaw sends a request and returns the raw *http.Response.
 // The caller is responsible for closing the response body.
-// Non-2xx responses are returned as *APIError (body already closed).
+// Non-2xx responses are returned as *sdk.APIError (body already closed).
 func FetchRaw(ctx context.Context, client *http.Client, opts *RequestOptions) (*http.Response, error) {
 	req, err := BuildRequest(ctx, opts)
 	if err != nil {
@@ -209,10 +181,10 @@ func buildURLWithQuery(baseURL, path string, query map[string]string) (string, e
 	return u.String(), nil
 }
 
-func parseAPIError(resp *http.Response) *APIError {
+func parseAPIError(resp *http.Response) *sdk.APIError {
 	body, _ := io.ReadAll(resp.Body)
 
-	apiErr := &APIError{
+	apiErr := &sdk.APIError{
 		StatusCode: resp.StatusCode,
 		Status:     resp.Status,
 		RawBody:    body,

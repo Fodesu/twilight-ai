@@ -167,7 +167,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("google: test model request failed: %w", err)
 	}
@@ -234,7 +234,7 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 		Body:    body,
 	})
 	if err != nil {
-		var apiErr *utils.APIError
+		var apiErr *sdk.APIError
 		if errors.As(err, &apiErr) {
 			return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %s", apiErr.Detail())
 		}
@@ -786,7 +786,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			var apiErr *utils.APIError
+			var apiErr *sdk.APIError
 			if errors.As(err, &apiErr) {
 				send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %s", apiErr.Detail())})
 			} else {
@@ -905,7 +905,7 @@ func functionResponseContent(out sdk.ToolOutput) any {
 }
 
 func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if errors.As(err, &apiErr) {
 		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
 			return &sdk.ProviderTestResult{
