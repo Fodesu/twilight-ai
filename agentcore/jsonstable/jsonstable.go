@@ -1,8 +1,9 @@
 // Package jsonstable provides immutable RFC 8785 (JCS) JSON values for agent
-// wire protocols. External bytes are parsed and canonicalized once at the
-// boundary, under the SDK's rule (sdk.CanonicalJSON); after that Value is
-// safe to store in commands, facts, and MachineState, and its bytes are the
-// digest preimage.
+// wire protocols, and the stable identity computed over them: Digest,
+// typed-payload digest preimages, and strict decoding. External bytes are
+// parsed and canonicalized once at the boundary, under the SDK's rule
+// (sdk.CanonicalJSON); after that Value is safe to store in commands, facts,
+// and MachineState, and its bytes are the digest preimage.
 package jsonstable
 
 import (
