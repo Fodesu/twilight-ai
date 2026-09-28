@@ -1,12 +1,4 @@
-// Package ledger is the commit vocabulary of an append-only event ledger: a
-// sequence of commits, each with a Seq, a CommitID naming the operation that
-// produced it, and events carrying a type and a canonical payload. Its errors
-// name the rules a store appends under: a commit lands at the ledger's
-// Head.Next or conflicts; a CommitID already present is the same operation
-// and is not written again; a commit illegal from the folded state is
-// rejected; a writer behind the ledger's epoch is fenced. Who may write is
-// judged from the writer's lease or epoch at Append and is never recorded on
-// the commit. The store only inserts: a commit is never rewritten or removed.
+// Package ledger is the commit vocabulary of an append-only event ledger.
 package ledger
 
 import (
