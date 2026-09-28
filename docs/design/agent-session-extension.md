@@ -247,7 +247,7 @@ group 含 Binding 时，Writer 在 `Append` 之前调用 `ledger.Activate(claimI
 
 Writer 在两种情况下进入失效状态，本次与之后的 `Commit` 都返回同一错误：
 
-- (a) `Append` 返回 `ErrOwnershipLost`——Session 级 fencing 在进程内的表现，调用方必须放弃该 Session 的执行，Runtime 与 Loop 对它的处理见 RUN-CMT-6；
+- (a) `Append` 返回 `ErrOwnershipLost`——Session 级 fencing 在进程内的表现，调用方必须放弃该 Session 的执行，Runtime 与 Loop 对它的处理见 agent-run.md「Run 语义提交的 ownership 围栏」；
 - (b) `Append` 返回结果未知的错误（kernel 的 `ErrHandleFailed`、IO 错误或其他非验证性错误）——Writer 以 `ErrUnknownOutcome` 失效，因为它的 head 与投影状态可能已落后于日志一组，继续提交会给临时行赋 kernel 已用过的 Seq。
 
 (b) 的失效限于该实例：宿主经 `Writers` 再次请求即得到重开的 Writer（见「Writers 负责 Writer 的唯一性」），`OpenWriter` 从日志重建，同一 group 的重放由 kernel 的索引回答（落盘则 `AlreadyApplied`，未落盘则 `Applied`）。只有保证未写入的错误不致失效：kernel 的验证拒绝（`ErrInvalid`、`ErrNotFound`）与写入开始前的 ctx 错误；`ErrConflict` 按「幂等重放」报告为 `Conflict`。
@@ -361,7 +361,7 @@ Initial、Apply、StateCodec 必须 pure。Fold 以 commit 为单位：一个 co
 
 ### 写入与读取的权限不对称
 
-`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 RUN-CMT-2），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
+`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 agent-run.md「machine 投影」），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
 
 ### 缓存写入尽力而为
 

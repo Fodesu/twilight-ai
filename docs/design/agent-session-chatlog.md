@@ -134,7 +134,7 @@ type Entry struct {
 
 ### assistant 条目
 
-assistant 条目是 `ModelStepCompleted` 的结构投影：`AssistantID = StepID`，`ResultDigest` 等于事实记录的 digest；同 commit 的 `ToolStepOpened{Source: StepID}` 把 `Calls[i].CallID` 按序补入 `CallIDs`，条目 digest 随之重算。文本、reasoning 与 tool call 参数不在条目里，它们在 `ResultDigest` 命名的冻结 `ModelResult` 中（RUN-WIR-4）。
+assistant 条目是 `ModelStepCompleted` 的结构投影：`AssistantID = StepID`，`ResultDigest` 等于事实记录的 digest；同 commit 的 `ToolStepOpened{Source: StepID}` 把 `Calls[i].CallID` 按序补入 `CallIDs`，条目 digest 随之重算。文本、reasoning 与 tool call 参数不在条目里，它们在 `ResultDigest` 命名的冻结 `ModelResult` 中（见 agent-run.md「内容只以 digest 进入 fact」）。
 
 ### tool_result 条目与 supersede
 
@@ -156,7 +156,7 @@ Parts 的 wire 是 discriminated union：Decode 先检查 object、discriminator
 
 ### Binding 提取器
 
-本模块提供 `PartsExtractor`，实现 `extension.BindingExtractor`，按 appearance order 返回 summary 中 ReferencePart 的 BindingID，随 `summary` 的 EventDefinition 声明。`tool_result_superseded` 声明另一提取器：`OutputDigest` 非空时返回 `runmod.FrozenBindingID(OutputDigest)`，替换正文由 Application 经 run 的 `frozen.Store` 以 `tool_output` 信封存入，与 Run 事实命名的正文走同一 Binding 派生与 claim（RUN-WIR-4）。
+本模块提供 `PartsExtractor`，实现 `extension.BindingExtractor`，按 appearance order 返回 summary 中 ReferencePart 的 BindingID，随 `summary` 的 EventDefinition 声明。`tool_result_superseded` 声明另一提取器：`OutputDigest` 非空时返回 `runmod.FrozenBindingID(OutputDigest)`，替换正文由 Application 经 run 的 `frozen.Store` 以 `tool_output` 信封存入，与 Run 事实命名的正文走同一 Binding 派生与 claim（见 agent-run.md「内容只以 digest 进入 fact」）。
 
 ### Digest domain
 

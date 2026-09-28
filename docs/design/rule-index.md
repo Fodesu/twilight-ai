@@ -128,3 +128,57 @@
 | CHT-CTX-1 | ContextFold 纯函数：chatlog+run 事件 → 经 supersession/compaction 处理的有序条目；不读 ContentStore | agent-session-chatlog.md · ContextFold 的输入输出 |
 | CHT-CTX-2 | fold 执行 ID 单次创建、CallIDs 补入、原位 replacement；只含已 delivered 的 Input | agent-session-chatlog.md · ContextFold 的规则 |
 | CHT-MAT-1 | materializer 是 IO 边界：每 digest 至多读一次，正文缺失返回 frozen.ErrMissing 不影响投影 | agent-session-chatlog.md · materializer 是 IO 边界 |
+
+## agent-run.md
+
+| ID | 一句话规则 | 位置 |
+|---|---|---|
+| RUN-SCP-1 | agentcore/run 只定义 Run 的 identity/事实/状态/命令/状态转移；子包分协议层与执行层，协议层不引用执行层 | agent-run.md · 包分层：协议层与执行层 |
+| RUN-SCP-2 | Run 是 first-party Module，不知道上层 Turn；Requires 为空，不写其他模块的事件 | agent-run.md · Run 不知道它的上层实体 |
+| RUN-WIR-1 | identity 非空稳定；EffectID 派生；start/settlement/recovery CommandID 以 EffectID 为 preimage；settlement 事实自足指认 effect | agent-run.md · effect 身份与 settlement 的指认 |
+| RUN-WIR-2 | 事实是 Session event，第一层带 runId 与 v；codec 历史按版本保留并 upcast，已发布 codec 永不删除 | agent-run.md · 事实的 wire 形状与 codec 历史 |
+| RUN-WIR-3 | 一个 command 恰产生一组事件（同一 CommitID）；事件无独立 EventID，Seq 即身份 | agent-run.md · command 与事件组一一对应 |
+| RUN-WIR-4 | 内容与执行状态分离，fact 只留 digest；正文经信封存 frozen.Store，digest 即 cas Key | agent-run.md · 内容只以 digest 进入 fact |
+| RUN-NEW-1 | run_created 是首个事实，初始状态确定；同 RunID 第二条 created 为 Evolve 错误 | agent-run.md · run_created 是首个事实 |
+| RUN-NEW-2 | FoldRun 按 Seq 折叠完整事实序列重建状态，是权威读取 | agent-run.md · FoldRun 是权威读取 |
+| RUN-MCH-1 | MachineState 是 Progress/Inbox/Effects/End 四维度折叠；Usage/Result 是投影；terminal 吸收未幂等命令 | agent-run.md · MachineState 是四个维度的折叠 |
+| RUN-MCH-2 | ToolCallBinding 冻结 call 身份；Decide 校验派生值；未知工具收束为 lookup failure；Unknown outcome 记 ToolCallFailed(Unknown) | agent-run.md · ToolCallBinding 冻结 call 身份 |
+| RUN-MCH-3 | Decide 执行全部验证并返回完整有序 fact 组；Evolve 机械折叠；terminal 组 RunEnded 在最后 | agent-run.md · Decide 与 Evolve 的分工 |
+| RUN-MCH-4 | Action 不持久化；AcceptInput 任意非终态到达、全有或全无；Waiting call 禁止 Start | agent-run.md · Action 不持久化，输入在任意非终态到达 |
+| RUN-CMT-1 | RunStore 按 RunID 寻址、Scope 由绑定决定；无 Create；终态 Run Load 读流重折、Commit 返回 ErrRunTerminal | agent-run.md · RunStore 的寻址与终态读取 |
+| RUN-CMT-2 | machine 投影只含非终态 Run；Record 经 FoldRun 权威重建并与投影比对；缓存可丢弃 | agent-run.md · machine 投影 |
+| RUN-CMT-3 | Commit 固定步骤：查重放→取状态→校验→hard CAS→Decide once→Evolve→出 batch | agent-run.md · Commit 的固定步骤 |
+| RUN-CMT-4 | Prepare 是 hard CAS（Base==Position）；其他 command call-local rebase；replay 判定先于 terminal check | agent-run.md · Prepare 是 hard CAS，其余命令 call-local rebase |
+| RUN-CMT-5 | 幂等键 (SessionID, CommitID)；同 CommandID 重放返回 AlreadyApplied 不再 Decide；EffectID 是 start/settlement/recovery CommandID 的 preimage | agent-run.md · 幂等键与重放判定 |
+| RUN-CMT-6 | Run 语义提交的 ownership fencing：settlement 必须经 Session Writer，跨进程迟到写入被 Epoch fencing 拒绝 | agent-run.md · Run 语义提交的 ownership 围栏 |
+| RUN-CMT-7 | 接管处置：RecoverInterrupted 一次性处置 Executing 目标，Reconciler 比较 Run 与 execution store 给出 keep/defer/redispatch/dispose | agent-run.md · 接管处置 |
+| RUN-CMT-8 | Run 六契约是无版本包级单值；identity/digest 预映像冻结；事实形状靠 payload 版本 v 演进 | agent-run.md · Run 协议不设版本 |
+| RUN-EXE-1 | Assignment 是 Owner 交给 Executor 的工作单元；AssignmentKey 是两者唯一连接；attempt 只由 Executor 持有 | agent-run.md · Assignment 是交给 Executor 的工作单元 |
+| RUN-EXE-2 | Outcome 是 Executor 的唯一回答；不能冻结的结果以 malformed_result 交付；每 Assignment 至多一个 authoritative Outcome | agent-run.md · Outcome 是 Executor 的唯一回答 |
+| RUN-EXE-3 | Dispatch 错误三分类（确定拒绝/Retryable/Unknown）；接受时 Prepare→持久化→Start；Attach 按 record 给 missing/active/orphaned/terminal | agent-run.md · Dispatch 与 Attach |
+| RUN-EXE-4 | Loop.Deliver 以 Outcome.Key 定位 Executing 目标并提交结算；找不到目标丢弃不写事实 | agent-run.md · Outcome 的结算 |
+| RUN-EXE-5 | start barrier 前经 Executor.Validate 校验工具/模型 Assignment；失败走 DeclineToolCall 或 ErrModelUnavailable，不产生外部效果 | agent-run.md · start barrier 之前的校验 |
+| RUN-EXE-6 | 恢复语义归 Executor（RecoverExecution/Dispose 两原语），触发归观察到 orphaned 的一方；Worker 不跑扫描循环 | agent-run.md · 恢复原语与恢复触发 |
+| RUN-EXE-7 | Dispatch 必须携带内联 payload；Attach/GetOutcome/Cancel 只按 key 定位；digest-only Assignment 仅限 Owner 内部重建 | agent-run.md · Assignment payload 必须内联 |
+| RUN-EXE-8 | v1 假设同构 worker 池与 loopback 信任域；不规定推送通道；colocated 也经 Worker 与 record store | agent-run.md · 部署说明 |
+| RUN-EXE-9 | ExecutionRef 是 attempt 的物理绑定；Prepare 幂等确定、Restart 分配下一代；Replay 裁决归 Worker | agent-run.md · ExecutionRef 与 Restart |
+| RUN-EXE-10 | backend 选择在 Dispatch 时经 Route 表评估一次并以 execution_bound 持久化；ledger 是 execution identity 唯一来源 | agent-run.md · backend 选择与 ledger 的权威性 |
+| RUN-EXE-11 | Replay（工具级能力）与重试（失败级属性）分离；RetryAllowed 表示无不可重复外部效果；Worker 按 RetryBudget 经 Restart 重发 | agent-run.md · 失败分类与重试 |
+| RUN-EXE-12 | 进度帧是临时观察：内存环形缓冲、reset/end 帧、Generation 递增；帧不是事实 | agent-run.md · 进度帧 |
+| RUN-EXE-13 | 回收由 Owner 确认驱动（Acknowledge）；确认后 record 对 Attach 为 terminal、GetOutcome 为 ErrOutcomeCollected；record 不删除 | agent-run.md · 结算确认 |
+| RUN-EXE-14 | Execution Ledger 是第二个 event-sourced authority；Seq/CommitID/写前折叠三规则与 Session 相同；租约行是 fence authority | agent-run.md · Execution Ledger |
+| RUN-EXE-15 | 重派由 dispatch ledger 记录 planned/dispatched/given_up；先记后派；RedispatchMissing 要求端口与 ledger 同时装配 | agent-run.md · 重派与 dispatch ledger |
+| RUN-EXE-16 | Abort tombstone：execution_accepted 与 execution_aborted 争 Seq 0；aborted 的 key Dispatch/GetOutcome 拒绝，Acknowledge/Recover/Cancel 无操作 | agent-run.md · Abort tombstone：同一 EffectID 的接受与关闭互斥 |
+| RUN-EXE-17 | GetOutcome（读取）与 Settlements（通知）分离；通知不携带 Outcome、丢失由读取兜底；全部通知源共用一个 notice.Ring | agent-run.md · 读取与通知分离 |
+| RUN-LOP-1 | Settings 来自 AgentPreset；Scheduling 冻结在 ToolStepOpened 上；MalformedRetries 决定畸形结果处置 | agent-run.md · Settings 来自 AgentPreset |
+| RUN-LOP-2 | NeedModelRequest 经 Plan/Freeze/验证后提交 Prepare（command 携带本体）；stale 后重新 Load；业务停止用 CancelRun | agent-run.md · NeedModelRequest 的规划与提交 |
+| RUN-LOP-3 | StartModelCall 在 Validate 后 Commit start barrier；CommitAccepted/AlreadyApplied 授予执行；Dispatch 拒绝按三类处置 | agent-run.md · StartModelCall 的 start barrier |
+| RUN-LOP-4 | Tool call 先 Validate 后逐 call Start+Dispatch；按冻结 Scheduling 分批；panic/Unknown 结算为该 call 的 Unknown | agent-run.md · Tool call 的校验、派发与结算 |
+| RUN-LOP-5 | 结算使用独立 control context；ErrOwnershipLost 是终止性错误；业务停止先 CancelRun 再取消 ctx | agent-run.md · 结算使用独立 control context |
+| RUN-LOP-6 | EventSink 是 realtime observation，可丢失/重复/断流；committed observation 携带完整组；sink 失败不影响 Commit | agent-run.md · EventSink 是实时观察 |
+| RUN-LOP-7 | ModelRef 是冻结请求中的执行身份；同一 Run 生命周期内 ResolveModel 必须解析为等价执行语义 | agent-run.md · ModelRef 是冻结请求中的执行身份 |
+| RUN-LOP-8 | WithdrawPrepared 提交 WithdrawPreparedStep 并释放本体；Loop 不为输入做其他事 | agent-run.md · WithdrawPrepared 放弃过期请求 |
+| RUN-LOP-9 | TargetResolver 按 effect 在 start barrier 前调用；target 不进 Run 事实，只存在于 Assignment 与 Execution Record | agent-run.md · target 解析按 effect 发生 |
+| RUN-LOP-10 | BeforePrepare 在 NeedModelRequest 时、PromptBuilder 读上下文前调用一次；经同一 Writer 改写上下文；不写 Run 事实 | agent-run.md · Prepare 之前的钩子 |
+| RUN-CMP-1 | digest 与派生 ID 预映像永久冻结；wire 变化以 payload 版本 v 发布；Evolve 只有一份 | agent-run.md · 兼容性 |
+| RUN-CMP-2 | SessionRunStore conformance 只断言 Run 语义；组原子性/所有权/幂等/缓存复用由 SES/EXT conformance 覆盖 | agent-run.md · conformance |
