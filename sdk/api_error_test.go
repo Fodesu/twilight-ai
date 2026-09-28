@@ -45,7 +45,7 @@ func TestAPIErrorError(t *testing.T) {
 }
 
 func TestAPIErrorErrorBodyTruncation(t *testing.T) {
-	err := &sdk.APIError{StatusCode: 502, RawBody: []byte(strings.Repeat("a", 2000))}
+	err := &sdk.APIError{StatusCode: 502, RawBody: []byte(strings.Repeat("a", 5000))}
 	got := err.Error()
 	const prefix = "api error 502: Bad Gateway [body: "
 	if !strings.HasPrefix(got, prefix) {
@@ -55,15 +55,15 @@ func TestAPIErrorErrorBodyTruncation(t *testing.T) {
 		t.Errorf("Error() = %q, want truncation marker", got)
 	}
 	excerpt := strings.TrimSuffix(strings.TrimPrefix(got, prefix), "...(truncated)]")
-	if len(excerpt) != 1024 {
-		t.Errorf("excerpt length = %d, want 1024", len(excerpt))
+	if len(excerpt) != 4096 {
+		t.Errorf("excerpt length = %d, want 4096", len(excerpt))
 	}
 }
 
 func TestAPIErrorErrorBodyTruncationUTF8(t *testing.T) {
 	t.Run("rune straddling cutoff is dropped", func(t *testing.T) {
-		// "中" is 3 bytes: a byte cut at 1024 would land inside it.
-		body := append([]byte(strings.Repeat("a", 1022)), []byte("中文")...)
+		// "中" is 3 bytes: a byte cut at 4096 would land inside it.
+		body := append([]byte(strings.Repeat("a", 4094)), []byte("中文")...)
 		got := (&sdk.APIError{StatusCode: 500, RawBody: body}).Error()
 		if !utf8.ValidString(got) {
 			t.Errorf("Error() contains invalid UTF-8: %q", got)
@@ -72,7 +72,7 @@ func TestAPIErrorErrorBodyTruncationUTF8(t *testing.T) {
 	t.Run("pre-existing invalid byte is kept", func(t *testing.T) {
 		// A latin-1/GBK error page must not trigger over-truncation: the
 		// excerpt keeps its full byte budget even with a bad byte in it.
-		body := append([]byte{0xff}, []byte(strings.Repeat("a", 2000))...)
+		body := append([]byte{0xff}, []byte(strings.Repeat("a", 5000))...)
 		got := (&sdk.APIError{StatusCode: 500, RawBody: body}).Error()
 		const marker = " [body: "
 		i := strings.Index(got, marker)
@@ -80,8 +80,8 @@ func TestAPIErrorErrorBodyTruncationUTF8(t *testing.T) {
 			t.Fatalf("Error() = %q, want body excerpt", got)
 		}
 		excerpt := strings.TrimSuffix(got[i+len(marker):], "...(truncated)]")
-		if len(excerpt) != 1024 {
-			t.Errorf("excerpt length = %d, want 1024", len(excerpt))
+		if len(excerpt) != 4096 {
+			t.Errorf("excerpt length = %d, want 4096", len(excerpt))
 		}
 	})
 }

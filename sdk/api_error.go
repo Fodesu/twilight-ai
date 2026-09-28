@@ -13,8 +13,11 @@ const (
 	// APIError retains; a misbehaving upstream cannot make an error value
 	// carry an unbounded buffer.
 	apiErrorMaxBodyBytes = 64 << 10
-	// apiErrorMaxBodyDisplay caps the body excerpt Error() appends.
-	apiErrorMaxBodyDisplay = 1024
+	// apiErrorMaxBodyDisplay caps the body excerpt Error() appends. Sized to
+	// keep whole the 1-3 KB error documents that message extraction misses
+	// (nested Google/Azure shapes); Message stays the uncapped primary
+	// channel and RawBody retains 64 KiB for programmatic access.
+	apiErrorMaxBodyDisplay = 4096
 )
 
 // APIError is the single error type for a non-2xx HTTP response from an
