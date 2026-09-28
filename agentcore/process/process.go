@@ -1,13 +1,11 @@
 // Package process is the dispatch ledger of one effect: the process
-// manager's own decisions between the Session (which records that an effect
-// was requested and how it settled) and the Executor (which records what it
-// accepted and ran). Whether an effect is outstanding is the Run's state,
-// whether the Executor holds an attempt is Attach's answer; neither is
-// repeated here. What only the process manager knows, and what must survive
-// its crash, is which redispatch it decided to make, whether that Dispatch
-// reached the Executor, and whether it gave up (RUN-EXE-15). The reconciler (agentcore/run/reconcile)
-// is the process manager: it reads the three sources and writes here before
-// it acts, so a decision made and a Dispatch sent cannot drift apart.
+// manager's own decisions. Whether an effect is outstanding is the Run's
+// state; whether a destination holds an attempt is answered by attaching
+// there; neither is repeated here. What only the process manager knows, and
+// what must survive its crash, is which redispatch it decided to make,
+// whether that dispatch reached the destination, and whether it gave up
+// (RUN-EXE-15). Each record is written before the act it decides, so a
+// decision made and a dispatch sent cannot drift apart.
 package process
 
 import (

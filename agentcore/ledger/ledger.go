@@ -1,16 +1,12 @@
-// Package ledger is the commit vocabulary every event-sourced authority of
-// the agent core shares below the Session kernel: an execution's ledger
-// (agentcore/executor/store) and an effect process's ledger
-// (agentcore/process) are built from it, in the Session's own terms. A
-// ledger is a sequence of commits; a commit has a Seq, a CommitID naming the
-// operation, and events with a type and a canonical payload. Who may write
-// is the store's concern, judged from the writer's lease or epoch at Append
-// and never recorded on the commit: provenance, where a domain needs it, is
-// a fact of its own. Three rules follow the Session kernel (SES-APP-4): a
-// commit's Seq is the ledger's Head.Next or the append conflicts; a CommitID
-// seen before is the same operation and is not written again; a commit is
-// folded before it is written, so a ledger never holds an illegal step. The
-// store only inserts: a commit is never rewritten or removed.
+// Package ledger is the commit vocabulary of an append-only event ledger: a
+// sequence of commits, each with a Seq, a CommitID naming the operation that
+// produced it, and events carrying a type and a canonical payload. Its errors
+// name the rules a store appends under: a commit lands at the ledger's
+// Head.Next or conflicts; a CommitID already present is the same operation
+// and is not written again; a commit illegal from the folded state is
+// rejected; a writer behind the ledger's epoch is fenced. Who may write is
+// judged from the writer's lease or epoch at Append and is never recorded on
+// the commit. The store only inserts: a commit is never rewritten or removed.
 package ledger
 
 import (
@@ -34,9 +30,8 @@ var (
 // CommitSeq is the position of a commit in one ledger.
 type CommitSeq uint64
 
-// CommitID names the operation a commit records; replaying it is recognised.
-// How an operation is named is the writing domain's rule, never the
-// ledger's: it only enforces that one CommitID lands once.
+// CommitID names the operation a commit records. How operations are named is
+// the writing domain's rule; the ledger enforces that one CommitID lands once.
 type CommitID string
 
 // CausationID is an opaque cross-domain lineage identifier. Its namespace and
@@ -50,7 +45,7 @@ type Epoch uint64
 // EventType names a fact.
 type EventType string
 
-// Event is one fact, the shape of a Session event.
+// Event is one fact committed to a ledger.
 type Event struct {
 	Type                EventType        `json:"type"`
 	RecordedAtUnixMilli int64            `json:"recordedAtUnixMilli"`

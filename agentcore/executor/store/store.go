@@ -1,12 +1,11 @@
 // Package store is the Executor's authority over one execution: the commit
 // ledger of an effect's attempts (RUN-EXE-3, RUN-EXE-9) and the lease that
-// fences its Worker. It speaks the vocabulary of the Session kernel — a
-// ledger of commits, each with a Seq and a CommitID, carrying events with a
-// type and a canonical payload — so that what is true
-// of a Session ledger is true here: the ledger is the only fact authority,
-// ExecutionState is its fold, a replayed command is recognised by its
-// CommitID, and a fenced writer's commit is refused by its Epoch. The Run
-// never reads this ledger; the two authorities meet only at AssignmentKey.
+// fences its writers. It speaks the shared commit vocabulary
+// (agentcore/ledger), so what is true of any commit ledger is true here:
+// the ledger is the only fact authority, ExecutionState is its fold, a
+// replayed command is recognised by its CommitID, and a fenced writer's
+// commit is refused by its Epoch. The Run never reads this ledger; the two
+// authorities meet only at AssignmentKey.
 package store
 
 import (
@@ -26,7 +25,7 @@ var (
 	// Assignment of the same key (RUN-EXE-3).
 	ErrAssignmentConflict = errors.New("executor/store: assignment conflict")
 	// ErrLeaseLost: the lease the commit was made under is no longer the
-	// key's lease — another Worker holds a later Epoch, or it expired.
+	// key's lease — another holder has a later Epoch, or it expired.
 	ErrLeaseLost = errors.New("executor/store: execution lease lost")
 	// The commit rules are the kernel's (agentcore/ledger).
 	ErrStateConflict  = ledger.ErrStateConflict
@@ -83,9 +82,9 @@ const (
 	EventOutcomeAcknowledged EventType = "outcome_acknowledged"
 )
 
-// Lease is a Worker's fenced hold on one execution (RUN-EXE-6). The store
-// is its authority: Acquire creates it under a new Epoch, Renew extends it,
-// and Append under it is refused once the key has a later Epoch.
+// Lease is a fenced hold on one execution (RUN-EXE-6). The store is its
+// authority: Acquire creates it under a new Epoch, Renew extends it, and
+// Append under it is refused once the key has a later Epoch.
 type Lease struct {
 	Key            effect.AssignmentKey
 	Owner          string
@@ -96,10 +95,10 @@ type Lease struct {
 // IsZero reports the absence of a lease: an unfenced Append.
 func (l Lease) IsZero() bool { return l.Owner == "" && l.Epoch == 0 }
 
-// ExecutionRef is the Executor's physical binding of the current attempt it
-// makes for one effect (RUN-EXE-9): the provider (backend) the execution was
-// handed to and that backend's opaque handle. It never leaves the Executor:
-// Agent Core addresses executions by AssignmentKey, and the Run records the
+// ExecutionRef is the physical binding of the current attempt made for one
+// effect (RUN-EXE-9): the provider (backend) the execution was handed to and
+// that provider's opaque handle. It never leaves the execution domain:
+// executions are addressed by AssignmentKey, and the Run records the
 // EffectID alone.
 type ExecutionRef struct {
 	Provider string `json:"provider"`
@@ -232,7 +231,7 @@ func LegalTransition(from, to effect.ExecutionStatus) bool {
 
 // Fenced reports whether an event may only be committed under the key's
 // lease. Acceptance and the abort tombstone precede any lease; settlement
-// by Dispose and the Owner's acknowledgement come from outside the Worker
+// by Dispose and the Owner's acknowledgement come from outside the lease
 // (RUN-EXE-6, RUN-EXE-13, RUN-EXE-16). Everything else is the lease
 // holder's.
 func Fenced(typ EventType) bool {

@@ -56,9 +56,8 @@ type TurnResponse struct {
 // the Session it commits to: the caller's ownership capability, so every
 // command lands on the same Writer, epoch and projection view as the other
 // domains' commands, and a stale owner is fenced by the Writer itself.
-// Driving a Run belongs to the driver (DRV): every method returns as
-// soon as its commit landed, with the response reflecting the committed
-// state.
+// Driving a Run is not this package's concern: every method returns as soon
+// as its commit landed, with the response reflecting the committed state.
 type Commands interface {
 	Start(context.Context, writer.Writer, StartRequest) (TurnResponse, error)
 	Deliver(context.Context, writer.Writer, DeliverRequest) (TurnResponse, error)

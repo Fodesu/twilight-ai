@@ -14,8 +14,7 @@ import (
 
 type (
 	SessionID string
-	// The commit vocabulary is the kernel's (agentcore/ledger), shared with
-	// every event-sourced authority of the agent core.
+	// The commit vocabulary is the kernel's (agentcore/ledger).
 	CommitID  = ledger.CommitID
 	EventType = ledger.EventType
 	// Epoch is the writer ownership generation of a stream, from 1.

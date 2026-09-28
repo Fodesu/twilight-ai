@@ -7,9 +7,7 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 )
 
-// The commit vocabulary is the kernel's (agentcore/ledger); the Session
-// kernel speaks those CommitSeq/Head/Event types directly and adds stream
-// attribution inside one Commit on top of them.
+// The commit vocabulary is the kernel's (agentcore/ledger).
 
 // CommitSeq is the position of one Commit in the ledger and the canonical
 // total order of the authority. Per-stream local positions are read
