@@ -1,13 +1,10 @@
 // Package writer is the single in-process write entry of one Session
-// (EXT-SCP-1). The Writer itself stays small: it reads the head, evaluates
-// the caller's decision against one transactional View, and appends the
-// commit atomically under the kernel's ownership fence and CommitID index.
-// Everything else that happens around a commit is a stage composed onto that
-// pipeline, each in its own file: encoding and stream affinity (encode.go),
-// artifact admission and retention claims (admission.go), transactional
-// projection folding and the projection cache (projector.go), observer
-// fan-out (observers.go). A new capability joins the pipeline as a stage,
-// not as a field of the Writer.
+// (EXT-SCP-1). A commit is a pipeline of stages, one per file: encoding and
+// stream affinity (encode.go), artifact admission and retention claims
+// (admission.go), projection folding and cache (projector.go), observer
+// fan-out (observers.go). The Writer itself reads the head, evaluates the
+// caller's decision against one transactional View, and appends under the
+// kernel's ownership fence and CommitID index.
 package writer
 
 import (
@@ -49,17 +46,14 @@ type SemanticGroup struct {
 type View interface {
 	Head() session.Head
 	Epoch() session.Epoch
-	// Header is the tip segment's header: the segment this Writer appends
-	// to, with whatever extension slots the module layer recorded when the segment
-	// was created.
+	// Header is the tip segment's header: the segment this Writer appends to.
 	Header() session.SegmentHeader
-	// Committed reports whether a commit is already in the ledger. It is
-	// answered from an index the kernel already keeps. An index read that
-	// fails returns the error; it is not reported as "not committed".
+	// Committed reports whether a commit is already in the ledger, from an
+	// index the kernel keeps. An index read failure returns the error; it is
+	// not reported as "not committed".
 	Committed(session.CommitID) (bool, error)
-	// LookupCommit returns the stored commit. It comes from storage when the
-	// kernel handle does not hold it, so a caller that only needs the answer
-	// uses Committed.
+	// LookupCommit returns the stored commit, reading it when the kernel
+	// handle does not hold it.
 	LookupCommit(session.CommitID) (session.Commit, bool, error)
 	// StreamHead reports whether this Session has written to a logical
 	// stream and the StreamSeq its next event takes (SES-REP-3).
@@ -82,11 +76,9 @@ const (
 )
 
 // CommitResult is the outcome of a Commit. Outcome carries the semantic
-// result and error is reserved for an infrastructure failure, so a caller must
-// branch on Outcome: CommitInvalid and CommitConflict are reported with a nil
-// error because they are answers, not failures. A configuration that cannot
-// serve the registry is not an answer -- OpenWriter rejects it up front.
-// Commit is the stored commit for applied and already_applied, zero otherwise.
+// result and error is reserved for an infrastructure failure: CommitInvalid
+// and CommitConflict are answers, reported with a nil error. Commit is the
+// stored commit for applied and already_applied, zero otherwise.
 type CommitResult struct {
 	Outcome CommitOutcome
 	Commit  session.Commit
@@ -101,8 +93,7 @@ type Writer interface {
 	Header() session.SegmentHeader
 	Commit(context.Context, CommitFn) (CommitResult, error)
 	Projections() extension.ProjectionReader
-	// OwnerExists reports whether a CommitID is in this ledger; artifact's
-	// reconciliation uses it through artifact.OwnerVerifier.
+	// OwnerExists reports whether the owner names a commit of this ledger.
 	OwnerExists(context.Context, artifact.ClaimOwner) (bool, error)
 	Close(context.Context) error
 }
@@ -112,10 +103,10 @@ type Writers interface {
 	Writer(context.Context, session.SessionID) (Writer, error)
 }
 
-// WritersConfig carries the deployment's projection cache and observers. Every
-// field is optional: with no cache the Writer folds every registered
-// projection from the beginning of the log and stores nothing; with no
-// observers nothing is notified.
+// WritersConfig carries the projection cache and observers. Every field is
+// optional: with no cache the Writer folds every registered projection from
+// the beginning of the log and stores nothing; with no observers nothing is
+// notified.
 type WritersConfig struct {
 	// Cache holds folded projection states, so a reopening Writer starts from
 	// one instead of refolding the whole log (EXT-PRJ-3).
@@ -129,8 +120,7 @@ type WritersConfig struct {
 }
 
 // sessionWriter is the Writer: the kernel handle (head, fence, CommitID and
-// stream index) plus the stages composed onto its commit pipeline. The tip
-// header and the head live on the handle; this value does not keep a copy.
+// stream index) plus the stages composed onto its commit pipeline.
 type sessionWriter struct {
 	mu       sync.Mutex
 	kernel   session.Handle
@@ -246,8 +236,7 @@ func (w *sessionWriter) Close(ctx context.Context) error {
 	}
 	w.mu.Lock()
 	var writes []cacheWrite
-	// An entry at an inherited boundary would never be started from
-	// (EXT-PRJ-3), so a tip without a commit of its own refreshes nothing.
+	// An entry at an inherited boundary is never started from (EXT-PRJ-3).
 	head := w.kernel.Head()
 	if extension.OwnBoundary(w.kernel.Header(), head) {
 		writes = w.projections.planRefresh(head, true)
@@ -269,9 +258,8 @@ func (v view) Head() session.Head            { return v.w.kernel.Head() }
 func (v view) Epoch() session.Epoch          { return v.w.kernel.Epoch() }
 func (v view) Header() session.SegmentHeader { return v.w.kernel.Header() }
 
-// Committed and LookupCommit are answered by the kernel, which already holds
-// the CommitID index Append needs (SES-REP-3/4): the Writer keeps no copy of
-// the log.
+// Committed and LookupCommit are answered by the kernel, which holds the
+// CommitID index Append needs (SES-REP-3/4).
 func (v view) Committed(id session.CommitID) (bool, error) { return v.w.kernel.Committed(id) }
 
 func (v view) LookupCommit(id session.CommitID) (session.Commit, bool, error) {
@@ -292,10 +280,9 @@ func (w *sessionWriter) Projections() extension.ProjectionReader { return memory
 
 // Commit is the pipeline: read (View) -> decide (fn) -> encode -> CommitID
 // replay check -> projection pre-fold -> retention claim -> Append -> advance
-// projections -> refresh cache / notify observers (EXT-WRT-1). The critical
-// section ends after Append and the state advance; cache writes and observer
-// notifications are derived work and run after the unlock (EXT-PRJ-7,
-// EXT-WRT-7).
+// projections -> refresh cache / notify observers (EXT-WRT-1). Cache writes
+// and observer notifications run after the Writer's lock is released
+// (EXT-PRJ-7, EXT-WRT-7).
 func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, error) {
 	if fn == nil {
 		return CommitResult{}, errors.New("writer: nil fn")
@@ -352,9 +339,8 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		return CommitResult{Outcome: CommitAlreadyApplied, Commit: existing}, nil
 	}
 	// Projections must accept the commit before anything is persisted. The
-	// provisional commit is what a reader folds too: the kernel assigns
-	// only Seq inside Append, and nothing a projection may read differs
-	// between the two paths.
+	// provisional commit is what a reader folds: the kernel assigns only Seq
+	// inside Append.
 	provisional := session.Proposal{CommitID: group.CommitID, Batches: batches}.At(w.kernel.Head().Next)
 	// Only an authoritative projection's fold refuses the commit; a derived
 	// one that cannot fold is marked unhealthy once the commit lands.
@@ -384,12 +370,10 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		if appendOutcomeKnown(err) {
 			return CommitResult{}, err // rejected before any write; the Writer's state still matches the log
 		}
-		// The claim stays active until reopening can verify the owner commit.
-		// Anything else leaves the log's content unknown to this Writer: its
-		// head and folded states may be one commit behind what is on disk, and
-		// continuing would assign Seqs the kernel has already used. Fail
-		// closed; a reopened Writer rebuilds from the log and a replay of the
-		// same commit is answered by the kernel's index (EXT-WRT-4).
+		// The claim stays active until reopening can verify the owner
+		// commit. Anything else leaves the log's content unknown to this
+		// Writer: fail closed; a replay of the same commit is answered by
+		// the kernel's index (EXT-WRT-4).
 		w.lost = &extension.Error{Code: extension.ErrUnknownOutcome, Detail: err.Error()}
 		return CommitResult{}, w.lost
 	}

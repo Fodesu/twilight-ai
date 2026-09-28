@@ -13,9 +13,7 @@ import (
 )
 
 // Admission supplies Binding admission and the claim ledger. Both may be nil
-// while no committed group actually references an artifact: an event type
-// declaring Bindings only means its payloads *may* carry references, so a
-// deployment that never does needs neither.
+// while no committed group references an artifact.
 type Admission struct {
 	Bindings artifact.BindingResolver
 	Ledger   artifact.RetentionLedger

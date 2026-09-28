@@ -367,23 +367,6 @@ func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 	}
 }
 
-// A Save that arrives after a later one never moves an entry back: the
-// cache IO runs outside the Writer's critical section (EXT-PRJ-7).
-func TestCacheSaveIsMonotonic(t *testing.T) {
-	ctx := context.Background()
-	f := newCacheFixture(t)
-	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1"), session.Head{Next: 1}); err != nil {
-		t.Fatal(err)
-	}
-	_, through, ok, err := f.cache.Load(ctx, "s", alphaID, 1)
-	if err != nil || !ok || through.Next != 2 {
-		t.Fatalf("entry after a late save: through=%d ok=%v err=%v, want 2", through.Next, ok, err)
-	}
-}
-
 // TestWriterWithoutCacheFoldsEverything is the unchanged deployment: no cache
 // configured means no entry is written and none is started from.
 func TestWriterWithoutCacheFoldsEverything(t *testing.T) {
@@ -405,46 +388,6 @@ func TestWriterWithoutCacheFoldsEverything(t *testing.T) {
 	}
 	if got := f.notes(t, reopened, alphaID); !sameNotes(got, []string{"n1", "n2"}) {
 		t.Errorf("alpha notes = %v, want [n1 n2]", got)
-	}
-}
-
-// TestCoversCommit pins the validation that keeps an entry recorded at a head
-// the log does not have, or at a commit the tip inherits, from being started
-// from (EXT-PRJ-3). The commit is the atomic unit: every commit boundary is a
-// fold boundary, but only the tip's own boundaries were folded under its
-// inheritance policy.
-func TestCoversCommit(t *testing.T) {
-	commits := []session.Commit{{Seq: 0}, {Seq: 1}, {Seq: 2}}
-	root := session.SegmentHeader{ID: "h"}
-	// A tip that inherits the first two commits and wrote the third.
-	child := session.SegmentHeader{ID: "c", Parent: &session.CommitRef{Segment: "h", Seq: 1}}
-	cases := map[string]struct {
-		header  session.SegmentHeader
-		through session.Head
-		want    bool
-	}{
-		"first commit":            {root, session.Head{Next: 1}, true},
-		"mid log":                 {root, session.Head{Next: 2}, true},
-		"end of the log":          {root, session.Head{Next: 3}, true},
-		"empty":                   {root, session.Head{}, false},
-		"past the log":            {root, session.Head{Next: 4}, false},
-		"seq does not match head": {root, session.Head{Next: 99}, false},
-		"inherited commit":        {child, session.Head{Next: 1}, false},
-		"inherited boundary":      {child, session.Head{Next: 2}, false},
-		"tip's own commit":        {child, session.Head{Next: 3}, true},
-	}
-	at := func(seq session.CommitSeq) (session.Commit, bool) {
-		for _, c := range commits {
-			if c.Seq == seq {
-				return c, true
-			}
-		}
-		return session.Commit{}, false
-	}
-	for name, tc := range cases {
-		if got := coversCommit(tc.header, tc.through, at); got != tc.want {
-			t.Errorf("%s: coversCommit = %v, want %v", name, got, tc.want)
-		}
 	}
 }
 

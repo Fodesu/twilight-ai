@@ -56,9 +56,8 @@ type commitAt func(session.CommitSeq) (session.Commit, bool)
 // prepare chooses each registered projection's starting state: its cache
 // entry when the entry ends on a commit boundary the tip segment wrote
 // itself and still decodes, the initial state otherwise (EXT-PRJ-3). It
-// returns the earliest stitched CommitSeq any projection must fold from,
-// which is how much of the log the Writer reads: a clean Close leaves every
-// entry at the head and the read is empty (EXT-PRJ-5).
+// returns the earliest stitched CommitSeq any projection must fold from
+// (EXT-PRJ-5).
 func (p *projector) prepare(ctx context.Context, header session.SegmentHeader, at commitAt) (session.CommitSeq, error) {
 	from := ^session.CommitSeq(0)
 	for _, def := range p.registry.Projections() {
@@ -127,15 +126,12 @@ func (p *projector) lastGood(scope *extension.ProjectionScope, state any, commit
 	return state, nil
 }
 
-// startState returns the state this projection should begin folding from: the
-// cached one when its entry covers a commit boundary the tip segment wrote
-// itself and still decodes, otherwise nothing. Anything unusable -- absent,
-// corrupt, ahead of the log, recorded at a digest the log does not have, or
-// ending on an inherited commit -- falls back to a full fold, so a stale or
-// damaged cache only costs time (EXT-PRJ-3). It is the Writer's counterpart
-// of the store reader's startState. A fork, and a Session whose tip just
-// advanced, fold their inherited prefix on first open and cache the result
-// once they hold a commit of their own.
+// startState returns the state this projection should begin folding from:
+// the cached one when its entry covers a commit boundary the tip segment
+// wrote itself and still decodes, otherwise nothing. Anything unusable --
+// absent, corrupt, ahead of the log, recorded at a digest the log does not
+// have, or ending on an inherited commit -- falls back to a full fold
+// (EXT-PRJ-3).
 func (p *projector) startState(ctx context.Context, scope *extension.ProjectionScope, header session.SegmentHeader, at commitAt) (any, session.Head, bool) {
 	if p.cache == nil {
 		return nil, session.Head{}, false
@@ -233,12 +229,9 @@ type cacheWrite struct {
 	head  session.Head
 }
 
-// planRefresh selects the entries the deployment's policy wants refreshed and
-// records them as covering head. The caller holds the Writer's lock. The
-// writes themselves happen outside it (saveRefresh): a cache entry is derived
-// data with no ordering constraint against later commits (EXT-PRJ-7), and the
-// captured states are immutable (EXT-PRJ-1), so nothing in the critical
-// section depends on the IO.
+// planRefresh selects the entries the cache policy wants refreshed and
+// records them as covering head. The caller holds the Writer's lock; the
+// writes happen outside it (saveRefresh, EXT-PRJ-7).
 func (p *projector) planRefresh(head session.Head, closing bool) []cacheWrite {
 	if p.cache == nil {
 		return nil
@@ -257,9 +250,8 @@ func (p *projector) planRefresh(head session.Head, closing bool) []cacheWrite {
 	return writes
 }
 
-// saveRefresh performs planned writes. Best effort and never fatal: the cache
-// is derived data, so a failed Save only means a later Writer folds more
-// (EXT-PRJ-3); the policy then asks again at its next threshold.
+// saveRefresh performs planned writes. Best effort, never fatal: a failed
+// Save means a later Writer folds more (EXT-PRJ-3).
 func (p *projector) saveRefresh(ctx context.Context, writes []cacheWrite) {
 	for _, cw := range writes {
 		_ = extension.SaveProjection(ctx, p.cache, p.registry, p.sid, cw.key.id, cw.key.version, cw.state, cw.head)
