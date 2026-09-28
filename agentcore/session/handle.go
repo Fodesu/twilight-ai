@@ -54,7 +54,7 @@ func (w *ledgerHandle) Renew(ctx context.Context) error {
 	if w.failed != nil {
 		return w.failed
 	}
-	until, err := w.session.be.Renew(ctx, w.lease, w.opts.LeaseDuration)
+	until, err := w.session.st.Renew(ctx, w.lease, w.opts.LeaseDuration)
 	if err != nil {
 		return err
 	}
@@ -82,14 +82,14 @@ func (w *ledgerHandle) Committed(id CommitID) (bool, error) {
 		return false, failed
 	}
 	ctx := context.Background()
-	seq, ok, err := w.session.be.Locate(ctx, w.session.root.Tip, id)
+	seq, ok, err := w.session.st.Locate(ctx, w.session.root.Tip, id)
 	if err != nil {
 		return false, err
 	}
 	if ok && seq < head.Next {
 		return true, nil
 	}
-	return w.session.path.ContainsInherited(ctx, w.session.be, id)
+	return w.session.path.ContainsInherited(ctx, w.session.st, id)
 }
 
 // countStreams advances the cached head of each stream the commit wrote and
@@ -116,7 +116,7 @@ func (w *ledgerHandle) StreamHead(stream StreamRef) (StreamSeq, bool) {
 	n, known := w.streams[stream]
 	if !known {
 		var err error
-		n, err = w.session.be.StreamHead(context.Background(), w.session.root.Tip, stream, w.head.Next)
+		n, err = w.session.st.StreamHead(context.Background(), w.session.root.Tip, stream, w.head.Next)
 		if err != nil {
 			return 0, false
 		}
@@ -135,12 +135,12 @@ func (w *ledgerHandle) LookupCommit(id CommitID) (Commit, bool, error) {
 		return Commit{}, false, failed
 	}
 	ctx := context.Background()
-	if c, ok, err := w.session.be.LookupCommit(ctx, w.session.root.Tip, id); err != nil {
+	if c, ok, err := w.session.st.LookupCommit(ctx, w.session.root.Tip, id); err != nil {
 		return Commit{}, false, err
 	} else if ok && c.Seq < head.Next {
 		return c, true, nil
 	}
-	return w.session.path.LookupInherited(ctx, w.session.be, id)
+	return w.session.path.LookupInherited(ctx, w.session.st, id)
 }
 
 func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
@@ -163,7 +163,7 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 		return Commit{}, w.failed
 	}
 	c := staged.At(w.head.Next)
-	if err := w.session.be.Append(ctx, w.lease, w.session.root.Tip, c); err != nil {
+	if err := w.session.st.Append(ctx, w.lease, w.session.root.Tip, c); err != nil {
 		if IsCode(err, ErrHandleFailed) {
 			w.failed = err
 		}
@@ -176,5 +176,5 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 
 // Close releases the lease.
 func (w *ledgerHandle) Close(ctx context.Context) error {
-	return w.session.be.Release(ctx, w.lease)
+	return w.session.st.Release(ctx, w.lease)
 }

@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// Ledger is the kernel's Store over a Backend (SES 4 to 6, 8, 9): the
+// Ledger is the kernel's Store over a Storage (SES 4 to 6, 8, 9): the
 // Session lineage tree in code. A root stores the path of spans it reads
 // and names the last span's segment as its tip. Segments stay append-only
 // logs and keep one parent edge, recorded when the segment is created.
@@ -17,7 +17,7 @@ import (
 // span that remains; Collect truncates and removes from those same spans.
 // Every adapter gets these semantics from here and implements none of them.
 type Ledger struct {
-	be        Backend
+	st        Storage
 	segmentID func() (SegmentID, error)
 	// graph serializes this process's Create, Delete and Collect (SES-GC-4).
 	// Append and reads never take it. Across processes, TruncateSegment and
@@ -38,8 +38,8 @@ func WithSegmentIDSource(src func() (SegmentID, error)) LedgerOption {
 }
 
 // NewLedger returns the Store over be.
-func NewLedger(be Backend, opts ...LedgerOption) *Ledger {
-	l := &Ledger{be: be, segmentID: NewSegmentID}
+func NewLedger(st Storage, opts ...LedgerOption) *Ledger {
+	l := &Ledger{st: st, segmentID: NewSegmentID}
 	for _, o := range opts {
 		o(l)
 	}
@@ -110,7 +110,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	}
 	segment := Segment{Header: header}
 	root := SessionRecord{ID: req.SessionID, Tip: segment.ID(), CreatedAtUnixMilli: req.CreatedAtUnixMilli, Path: path}
-	if err := l.be.CreateSession(ctx, segment, root); err != nil {
+	if err := l.st.CreateSession(ctx, segment, root); err != nil {
 		// The parent was checked above. Another replica may have removed
 		// the parent segment or truncated a retained commit since
 		// (SES-GC-4). CreateSession re-checks both under the segment lock
@@ -178,7 +178,7 @@ func (l *Ledger) Record(ctx context.Context, sid SessionID) (SessionRecord, erro
 	if err := ctx.Err(); err != nil {
 		return SessionRecord{}, err
 	}
-	return l.be.Record(ctx, sid)
+	return l.st.Record(ctx, sid)
 }
 
 // LeaseOf is Store.LeaseOf (SES-OWN-5): the adapter's reading of the root's
@@ -187,7 +187,7 @@ func (l *Ledger) LeaseOf(ctx context.Context, sid SessionID) (Lease, bool, error
 	if err := ctx.Err(); err != nil {
 		return Lease{}, false, err
 	}
-	return l.be.LeaseOf(ctx, sid)
+	return l.st.LeaseOf(ctx, sid)
 }
 
 // ListLeases is Store.ListLeases (SES-OWN-5).
@@ -195,7 +195,7 @@ func (l *Ledger) ListLeases(ctx context.Context) ([]Lease, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return l.be.ListLeases(ctx)
+	return l.st.ListLeases(ctx)
 }
 
 // ExpiredLeases is Store.ExpiredLeases (SES-OWN-5/6).
@@ -203,7 +203,7 @@ func (l *Ledger) ExpiredLeases(ctx context.Context, limit int) ([]Lease, error) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return l.be.ExpiredLeases(ctx, limit)
+	return l.st.ExpiredLeases(ctx, limit)
 }
 
 // ExpiredLeasesOf selects from leases what ExpiredLeases returns: the
@@ -237,7 +237,7 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 	if err != nil {
 		return nil, err
 	}
-	lease, err := l.be.Acquire(ctx, sid, opts)
+	lease, err := l.st.Acquire(ctx, sid, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +248,7 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 	// tip of ten commits and one of a million.
 	head, err := s.repairTip(ctx)
 	if err != nil {
-		_ = l.be.Release(ctx, lease)
+		_ = l.st.Release(ctx, lease)
 		return nil, err
 	}
 	return &ledgerHandle{session: s, lease: lease, opts: opts, head: head, streams: make(map[StreamRef]StreamSeq)}, nil
@@ -322,7 +322,7 @@ func (l *Ledger) Delete(ctx context.Context, sid SessionID) (CollectReport, erro
 	defer l.graph.Unlock()
 	// DeleteRecord tombstones and drops this session's spans in one write.
 	// ErrOwned, ErrNotFound and ErrCorrupt return before that write.
-	rec, err := l.be.DeleteRecord(ctx, sid)
+	rec, err := l.st.DeleteRecord(ctx, sid)
 	if err != nil {
 		return CollectReport{}, err
 	}
@@ -347,16 +347,16 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	}
 	l.graph.Lock()
 	defer l.graph.Unlock()
-	if err := l.be.DropOrphanSpans(ctx); err != nil {
+	if err := l.st.DropOrphanSpans(ctx); err != nil {
 		return CollectReport{}, err
 	}
-	ids, err := l.be.ListSegments(ctx)
+	ids, err := l.st.ListSegments(ctx)
 	if err != nil {
 		return CollectReport{}, err
 	}
 	nodes := make(map[SegmentID]Segment, len(ids))
 	for _, id := range ids {
-		seg, err := l.be.Segment(ctx, id)
+		seg, err := l.st.Segment(ctx, id)
 		if err != nil {
 			if IsCode(err, ErrNotFound) {
 				continue
@@ -374,7 +374,7 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	report := CollectReport{Truncated: map[SegmentID]CommitSeq{}, Dropped: map[SegmentID][]CommitID{}}
 	reached := make(map[SegmentID]Bound, len(nodes))
 	for id := range nodes {
-		bound, ok, err := l.be.SpanBound(ctx, id)
+		bound, ok, err := l.st.SpanBound(ctx, id)
 		if err != nil {
 			return report, err
 		}
@@ -396,7 +396,7 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	// Segments no live path names go children first: the adapter refuses to
 	// remove a node a child's edge still names (SES-GC-4).
 	for _, id := range removalOrder(nodes, reached) {
-		if err := l.be.RemoveSegment(ctx, id); err != nil {
+		if err := l.st.RemoveSegment(ctx, id); err != nil {
 			if IsCode(err, ErrReferenced) {
 				continue
 			}
@@ -410,7 +410,7 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 // legacyBounds is the retention of roots whose path was never stored.
 // Roots that have spans are already visible through SpanBound.
 func (l *Ledger) legacyBounds(ctx context.Context) (map[SegmentID]Bound, error) {
-	roots, err := l.be.ListRecords(ctx)
+	roots, err := l.st.ListRecords(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -438,12 +438,12 @@ func (l *Ledger) legacyBounds(ctx context.Context) (map[SegmentID]Bound, error) 
 // the segment. A closed maximum truncates the segment to that commit.
 // ErrReferenced leaves the segment for a later Collect.
 func (l *Ledger) reclaim(ctx context.Context, id SegmentID, report *CollectReport) error {
-	bound, ok, err := l.be.SpanBound(ctx, id)
+	bound, ok, err := l.st.SpanBound(ctx, id)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		if err := l.be.RemoveSegment(ctx, id); err != nil {
+		if err := l.st.RemoveSegment(ctx, id); err != nil {
 			if IsCode(err, ErrReferenced) {
 				return nil
 			}
@@ -462,7 +462,7 @@ func (l *Ledger) clip(ctx context.Context, id SegmentID, cov Bound, report *Coll
 	if cov.Open {
 		return nil
 	}
-	head, dropped, err := l.be.TruncateSegment(ctx, id, cov.Through)
+	head, dropped, err := l.st.TruncateSegment(ctx, id, cov.Through)
 	if err != nil {
 		return err
 	}

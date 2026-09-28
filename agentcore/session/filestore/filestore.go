@@ -1,5 +1,5 @@
 // Package filestore is the JSONL-backed session.Store: the kernel Ledger over
-// a file Backend. Segments (the nodes of the lineage tree) live under
+// a file Storage. Segments (the nodes of the lineage tree) live under
 // segments/<id>/ as header.json plus log.jsonl, one committed line per own
 // Commit, index.jsonl, the segment's persisted CommitIndex (SES-REP-5) with
 // the byte range of each commit's line, verified.json, the head through
@@ -41,7 +41,7 @@ const (
 )
 
 // Store is the JSONL session.Store: the Ledger's methods are promoted from
-// the embedded kernel; the Backend operations below are what the file layout
+// the embedded kernel; the Storage operations below are what the file layout
 // implements.
 type Store struct {
 	*session.Ledger
@@ -1035,4 +1035,4 @@ func writeAtomic(path string, data []byte) error {
 }
 
 var _ session.Store = (*Store)(nil)
-var _ session.Backend = (*Store)(nil)
+var _ session.Storage = (*Store)(nil)

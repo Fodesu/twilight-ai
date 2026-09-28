@@ -18,7 +18,7 @@ import (
 
 // SessionStore is the session.Store over this database: the kernel Ledger
 // (every Session rule: Epoch fencing, lineage, fork, streams) over a
-// session.Backend that keeps segments, commits and roots in tables. Two
+// session.Storage that keeps segments, commits and roots in tables. Two
 // SessionStores over one database are two processes over one ledger, which
 // is what lets a Session's Turns run on different machines.
 //
@@ -28,7 +28,7 @@ import (
 // instead of the whole history on every activation.
 type SessionStore struct {
 	*session.Ledger
-	backend *sessionBackend
+	backend *sessionStorage
 }
 
 var _ extension.ProjectionCacheProvider = (*SessionStore)(nil)
@@ -66,19 +66,19 @@ func (c projectionCache) Save(ctx context.Context, sid session.SessionID, id ext
 // Sessions is the session.Store over this database; opts configure the
 // kernel Ledger.
 func (d *DB) Sessions(opts ...session.LedgerOption) *SessionStore {
-	b := &sessionBackend{d: d}
+	b := &sessionStorage{d: d}
 	return &SessionStore{Ledger: session.NewLedger(b, opts...), backend: b}
 }
 
-// sessionBackend is session.Backend over the session tables. Every write
+// sessionStorage is session.Storage over the session tables. Every write
 // holds the Session's advisory lock (Append, Acquire, Renew, Release,
 // CreateSession) or the segment's (Truncate, Remove). CreateSession also
 // takes each retained segment's lock, the same key Truncate holds, before
 // it inserts a span (SES-GC-4). The root row is the ownership authority
 // Append re-reads under the session lock (SES-OWN-2).
-type sessionBackend struct{ d *DB }
+type sessionStorage struct{ d *DB }
 
-var _ session.Backend = (*sessionBackend)(nil)
+var _ session.Storage = (*sessionStorage)(nil)
 
 func kerr(code session.ErrorCode, op string, sid session.SessionID, detail string) error {
 	return &session.Error{Code: code, Operation: op, SessionID: sid, Detail: detail}
@@ -88,7 +88,7 @@ func segmentNotFound(op string, id session.SegmentID) error {
 	return &session.Error{Code: session.ErrNotFound, Operation: op, Detail: fmt.Sprintf("segment %s not found", id)}
 }
 
-func (b *sessionBackend) header(ctx context.Context, q *db.Queries, op string, id session.SegmentID) (session.SegmentHeader, error) {
+func (b *sessionStorage) header(ctx context.Context, q *db.Queries, op string, id session.SegmentID) (session.SegmentHeader, error) {
 	raw, err := q.Segment(ctx, string(id))
 	if noRows(err) {
 		return session.SegmentHeader{}, segmentNotFound(op, id)
@@ -104,7 +104,7 @@ func (b *sessionBackend) header(ctx context.Context, q *db.Queries, op string, i
 }
 
 // head is the segment's Head: past its last commit, or its seed when empty.
-func (b *sessionBackend) head(ctx context.Context, q *db.Queries, header *session.SegmentHeader) (session.Head, error) {
+func (b *sessionStorage) head(ctx context.Context, q *db.Queries, header *session.SegmentHeader) (session.Head, error) {
 	last, err := q.SegmentHead(ctx, string(header.ID))
 	if err != nil {
 		return session.Head{}, err
@@ -127,7 +127,7 @@ func decodeCommits(op string, id session.SegmentID, seqs []int64, bodies []strin
 	return out, nil
 }
 
-func (b *sessionBackend) Segment(ctx context.Context, id session.SegmentID) (session.Segment, error) {
+func (b *sessionStorage) Segment(ctx context.Context, id session.SegmentID) (session.Segment, error) {
 	h, err := b.header(ctx, b.d.q, "segment", id)
 	if err != nil {
 		return session.Segment{}, err
@@ -135,7 +135,7 @@ func (b *sessionBackend) Segment(ctx context.Context, id session.SegmentID) (ses
 	return session.Segment{Header: h}, nil
 }
 
-func (b *sessionBackend) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
+func (b *sessionStorage) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
 	ids, err := b.d.q.SegmentIDs(ctx)
 	if err != nil {
 		return nil, err
@@ -147,7 +147,7 @@ func (b *sessionBackend) ListSegments(ctx context.Context) ([]session.SegmentID,
 	return out, nil
 }
 
-func (b *sessionBackend) ReadSegment(ctx context.Context, id session.SegmentID, from session.CommitSeq, limit uint32) ([]session.Commit, session.Head, bool, error) {
+func (b *sessionStorage) ReadSegment(ctx context.Context, id session.SegmentID, from session.CommitSeq, limit uint32) ([]session.Commit, session.Head, bool, error) {
 	q := b.d.q
 	header, err := b.header(ctx, q, "read", id)
 	if err != nil {
@@ -190,7 +190,7 @@ func (b *sessionBackend) ReadSegment(ctx context.Context, id session.SegmentID, 
 
 // ReadSegmentStream joins the stream index to the commits (SES-REP-2/5):
 // only the commits that carry the stream are read.
-func (b *sessionBackend) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.StreamRef, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
+func (b *sessionStorage) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.StreamRef, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
 	if _, err := b.header(ctx, b.d.q, "read", id); err != nil {
 		return nil, false, err
 	}
@@ -219,7 +219,7 @@ func (b *sessionBackend) ReadSegmentStream(ctx context.Context, id session.Segme
 	return commits, more, nil
 }
 
-func (b *sessionBackend) Locate(ctx context.Context, id session.SegmentID, cid session.CommitID) (session.CommitSeq, bool, error) {
+func (b *sessionStorage) Locate(ctx context.Context, id session.SegmentID, cid session.CommitID) (session.CommitSeq, bool, error) {
 	if _, err := b.header(ctx, b.d.q, "locate", id); err != nil {
 		return 0, false, err
 	}
@@ -233,7 +233,7 @@ func (b *sessionBackend) Locate(ctx context.Context, id session.SegmentID, cid s
 	return session.CommitSeq(seq), true, nil //nolint:gosec // G115: seq stored from a uint64
 }
 
-func (b *sessionBackend) LookupCommit(ctx context.Context, id session.SegmentID, cid session.CommitID) (session.Commit, bool, error) {
+func (b *sessionStorage) LookupCommit(ctx context.Context, id session.SegmentID, cid session.CommitID) (session.Commit, bool, error) {
 	if _, err := b.header(ctx, b.d.q, "lookup", id); err != nil {
 		return session.Commit{}, false, err
 	}
@@ -254,7 +254,7 @@ func (b *sessionBackend) LookupCommit(ctx context.Context, id session.SegmentID,
 // Index derives the segment's CommitIndex from its commits (SES-REP-5): the
 // rows are the index, so it is always current and PutIndex has nothing to
 // persist.
-func (b *sessionBackend) Index(ctx context.Context, id session.SegmentID) (session.CommitIndex, session.Head, error) {
+func (b *sessionStorage) Index(ctx context.Context, id session.SegmentID) (session.CommitIndex, session.Head, error) {
 	q := b.d.q
 	header, err := b.header(ctx, q, "index", id)
 	if err != nil {
@@ -288,7 +288,7 @@ func (b *sessionBackend) Index(ctx context.Context, id session.SegmentID) (sessi
 
 // Summarize is one aggregate over the segment's primary key (SES-REP-5):
 // the commits are the index, so the summary is always current.
-func (b *sessionBackend) Summarize(ctx context.Context, id session.SegmentID) (session.IndexSummary, session.Head, error) {
+func (b *sessionStorage) Summarize(ctx context.Context, id session.SegmentID) (session.IndexSummary, session.Head, error) {
 	header, err := b.header(ctx, b.d.q, "index", id)
 	if err != nil {
 		return session.IndexSummary{}, session.Head{}, err
@@ -310,7 +310,7 @@ func (b *sessionBackend) Summarize(ctx context.Context, id session.SegmentID) (s
 
 // StreamHead sums the stream's rows of the segment (SES-REP-3): one index
 // range, whatever the segment's length.
-func (b *sessionBackend) StreamHead(ctx context.Context, id session.SegmentID, stream session.StreamRef, before session.CommitSeq) (session.StreamSeq, error) {
+func (b *sessionStorage) StreamHead(ctx context.Context, id session.SegmentID, stream session.StreamRef, before session.CommitSeq) (session.StreamSeq, error) {
 	if _, err := b.header(ctx, b.d.q, "stream_head", id); err != nil {
 		return 0, err
 	}
@@ -321,12 +321,12 @@ func (b *sessionBackend) StreamHead(ctx context.Context, id session.SegmentID, s
 	return session.StreamSeq(n), nil //nolint:gosec // G115: a sum of batch sizes
 }
 
-func (b *sessionBackend) PutIndex(ctx context.Context, id session.SegmentID, _ session.CommitIndex) error {
+func (b *sessionStorage) PutIndex(ctx context.Context, id session.SegmentID, _ session.CommitIndex) error {
 	_, err := b.header(ctx, b.d.q, "index", id)
 	return err
 }
 
-func (b *sessionBackend) Append(ctx context.Context, lease session.Lease, id session.SegmentID, c session.Commit) error {
+func (b *sessionStorage) Append(ctx context.Context, lease session.Lease, id session.SegmentID, c session.Commit) error {
 	return b.d.tx(ctx, "session:"+string(lease.Session), func(q *db.Queries) error {
 		root, err := b.root(ctx, q, "append", lease.Session)
 		if err != nil {
@@ -374,7 +374,7 @@ func (b *sessionBackend) Append(ctx context.Context, lease session.Lease, id ses
 	})
 }
 
-func (b *sessionBackend) TruncateSegment(ctx context.Context, id session.SegmentID, through session.CommitSeq) (session.Head, []session.CommitID, error) {
+func (b *sessionStorage) TruncateSegment(ctx context.Context, id session.SegmentID, through session.CommitSeq) (session.Head, []session.CommitID, error) {
 	var head session.Head
 	var dropped []session.CommitID
 	err := b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
@@ -444,7 +444,7 @@ func spanCut(ctx context.Context, q *db.Queries, id session.SegmentID, through s
 // transaction; the parent edge is also a foreign key, so a child inserted
 // by another replica between the check and the delete makes the delete
 // fail rather than orphan the child.
-func (b *sessionBackend) RemoveSegment(ctx context.Context, id session.SegmentID) error {
+func (b *sessionStorage) RemoveSegment(ctx context.Context, id session.SegmentID) error {
 	return b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
 		referenced, err := q.SegmentReferenced(ctx, string(id))
 		if err != nil {
@@ -470,7 +470,7 @@ func (b *sessionBackend) RemoveSegment(ctx context.Context, id session.SegmentID
 // --- roots and leases (SessionStore) --------------------------------------------
 
 // root reads a live root; a tombstone is not found (SES-GC-1).
-func (b *sessionBackend) root(ctx context.Context, q *db.Queries, op string, sid session.SessionID) (db.SessionRoot, error) {
+func (b *sessionStorage) root(ctx context.Context, q *db.Queries, op string, sid session.SessionID) (db.SessionRoot, error) {
 	r, err := q.SessionRoot(ctx, string(sid))
 	if noRows(err) {
 		return db.SessionRoot{}, kerr(session.ErrNotFound, op, sid, "session not found")
@@ -506,7 +506,7 @@ func spanOf(segment string, from int64, through pgtype.Int8) session.Span {
 	}
 }
 
-func (b *sessionBackend) recordOf(ctx context.Context, q *db.Queries, r *db.SessionRoot) (session.SessionRecord, error) {
+func (b *sessionStorage) recordOf(ctx context.Context, q *db.Queries, r *db.SessionRoot) (session.SessionRecord, error) {
 	rows, err := q.SessionPathSpans(ctx, r.ID)
 	if err != nil {
 		return session.SessionRecord{}, err
@@ -525,7 +525,7 @@ func leaseOf(r *db.SessionRoot) session.Lease {
 	return session.Lease{Session: session.SessionID(r.ID), Epoch: session.Epoch(r.Epoch), Owner: r.Owner, UntilUnixMilli: r.LeaseUntil} //nolint:gosec // G115: epochs stored from a uint64
 }
 
-func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
+func (b *sessionStorage) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
 	err := b.d.tx(ctx, "session:"+string(rec.ID), func(q *db.Queries) error {
 		if existing, err := q.SessionRoot(ctx, string(rec.ID)); err == nil {
 			if existing.Deleted {
@@ -653,7 +653,7 @@ func requireRetainedCommits(ctx context.Context, q *db.Queries, sid session.Sess
 	return nil
 }
 
-func (b *sessionBackend) SpanBound(ctx context.Context, id session.SegmentID) (session.Bound, bool, error) {
+func (b *sessionStorage) SpanBound(ctx context.Context, id session.SegmentID) (session.Bound, bool, error) {
 	v, err := b.d.q.SegmentSpanBound(ctx, string(id))
 	if noRows(err) {
 		return session.Bound{}, false, nil
@@ -664,13 +664,13 @@ func (b *sessionBackend) SpanBound(ctx context.Context, id session.SegmentID) (s
 	return boundOf(v), true, nil
 }
 
-func (b *sessionBackend) DropOrphanSpans(ctx context.Context) error {
+func (b *sessionStorage) DropOrphanSpans(ctx context.Context) error {
 	return b.d.tx(ctx, "path-spans", func(q *db.Queries) error {
 		return q.DeleteOrphanPathSpans(ctx)
 	})
 }
 
-func (b *sessionBackend) Record(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {
+func (b *sessionStorage) Record(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {
 	r, err := b.root(ctx, b.d.q, "record", sid)
 	if err != nil {
 		return session.SessionRecord{}, err
@@ -678,7 +678,7 @@ func (b *sessionBackend) Record(ctx context.Context, sid session.SessionID) (ses
 	return b.recordOf(ctx, b.d.q, &r)
 }
 
-func (b *sessionBackend) ListRecords(ctx context.Context) ([]session.SessionRecord, error) {
+func (b *sessionStorage) ListRecords(ctx context.Context) ([]session.SessionRecord, error) {
 	rows, err := b.d.q.SessionRoots(ctx)
 	if err != nil {
 		return nil, err
@@ -703,7 +703,7 @@ func (b *sessionBackend) ListRecords(ctx context.Context) ([]session.SessionReco
 	return out, nil
 }
 
-func (b *sessionBackend) LeaseOf(ctx context.Context, sid session.SessionID) (session.Lease, bool, error) {
+func (b *sessionStorage) LeaseOf(ctx context.Context, sid session.SessionID) (session.Lease, bool, error) {
 	r, err := b.root(ctx, b.d.q, "lease", sid)
 	if err != nil {
 		return session.Lease{}, false, err
@@ -714,7 +714,7 @@ func (b *sessionBackend) LeaseOf(ctx context.Context, sid session.SessionID) (se
 	return leaseOf(&r), true, nil
 }
 
-func (b *sessionBackend) ListLeases(ctx context.Context) ([]session.Lease, error) {
+func (b *sessionStorage) ListLeases(ctx context.Context) ([]session.Lease, error) {
 	rows, err := b.d.q.HeldSessionRoots(ctx)
 	if err != nil {
 		return nil, err
@@ -728,7 +728,7 @@ func (b *sessionBackend) ListLeases(ctx context.Context) ([]session.Lease, error
 
 // ExpiredLeases reads the (owned, lease_until) index: the scan of a
 // replica pool costs the page it asks for, not the number of Sessions.
-func (b *sessionBackend) ExpiredLeases(ctx context.Context, limit int) ([]session.Lease, error) {
+func (b *sessionStorage) ExpiredLeases(ctx context.Context, limit int) ([]session.Lease, error) {
 	rows, err := b.d.q.ExpiredSessionRoots(ctx, db.ExpiredSessionRootsParams{Before: b.d.now().UnixMilli(), RowLimit: pageLimit(limit)})
 	if err != nil {
 		return nil, err
@@ -740,7 +740,7 @@ func (b *sessionBackend) ExpiredLeases(ctx context.Context, limit int) ([]sessio
 	return out, nil
 }
 
-func (b *sessionBackend) Acquire(ctx context.Context, sid session.SessionID, opts session.OpenOptions) (session.Lease, error) {
+func (b *sessionStorage) Acquire(ctx context.Context, sid session.SessionID, opts session.OpenOptions) (session.Lease, error) {
 	var out session.Lease
 	err := b.d.tx(ctx, "session:"+string(sid), func(q *db.Queries) error {
 		r, err := b.root(ctx, q, "open", sid)
@@ -768,7 +768,7 @@ func (b *sessionBackend) Acquire(ctx context.Context, sid session.SessionID, opt
 	return out, nil
 }
 
-func (b *sessionBackend) Renew(ctx context.Context, lease session.Lease, duration time.Duration) (int64, error) {
+func (b *sessionStorage) Renew(ctx context.Context, lease session.Lease, duration time.Duration) (int64, error) {
 	var until int64
 	err := b.d.tx(ctx, "session:"+string(lease.Session), func(q *db.Queries) error {
 		r, err := b.root(ctx, q, "renew", lease.Session)
@@ -793,7 +793,7 @@ func leaseUntil(now time.Time, d time.Duration) int64 {
 	return now.Add(d).UnixMilli()
 }
 
-func (b *sessionBackend) Release(ctx context.Context, lease session.Lease) error {
+func (b *sessionStorage) Release(ctx context.Context, lease session.Lease) error {
 	return b.d.tx(ctx, "session:"+string(lease.Session), func(q *db.Queries) error {
 		r, err := b.root(ctx, q, "close", lease.Session)
 		if err != nil {
@@ -809,7 +809,7 @@ func (b *sessionBackend) Release(ctx context.Context, lease session.Lease) error
 	})
 }
 
-func (b *sessionBackend) DeleteRecord(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {
+func (b *sessionStorage) DeleteRecord(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {
 	var rec session.SessionRecord
 	err := b.d.tx(ctx, "session:"+string(sid), func(q *db.Queries) error {
 		r, err := b.root(ctx, q, "delete", sid)

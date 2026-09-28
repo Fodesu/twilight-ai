@@ -149,10 +149,10 @@ type MaintenanceStore interface {
 	DeleteRecord(context.Context, SessionID) (SessionRecord, error)
 }
 
-// Backend is what an adapter implements: the three ports over one
+// Storage is what an adapter implements: the three ports over one
 // consistency domain, so Append can check a Lease atomically and
 // CreateSession can check its parent atomically (SES-GC-4).
-type Backend interface {
+type Storage interface {
 	SegmentStore
 	RootStore
 	MaintenanceStore

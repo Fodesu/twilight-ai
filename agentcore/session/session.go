@@ -23,13 +23,13 @@ type (
 
 // Session is one live root and its loaded path. Reads and fork-point
 // resolution go through it. Appending is a Handle, which keeps the lease and
-// the tip head on top of a Session. The value is tied to the Backend it was
+// the tip head on top of a Session. The value is tied to the Storage it was
 // loaded from. A stored path is loaded by reading each span's segment; a root
 // written before paths existed is assembled by walking parent edges.
 type Session struct {
 	root SessionRecord
 	path *LoadedPath
-	be   Backend
+	st   Storage
 }
 
 // ID is the Session's root identity.
@@ -52,7 +52,7 @@ func (l *Ledger) Load(ctx context.Context, sid SessionID) (*Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	root, err := l.be.Record(ctx, sid)
+	root, err := l.st.Record(ctx, sid)
 	if err != nil {
 		return nil, err
 	}
@@ -60,21 +60,21 @@ func (l *Ledger) Load(ctx context.Context, sid SessionID) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Session{root: root, path: path, be: l.be}, nil
+	return &Session{root: root, path: path, st: l.st}, nil
 }
 
 // materialize turns the root's stored path into a loaded path. An empty path
 // is a root written before paths were stored; its spans come from parent edges.
 func (l *Ledger) materialize(ctx context.Context, root SessionRecord) (*LoadedPath, error) {
 	if len(root.Path) == 0 {
-		return loadPathFromEdges(ctx, l.be, root.Tip)
+		return loadPathFromEdges(ctx, l.st, root.Tip)
 	}
 	if err := root.Path.Validate(root.Tip); err != nil {
 		return nil, newError(ErrCorrupt, "load", root.ID, err.Error())
 	}
 	a := &LoadedPath{Segments: make([]LoadedSpan, len(root.Path))}
 	for i, span := range root.Path {
-		seg, err := l.be.Segment(ctx, span.Segment)
+		seg, err := l.st.Segment(ctx, span.Segment)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +87,7 @@ func (l *Ledger) materialize(ctx context.Context, root SessionRecord) (*LoadedPa
 // edges when the root has none.
 func (l *Ledger) sessionPath(ctx context.Context, root SessionRecord) (Path, error) {
 	if len(root.Path) == 0 {
-		anc, err := loadPathFromEdges(ctx, l.be, root.Tip)
+		anc, err := loadPathFromEdges(ctx, l.st, root.Tip)
 		if err != nil {
 			return nil, err
 		}
@@ -102,17 +102,17 @@ func (l *Ledger) sessionPath(ctx context.Context, root SessionRecord) (Path, err
 // tipSegment reads the tip's creation record without walking its parents.
 // Header and Create's idempotency check need nothing else.
 func (l *Ledger) tipSegment(ctx context.Context, sid SessionID) (Segment, error) {
-	root, err := l.be.Record(ctx, sid)
+	root, err := l.st.Record(ctx, sid)
 	if err != nil {
 		return Segment{}, err
 	}
-	return l.be.Segment(ctx, root.Tip)
+	return l.st.Segment(ctx, root.Tip)
 }
 
 // ReadCommits returns the stitched commits of the Session from from,
 // inclusive, at most limit (0 = unlimited).
 func (s *Session) ReadCommits(ctx context.Context, from CommitSeq, limit uint32) (CommitPage, error) {
-	commits, head, more, err := s.path.Read(ctx, s.be, from, limit)
+	commits, head, more, err := s.path.Read(ctx, s.st, from, limit)
 	if err != nil {
 		return CommitPage{}, err
 	}
@@ -129,11 +129,11 @@ func (s *Session) ReadStream(ctx context.Context, stream StreamRef, lineage Stre
 }
 
 func (s *Session) collectStream(ctx context.Context, stream StreamRef, lineage StreamLineage, from StreamSeq, limit uint32) (StreamPage, error) {
-	commits, err := s.path.ReadStream(ctx, s.be, stream, lineage)
+	commits, err := s.path.ReadStream(ctx, s.st, stream, lineage)
 	if err != nil {
 		return StreamPage{}, err
 	}
-	head, err := s.path.tipHead(ctx, s.be)
+	head, err := s.path.tipHead(ctx, s.st)
 	if err != nil {
 		return StreamPage{}, err
 	}
@@ -161,7 +161,7 @@ func (s *Session) EdgeAt(ctx context.Context, seq CommitSeq) (CommitRef, bool, e
 	if !ok {
 		return CommitRef{}, false, nil
 	}
-	commits, _, _, err := s.be.ReadSegment(ctx, span.Segment.ID(), seq, 1)
+	commits, _, _, err := s.st.ReadSegment(ctx, span.Segment.ID(), seq, 1)
 	if err != nil {
 		return CommitRef{}, false, err
 	}
@@ -176,18 +176,18 @@ func (s *Session) EdgeAt(ctx context.Context, seq CommitSeq) (CommitRef, bool, e
 // a torn tail, so the head this returns is the head a new Handle starts from.
 func (s *Session) repairTip(ctx context.Context) (Head, error) {
 	tip := s.Tip()
-	summary, head, err := s.be.Summarize(ctx, tip.ID())
+	summary, head, err := s.st.Summarize(ctx, tip.ID())
 	if err != nil {
 		return Head{}, err
 	}
 	if summary.Valid(tip.Seed(), head) {
 		return head, nil
 	}
-	commits, head, _, err := s.be.ReadSegment(ctx, tip.ID(), tip.Seed().Next, 0)
+	commits, head, _, err := s.st.ReadSegment(ctx, tip.ID(), tip.Seed().Next, 0)
 	if err != nil {
 		return Head{}, err
 	}
-	if err := s.be.PutIndex(ctx, tip.ID(), BuildCommitIndex(tip.Header, commits)); err != nil {
+	if err := s.st.PutIndex(ctx, tip.ID(), BuildCommitIndex(tip.Header, commits)); err != nil {
 		return Head{}, err
 	}
 	return head, nil
