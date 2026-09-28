@@ -85,3 +85,25 @@
 | EXT-APP-1 | app module 可依赖 first-party 事件；解码后的当前类型即稳定消费面 | agent-session-extension.md · 承诺面 |
 | EXT-APP-2 | 投影范围规则双向保护；未注册模块的历史事件保留 payload、不参与折叠 | agent-session-extension.md · 隔离 |
 | EXT-APP-3 | 只有"持久、可重放、参与投影"的事实才建 module | agent-session-extension.md · 适用判据 |
+
+## agent-artifact.md
+
+| ID | 一句话规则 | 位置 |
+|---|---|---|
+| ART-SCP-1 | Core 不解释 ClaimOwner，不要求任何数据库、文件系统或 provider 实现 | agent-artifact.md · Core 不解释 ClaimOwner |
+| ART-SCP-2 | Core 范围 = Ref、Binding、capability、两态 RetentionLedger、SchemeDefinition 与 provider registry | agent-artifact.md · Core 的范围 |
+| ART-ID-1 | identity 非空、稳定、bytewise UTF-8 比较；Ref 不得含 credential、临时签名 URL 或进程 handle | agent-artifact.md · identity |
+| ART-REF-1 | LocatorIdentity=(Scheme, Authority, Key)；MediaType identity-bound 但 untrusted；同 locator 的 size/integrity 必须一致 | agent-artifact.md · locator、MediaType 与 integrity |
+| ART-REF-2 | cas 必须带 integrity；ExpiresAt 仅 Ephemeral；durability 顺序 Ephemeral < EventBound < Pinned，promotion 只升不降 | agent-artifact.md · durability 与 promotion |
+| ART-WIR-1 | WireVersion 冻结字段、omitted/拒绝策略与 digest preimage；v1 省略 optional empty、拒绝 null 与未知字段 | agent-artifact.md · WireVersion 与 wire codec |
+| ART-BND-1 | Binding immutable；BindingDigest 覆盖 separator、BindingID 与完整 RefWireIdentity；同 ID 只重建逐字段相同的 Binding | agent-artifact.md · Binding immutable |
+| ART-BND-2 | Resolver 校验 size/integrity/MediaType；Put durable ack 后返回、同 bytes 幂等；promotion 不重写旧 Binding | agent-artifact.md · Resolver 校验、Put 与 promotion 语义 |
+| ART-CAP-1 | capability 必须区分 missing/expired/unauthorized/corrupt/transient，并防护 key confusion、path traversal 等 | agent-artifact.md · capability boundary |
+| ART-CAP-2 | Scheme=resolution contract、Authority=逻辑 store、Key 由 scheme 解释；cas Key 逐字等于 Integrity | agent-artifact.md · scheme、authority 与 key |
+| ART-RET-1 | BindingSetBuilder.Build 是构造 BindingSet 的唯一算法；ledger 独立重算并精确验证传入 set | agent-artifact.md · BindingSet 的唯一构造算法 |
+| ART-RET-2 | claim 只接受 EventBound/Pinned；ClaimID 由 owner 与 set 派生；Active 是 GC root，未知 scheme 保守保留 | agent-artifact.md · claim 状态机 |
+| ART-RET-3 | ClaimsByOwner 用 watermark cursor 稳定枚举；GC 前经 OwnerVerifier 核对释放孤儿 claim | agent-artifact.md · 枚举、游标与回收前核对 |
+| ART-PRO-1 | provider registry 组合后 immutable；Verify 要求 scheme 注册、durability 支持、ValidateRef 通过与 binding 存在 | agent-artifact.md · provider registry 与 verified use |
+| ART-ARC-1 | manifest 为精确 canonical wire、只携带 Active claims；inspection 无损接受未知 scheme 但不建 Binding/claim | agent-artifact.md · manifest 与 inspection |
+| ART-ARC-2 | ImportActiveClaims 是 all-or-nothing 校验边界，不接受 Prepared/Released，逐字段相同幂等 | agent-artifact.md · verified import 的 all-or-nothing 边界 |
+| ART-PRO-2 | adapter 迁移保持 locator resolution 不变，以 generation/fence 防止旧位置提前回收 | agent-artifact.md · adapter 迁移不变量 |
