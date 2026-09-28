@@ -1,5 +1,5 @@
 // Package filestore is the JSONL-backed session.Store: the kernel Ledger over
-// a file Storage. Segments (the nodes of the lineage tree) live under
+// a file Storage. CreateSession writes the segment first and the root file last; a crash before the root leaves a segment no root names, which Collect removes. Segments (the nodes of the lineage tree) live under
 // segments/<id>/ as header.json plus log.jsonl, one committed line per own
 // Commit, index.jsonl, the segment's persisted CommitIndex (SES-REP-5) with
 // the byte range of each commit's line, verified.json, the head through

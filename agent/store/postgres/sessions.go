@@ -18,7 +18,7 @@ import (
 
 // SessionStore is the session.Store over this database: the kernel Ledger
 // (every Session rule: Epoch fencing, lineage, fork, streams) over a
-// session.Storage that keeps segments, commits and roots in tables. Two
+// session.Storage that keeps segments, commits and roots in tables. CreateSession's segment, spans and root are one transaction; the session foreign key is deferred to commit, so the root may be written last. Two
 // SessionStores over one database are two processes over one ledger, which
 // is what lets a Session's Turns run on different machines.
 //
