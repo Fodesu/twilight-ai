@@ -19,7 +19,7 @@ type SegmentStore interface {
 	// or past from, those that carry a batch of stream, in Seq order, at
 	// most limit of them (0 = unlimited), and whether more follow
 	// (SES-REP-2). The adapter narrows by the CommitIndex's stream counts
-	// (SES-REP-5), so the read touches only commits that carry the stream.
+	// (SES-REP-5).
 	ReadSegmentStream(ctx context.Context, id SegmentID, stream StreamRef, from CommitSeq, limit uint32) ([]Commit, bool, error)
 	// Locate reports whether the segment holds CommitID as its own commit,
 	// and at which Seq, from the CommitIndex alone (SES-REP-3/5);
@@ -32,12 +32,10 @@ type SegmentStore interface {
 	StreamHead(ctx context.Context, id SegmentID, stream StreamRef, before CommitSeq) (StreamSeq, error)
 	// Summarize returns the summary of the segment's CommitIndex as the
 	// adapter keeps it, and the segment's head (SES-REP-5): what Open
-	// checks the index by, without the entries. After a crash the index may
-	// lag the commits; the kernel detects that with IndexSummary.Valid and
-	// repairs through PutIndex.
+	// checks the index by, without the entries.
 	Summarize(context.Context, SegmentID) (IndexSummary, Head, error)
 	// Index returns the segment's whole CommitIndex and its head
-	// (SES-REP-5); Collect reads it to name the commits a truncation drops.
+	// (SES-REP-5).
 	Index(context.Context, SegmentID) (CommitIndex, Head, error)
 	// PutIndex replaces the segment's CommitIndex with one the kernel
 	// rebuilt from the commits.
@@ -58,9 +56,8 @@ type RootStore interface {
 	Record(context.Context, SessionID) (SessionRecord, error)
 	// Acquire takes writer ownership of a root (SES-OWN-1): ErrOwned while
 	// a Lease is live unless Takeover, which supersedes it with the next
-	// Epoch. Lease expiry is judged by the adapter's clock (SES-OWN-6): a
-	// shared database is its own clock, so every replica agrees. Repair of
-	// a torn tail in the root's segment happens here.
+	// Epoch. Lease expiry is judged by the adapter's clock (SES-OWN-6).
+	// Repair of a torn tail in the root's segment happens here.
 	Acquire(context.Context, SessionID, OpenOptions) (Lease, error)
 	// Renew moves the Lease's expiry to the adapter's now plus duration
 	// while the Lease is still the root's current one (SES-OWN-1); a
@@ -71,7 +68,7 @@ type RootStore interface {
 	Release(context.Context, Lease) error
 	// LeaseOf returns the root's current Lease (SES-OWN-5); ok is false
 	// when the root has no holder. A read: nothing changes, and an expired
-	// Lease is returned as it is for the caller to judge against its clock.
+	// Lease is returned as it is.
 	LeaseOf(context.Context, SessionID) (Lease, bool, error)
 	// ListLeases returns the Lease of every root that has a holder,
 	// expired ones included (SES-OWN-5).
@@ -103,43 +100,38 @@ type MaintenanceStore interface {
 	// ErrNotFound. Each closed span's Through commit and the parent edge's
 	// commit must also still exist; a missing one is ErrNotFound and
 	// nothing is written. The span insert holds the same per-segment lock
-	// as TruncateSegment, so a commit a truncation removed is not then
-	// named by a new span.
+	// as TruncateSegment.
 	CreateSession(context.Context, Segment, SessionRecord) error
 	// SpanBound is the greatest end among the path spans that still name
 	// the segment; ok is false when none do. An open end retains every
 	// commit the segment has. DropOrphanSpans deletes path spans whose
-	// session is not a live root, so a span left behind cannot keep a
-	// segment.
+	// session is not a live root.
 	SpanBound(ctx context.Context, id SegmentID) (Bound, bool, error)
 	DropOrphanSpans(context.Context) error
 	// TruncateSegment drops the segment's own commits after through and
 	// returns the head afterwards plus the CommitIDs it actually removed.
 	// Under the same per-segment lock CreateSession holds, it re-reads the
 	// greatest span still naming the segment: an open span deletes nothing
-	// and a greater Through raises the cut, so a caller's through can be
-	// stale. Nothing removed yields the unchanged head and an empty list.
+	// and a greater Through raises the cut. Nothing removed yields the
+	// unchanged head and an empty list.
 	TruncateSegment(ctx context.Context, id SegmentID, through CommitSeq) (Head, []CommitID, error)
 	// RemoveSegment deletes the node when nothing references it, atomically
 	// with the check (SES-GC-4): a root whose Tip is the segment, a segment
 	// whose Parent edge names it, or a path span still naming it makes the
 	// removal ErrReferenced and nothing is removed. The adapter enforces
 	// the check with its own consistency (a foreign key, a check under the
-	// store lock), so a Create racing a Collect on another replica cannot
-	// leave a child on a removed parent.
+	// store lock).
 	RemoveSegment(context.Context, SegmentID) error
 	// DeleteRecord marks a root deleted and drops its path spans in the
 	// same write (SES-GC-1), returning the record as it was, including the
-	// path, so the caller can reclaim after the write commits. ErrOwned
-	// while a Lease is live, and then nothing is written. A nonempty path
-	// that does not validate is ErrCorrupt and nothing is written. Record
-	// and ListRecords do not return deleted roots.
+	// path. ErrOwned while a Lease is live, and then nothing is written. A
+	// nonempty path that does not validate is ErrCorrupt and nothing is
+	// written. Record and ListRecords do not return deleted roots.
 	DeleteRecord(context.Context, SessionID) (SessionRecord, error)
 }
 
 // Storage is what an adapter implements: the three ports over one
-// consistency domain, so Append can check a Lease atomically and
-// CreateSession can check its parent atomically (SES-GC-4).
+// consistency domain (SES-GC-4).
 type Storage interface {
 	SegmentStore
 	RootStore
