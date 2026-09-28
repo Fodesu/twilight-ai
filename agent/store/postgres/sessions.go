@@ -526,7 +526,7 @@ func leaseOf(r *db.SessionRoot) session.Lease {
 }
 
 func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
-	return b.d.tx(ctx, "session:"+string(rec.ID), func(q *db.Queries) error {
+	err := b.d.tx(ctx, "session:"+string(rec.ID), func(q *db.Queries) error {
 		if existing, err := q.SessionRoot(ctx, string(rec.ID)); err == nil {
 			if existing.Deleted {
 				return kerr(session.ErrDeleted, "create", rec.ID, "session id was deleted and is not reused")
@@ -580,6 +580,12 @@ func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment,
 				FromSeq:    int64(span.From), //nolint:gosec // G115: seq values fit int64
 				ThroughSeq: throughValue(span.End),
 			}); err != nil {
+				if isUniqueViolation(err) {
+					return kerr(session.ErrCorrupt, "create", rec.ID, fmt.Sprintf("segment %s repeated on the path", span.Segment))
+				}
+				if isForeignKeyViolation(err) {
+					return kerr(session.ErrNotFound, "create", rec.ID, fmt.Sprintf("segment %s not found", span.Segment))
+				}
 				return err
 			}
 		}
@@ -589,6 +595,12 @@ func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment,
 		}
 		return err
 	})
+	// The session foreign key is checked at commit, after the callback
+	// returns. A span whose root was not inserted fails the transaction.
+	if isForeignKeyViolation(err) {
+		return kerr(session.ErrCorrupt, "create", rec.ID, "path span has no session root")
+	}
+	return err
 }
 
 // retainedSegmentIDs lists the segments a new path keeps, except the new

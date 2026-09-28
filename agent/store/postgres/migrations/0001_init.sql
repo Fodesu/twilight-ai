@@ -134,15 +134,21 @@ CREATE INDEX session_roots_expiry ON session_roots (lease_until) WHERE owned;
 -- session retains. through_seq NULL is an open end. path_by_segment
 -- answers the greatest remaining reference for a segment. segment
 -- references the node, so a span still naming it keeps RemoveSegment from
--- deleting it. session has no foreign key: spans are inserted before the
--- root row.
+-- deleting it. UNIQUE (session, segment) keeps a segment on a path once.
+-- The session foreign key waits until commit: CreateSession inserts the
+-- spans before the root row, and a span whose session was never written
+-- rolls the transaction back.
 CREATE TABLE session_path_spans (
 	session     TEXT NOT NULL,
 	ordinal     BIGINT NOT NULL,
 	segment     TEXT NOT NULL REFERENCES session_segments (id),
 	from_seq    BIGINT NOT NULL,
 	through_seq BIGINT,
-	PRIMARY KEY (session, ordinal)
+	PRIMARY KEY (session, ordinal),
+	CONSTRAINT session_path_spans_session_segment UNIQUE (session, segment),
+	CONSTRAINT session_path_spans_session_fkey FOREIGN KEY (session)
+		REFERENCES session_roots (id)
+		DEFERRABLE INITIALLY DEFERRED
 );
 CREATE INDEX path_by_segment
 	ON session_path_spans (segment, through_seq DESC NULLS FIRST);
