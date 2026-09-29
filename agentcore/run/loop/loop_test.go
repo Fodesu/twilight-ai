@@ -109,7 +109,11 @@ func (p staticBuilder) Build(_ context.Context, hint decision.Input) (decision.P
 	for i, in := range hint.Inputs {
 		ids[i] = in.ID
 	}
-	return decision.Prompt{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
+	frozen, err := sdkconv.FreezeModelRequest(req)
+	if err != nil {
+		return decision.Prompt{}, err
+	}
+	return decision.Prompt{Model: model, Request: frozen, InputIDs: ids, Tools: p.specs}, nil
 }
 
 // toolDef is the provider definition every test tool shares; ToolSpec keeps

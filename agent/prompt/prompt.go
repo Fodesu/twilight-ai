@@ -14,6 +14,8 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/sdk"
 
@@ -82,9 +84,15 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint decision.Input) (
 			system += preface
 		}
 	}
-	msgs, err := p.messages(system, entries)
+	sdkMsgs, err := p.messages(system, entries)
 	if err != nil {
 		return decision.Prompt{}, err
+	}
+	msgs := make([]model.Message, len(sdkMsgs))
+	for i := range sdkMsgs {
+		if msgs[i], err = sdkconv.FreezeMessage(sdkMsgs[i]); err != nil {
+			return decision.Prompt{}, fmt.Errorf("decision: message %d: %w", i, err)
+		}
 	}
 	specs, defs, err := decision.ToolSpecs(p.Preset.Tools)
 	if err != nil {
@@ -96,7 +104,7 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint decision.Input) (
 	}
 	return decision.Prompt{
 		Model:    p.Preset.Model,
-		Request:  sdk.Request{Model: string(p.Preset.Model), Messages: msgs, Tools: defs},
+		Request:  model.ModelRequest{Model: string(p.Preset.Model), Messages: msgs, Tools: defs},
 		InputIDs: ids,
 		Token:    run.PromptToken(fmt.Sprintf("%d", head.Next)),
 		Tools:    specs,

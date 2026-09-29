@@ -10,7 +10,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
 )
@@ -21,10 +20,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events Eve
 	if err != nil {
 		return err
 	}
-	frozenRequest, err := sdkconv.FreezeModelRequest(p.Request)
-	if err != nil {
-		return err
-	}
+	frozenRequest := p.Request
 	modelRef := p.Model
 	if modelRef == "" {
 		modelRef = run.ModelRef(frozenRequest.Model)

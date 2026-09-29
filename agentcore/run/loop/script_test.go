@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -143,5 +144,9 @@ func (p *scriptBuilder) Build(_ context.Context, hint decision.Input) (decision.
 	for i, in := range hint.Inputs {
 		ids[i] = in.ID
 	}
-	return decision.Prompt{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
+	frozen, err := sdkconv.FreezeModelRequest(req)
+	if err != nil {
+		return decision.Prompt{}, err
+	}
+	return decision.Prompt{Model: model, Request: frozen, InputIDs: ids, Tools: p.specs}, nil
 }
