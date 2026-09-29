@@ -13,17 +13,17 @@ import (
 var key = effect.AssignmentKey{Session: "s1", RunID: "r1", Effect: "sha256:e1"}
 
 type step = struct {
-	typ     process.EventType
+	typ     ledger.EventType
 	payload any
 }
 
-func commit(t *testing.T, seq process.CommitSeq, s step) process.Commit {
+func commit(t *testing.T, seq ledger.CommitSeq, s step) ledger.Commit {
 	t.Helper()
 	ev, err := ledger.NewEvent(s.typ, 1, s.payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return process.Commit{Seq: seq, CommitID: process.CommitID("c" + string(rune('0'+seq))), Batches: []process.EventBatch{{Events: []process.Event{ev}}}}
+	return ledger.Commit{Seq: seq, CommitID: ledger.CommitID("c" + string(rune('0'+seq))), Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}}
 }
 
 func TestFold(t *testing.T) {
@@ -50,7 +50,7 @@ func TestFold(t *testing.T) {
 			var state process.State
 			var err error
 			for i, s := range tc.steps {
-				c := commit(t, process.CommitSeq(i), s)
+				c := commit(t, ledger.CommitSeq(i), s)
 				if state, err = process.Fold(state, &c); err != nil {
 					break
 				}
@@ -67,35 +67,35 @@ func TestFold(t *testing.T) {
 
 // memStore is an in-memory process.Store for the helper tests.
 type memStore struct {
-	commits map[effect.AssignmentKey][]process.Commit
-	epoch   map[effect.AssignmentKey]process.Epoch
+	commits map[effect.AssignmentKey][]ledger.Commit
+	epoch   map[effect.AssignmentKey]ledger.Epoch
 }
 
 func newMemStore() *memStore {
-	return &memStore{commits: map[effect.AssignmentKey][]process.Commit{}, epoch: map[effect.AssignmentKey]process.Epoch{}}
+	return &memStore{commits: map[effect.AssignmentKey][]ledger.Commit{}, epoch: map[effect.AssignmentKey]ledger.Epoch{}}
 }
 
-func (m *memStore) Load(_ context.Context, k effect.AssignmentKey) (process.State, process.Head, bool, error) {
+func (m *memStore) Load(_ context.Context, k effect.AssignmentKey) (process.State, ledger.Head, bool, error) {
 	cs := m.commits[k]
 	state := process.State{Key: k}
 	for i := range cs {
 		var err error
 		if state, err = process.Fold(state, &cs[i]); err != nil {
-			return process.State{}, process.Head{}, false, err
+			return process.State{}, ledger.Head{}, false, err
 		}
 	}
-	return state, process.Head{Next: process.CommitSeq(len(cs))}, len(cs) > 0, nil
+	return state, ledger.Head{Next: ledger.CommitSeq(len(cs))}, len(cs) > 0, nil
 }
 
-func (m *memStore) Read(_ context.Context, k effect.AssignmentKey, from process.CommitSeq) ([]process.Commit, process.Head, error) {
+func (m *memStore) Read(_ context.Context, k effect.AssignmentKey, from ledger.CommitSeq) ([]ledger.Commit, ledger.Head, error) {
 	cs := m.commits[k]
 	if int(from) > len(cs) {
-		from = process.CommitSeq(len(cs))
+		from = ledger.CommitSeq(len(cs))
 	}
-	return cs[from:], process.Head{Next: process.CommitSeq(len(cs))}, nil
+	return cs[from:], ledger.Head{Next: ledger.CommitSeq(len(cs))}, nil
 }
 
-func (m *memStore) Append(ctx context.Context, epoch process.Epoch, k effect.AssignmentKey, c process.Commit) error {
+func (m *memStore) Append(ctx context.Context, epoch ledger.Epoch, k effect.AssignmentKey, c ledger.Commit) error {
 	for _, have := range m.commits[k] {
 		if have.CommitID == c.CommitID {
 			return ledger.ErrAlreadyApplied

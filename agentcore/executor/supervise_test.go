@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -617,7 +618,7 @@ type gateStore struct {
 	release chan struct{}
 }
 
-func (s *gateStore) Append(ctx context.Context, lease store.Lease, key effect.AssignmentKey, c store.Commit) error {
+func (s *gateStore) Append(ctx context.Context, lease store.Lease, key effect.AssignmentKey, c ledger.Commit) error {
 	if lease.Epoch > 0 && len(c.Batches) == 1 && len(c.Batches[0].Events) == 1 && c.Batches[0].Events[0].Type == store.EventExecutionStarted {
 		s.mu.Lock()
 		armed := s.armed

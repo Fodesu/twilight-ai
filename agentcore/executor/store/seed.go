@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/executor/protocol"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
@@ -14,15 +15,15 @@ import (
 // a Dispatch replayed against a seeded ledger is already applied. It is
 // the shared half of every adapter's Seed, which writes the commits and
 // the lease row; it is not part of Store.
-func SeedCommits(state Execution, at int64) ([]Commit, error) { //nolint:gocritic,gocyclo // hugeParam: plans from the value; gocyclo: one branch per reachable state
+func SeedCommits(state Execution, at int64) ([]ledger.Commit, error) { //nolint:gocritic,gocyclo // hugeParam: plans from the value; gocyclo: one branch per reachable state
 	key := state.Assignment.Key()
-	var events [][]Event
-	add := func(typ EventType, payload any) error {
-		ev, err := NewEvent(typ, at, payload)
+	var events [][]ledger.Event
+	add := func(typ ledger.EventType, payload any) error {
+		ev, err := ledger.NewEvent(typ, at, payload)
 		if err != nil {
 			return err
 		}
-		events = append(events, []Event{ev})
+		events = append(events, []ledger.Event{ev})
 		return nil
 	}
 	switch state.State {
@@ -50,7 +51,7 @@ func SeedCommits(state Execution, at int64) ([]Commit, error) { //nolint:gocriti
 		}
 		for i := 1; i < len(refs); i++ {
 			for _, step := range []struct {
-				typ     EventType
+				typ     ledger.EventType
 				payload any
 			}{{EventExecutionStarted, nil}, {EventExecutionRunning, nil}, {EventExecutionRestarted, Restarted{Superseded: refs[i-1], Ref: refs[i].Ref}}} {
 				if err := add(step.typ, step.payload); err != nil {
@@ -63,10 +64,10 @@ func SeedCommits(state Execution, at int64) ([]Commit, error) { //nolint:gocriti
 		}
 	}
 	var folded ExecutionState
-	head := Head{}
-	commits := make([]Commit, 0, len(events))
+	head := ledger.Head{}
+	commits := make([]ledger.Commit, 0, len(events))
 	for i, evs := range events {
-		c := Commit{Seq: head.Next, CommitID: DeriveCommitID(key, "seed", fmt.Sprint(i)), Batches: []EventBatch{{Events: evs}}}
+		c := ledger.Commit{Seq: head.Next, CommitID: DeriveCommitID(key, "seed", fmt.Sprint(i)), Batches: []ledger.EventBatch{{Events: evs}}}
 		switch evs[0].Type {
 		case EventExecutionAccepted:
 			c.CommitID = AcceptCommitID(key)
@@ -78,14 +79,14 @@ func SeedCommits(state Execution, at int64) ([]Commit, error) { //nolint:gocriti
 			return nil, err
 		}
 		commits = append(commits, c)
-		head = Head{Next: c.Seq + 1}
+		head = ledger.Head{Next: c.Seq + 1}
 	}
 	return commits, nil
 }
 
 // seedTail adds the events that take an accepted, bound, claimed execution
 // to state.State.
-func seedTail(state Execution, key effect.AssignmentKey, add func(EventType, any) error) error { //nolint:gocritic // hugeParam: plans from the value
+func seedTail(state Execution, key effect.AssignmentKey, add func(ledger.EventType, any) error) error { //nolint:gocritic // hugeParam: plans from the value
 	switch state.State {
 	case effect.ExecutionAccepted:
 		return nil

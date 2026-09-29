@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -514,7 +515,7 @@ func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 	if err != nil || head.Next != 3 || len(commits) != 3 {
 		t.Fatalf("ledger = %d commits head %+v %v, want accept + two claims", len(commits), head, err)
 	}
-	for i, want := range []store.EventType{store.EventExecutionAccepted, store.EventExecutionClaimed, store.EventExecutionClaimed} {
+	for i, want := range []ledger.EventType{store.EventExecutionAccepted, store.EventExecutionClaimed, store.EventExecutionClaimed} {
 		if commits[i].Batches[0].Events[0].Type != want {
 			t.Fatalf("commit %d = %s, want %s", i, commits[i].Batches[0].Events[0].Type, want)
 		}
@@ -524,22 +525,22 @@ func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 // openLedger writes the acceptance commit a Dispatch would.
 func openLedger(t *testing.T, records store.Store, a effect.Assignment) {
 	t.Helper()
-	ev, err := store.NewEvent(store.EventExecutionAccepted, 0, store.Accepted{Assignment: a})
+	ev, err := ledger.NewEvent(store.EventExecutionAccepted, 0, store.Accepted{Assignment: a})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := records.Append(context.Background(), store.Lease{}, a.Key(), store.Commit{CommitID: store.AcceptCommitID(a.Key()), Batches: []store.EventBatch{{Events: []store.Event{ev}}}}); err != nil {
+	if err := records.Append(context.Background(), store.Lease{}, a.Key(), ledger.Commit{CommitID: store.AcceptCommitID(a.Key()), Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // appendStep commits one state-machine event at seq under lease.
-func appendStep(records store.Store, lease store.Lease, seq store.CommitSeq, typ store.EventType) error {
-	ev, err := store.NewEvent(typ, 0, nil)
+func appendStep(records store.Store, lease store.Lease, seq ledger.CommitSeq, typ ledger.EventType) error {
+	ev, err := ledger.NewEvent(typ, 0, nil)
 	if err != nil {
 		return err
 	}
-	return records.Append(context.Background(), lease, lease.Key, store.Commit{Seq: seq, CommitID: store.DeriveCommitID(lease.Key, "test", fmt.Sprintf("%s/%d", typ, seq)), Batches: []store.EventBatch{{Events: []store.Event{ev}}}})
+	return records.Append(context.Background(), lease, lease.Key, ledger.Commit{Seq: seq, CommitID: store.DeriveCommitID(lease.Key, "test", fmt.Sprintf("%s/%d", typ, seq)), Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}})
 }
 
 func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {
@@ -679,7 +680,7 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 	cases := []struct {
 		name  string
 		owner string
-		epoch store.Epoch
+		epoch ledger.Epoch
 		lease int64
 		want  effect.AttachmentState
 	}{
@@ -711,7 +712,7 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 // failingCreateStore refuses every Append: the ledger store is unavailable.
 type failingCreateStore struct{ store.Store }
 
-func (failingCreateStore) Append(context.Context, store.Lease, effect.AssignmentKey, store.Commit) error {
+func (failingCreateStore) Append(context.Context, store.Lease, effect.AssignmentKey, ledger.Commit) error {
 	return errors.New("store unavailable")
 }
 

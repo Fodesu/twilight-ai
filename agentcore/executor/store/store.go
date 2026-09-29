@@ -33,54 +33,37 @@ var (
 	ErrAlreadyApplied = ledger.ErrAlreadyApplied
 )
 
-// The commit vocabulary is the kernel's (agentcore/ledger).
-type (
-	CommitSeq  = ledger.CommitSeq
-	CommitID   = ledger.CommitID
-	Epoch      = ledger.Epoch
-	EventType  = ledger.EventType
-	Event      = ledger.Event
-	Commit     = ledger.Commit
-	EventBatch = ledger.EventBatch
-	Head       = ledger.Head
-)
-
-// NewEvent renders payload as the event's canonical JSON.
-func NewEvent(typ EventType, recordedAtUnixMilli int64, payload any) (Event, error) {
-	return ledger.NewEvent(typ, recordedAtUnixMilli, payload)
-}
-
 const (
 	// EventExecutionAccepted: the Assignment was accepted into this ledger,
 	// before anything started (RUN-EXE-3). The first event of a ledger that
 	// was opened by a Dispatch.
-	EventExecutionAccepted EventType = "execution_accepted"
+	EventExecutionAccepted ledger.EventType = "execution_accepted"
 	// EventExecutionAborted: the key was closed before any acceptance
 	// (RUN-EXE-16). The first and only event of a ledger opened by Abort:
 	// it and execution_accepted contend for Seq 0, so a ledger holds one or
 	// the other, never both.
-	EventExecutionAborted EventType = "execution_aborted"
+	EventExecutionAborted ledger.EventType = "execution_aborted"
 	// EventExecutionBound: the attempt's physical binding, Provider and Ref,
 	// was chosen (RUN-EXE-9, RUN-EXE-10).
-	EventExecutionBound EventType = "execution_bound"
+	EventExecutionBound ledger.EventType = "execution_bound"
 	// EventExecutionClaimed: a Worker took the key under a new Epoch. Lease
 	// renewals are not events; the lease row is the fence's authority.
-	EventExecutionClaimed EventType = "execution_claimed"
+	EventExecutionClaimed ledger.EventType = "execution_claimed"
 	// EventExecutionStarted: Backend.Start is about to be called; the state
 	// is Dispatching, which may already have crossed the effect boundary.
-	EventExecutionStarted EventType = "execution_started"
+	EventExecutionStarted ledger.EventType = "execution_started"
 	// EventExecutionRunning: the backend accepted the start.
-	EventExecutionRunning EventType = "execution_running"
+	EventExecutionRunning ledger.EventType = "execution_running"
 	// EventCancelRequested: cancellation was asked of the backend.
-	EventCancelRequested EventType = "cancel_requested"
+	EventCancelRequested ledger.EventType = "cancel_requested"
 	// EventExecutionRestarted: the attempt moved to a new Ref, the previous
 	// one joining the audit trail (RUN-EXE-9, RUN-EXE-11).
-	EventExecutionRestarted EventType = "execution_restarted"
+	EventExecutionRestarted ledger.EventType = "execution_restarted"
 	// EventExecutionSettled: the terminal state and the Outcome.
-	EventExecutionSettled EventType = "execution_settled"
+	EventExecutionSettled ledger.EventType = "execution_settled"
 	// EventOutcomeAcknowledged: the Owner reported the Outcome settled as a
 	// Session fact; the Executor no longer serves it (RUN-EXE-13).
-	EventOutcomeAcknowledged EventType = "outcome_acknowledged"
+	EventOutcomeAcknowledged ledger.EventType = "outcome_acknowledged"
 )
 
 // Lease is a fenced hold on one execution (RUN-EXE-6). The store is its
@@ -89,7 +72,7 @@ const (
 type Lease struct {
 	Key            effect.AssignmentKey
 	Owner          string
-	Epoch          Epoch
+	Epoch          ledger.Epoch
 	UntilUnixMilli int64
 }
 
@@ -125,8 +108,8 @@ type Bound struct {
 
 // Claimed is the payload of execution_claimed.
 type Claimed struct {
-	Owner string `json:"owner"`
-	Epoch Epoch  `json:"epoch"`
+	Owner string       `json:"owner"`
+	Epoch ledger.Epoch `json:"epoch"`
 }
 
 // Restarted is the payload of execution_restarted: the Ref the attempt
@@ -148,7 +131,7 @@ type Settled struct {
 // ledger (acceptance, settlement, acknowledgement) take no discriminator;
 // those that recur (a claim per Epoch, a restart per generation) take one,
 // so their identity is the command and the occasion, never the wall clock.
-func DeriveCommitID(key effect.AssignmentKey, command, discriminator string) CommitID {
+func DeriveCommitID(key effect.AssignmentKey, command, discriminator string) ledger.CommitID {
 	d, err := jsonstable.DigestCanonical(struct {
 		Key           effect.AssignmentKey `json:"scope"`
 		Command       string               `json:"command"`
@@ -157,7 +140,7 @@ func DeriveCommitID(key effect.AssignmentKey, command, discriminator string) Com
 	if err != nil {
 		panic(err) // AssignmentKey is three strings; canonical encoding cannot fail
 	}
-	return CommitID(d)
+	return ledger.CommitID(d)
 }
 
 // AcceptCommitID, SettleCommitID and AcknowledgeCommitID name the three
@@ -165,14 +148,18 @@ func DeriveCommitID(key effect.AssignmentKey, command, discriminator string) Com
 // and the Owner's acknowledgement. A settlement by the lease holder and one
 // by a controller's Dispose share SettleCommitID, so the second reads the
 // first's Outcome instead of writing a second ending.
-func AcceptCommitID(key effect.AssignmentKey) CommitID { return DeriveCommitID(key, "accept", "") }
+func AcceptCommitID(key effect.AssignmentKey) ledger.CommitID {
+	return DeriveCommitID(key, "accept", "")
+}
 
 // AbortCommitID names the one tombstone of a key (RUN-EXE-16). It differs
 // from AcceptCommitID, so the two commands are told apart by Seq, not by
 // replay: whichever reaches Seq 0 first stands and the other is ErrConflict.
-func AbortCommitID(key effect.AssignmentKey) CommitID  { return DeriveCommitID(key, "abort", "") }
-func SettleCommitID(key effect.AssignmentKey) CommitID { return DeriveCommitID(key, "settle", "") }
-func AcknowledgeCommitID(key effect.AssignmentKey) CommitID {
+func AbortCommitID(key effect.AssignmentKey) ledger.CommitID { return DeriveCommitID(key, "abort", "") }
+func SettleCommitID(key effect.AssignmentKey) ledger.CommitID {
+	return DeriveCommitID(key, "settle", "")
+}
+func AcknowledgeCommitID(key effect.AssignmentKey) ledger.CommitID {
 	return DeriveCommitID(key, "acknowledge", "")
 }
 
@@ -235,7 +222,7 @@ func LegalTransition(from, to effect.ExecutionStatus) bool {
 // by Dispose and the Owner's acknowledgement come from outside the lease
 // (RUN-EXE-6, RUN-EXE-13, RUN-EXE-16). Everything else is the lease
 // holder's.
-func Fenced(typ EventType) bool {
+func Fenced(typ ledger.EventType) bool {
 	switch typ {
 	case EventExecutionAccepted, EventExecutionAborted, EventExecutionBound, EventExecutionSettled, EventOutcomeAcknowledged:
 		return false
@@ -247,7 +234,7 @@ func Fenced(typ EventType) bool {
 // Fold applies one commit to the state; an event that is not legal from the
 // current state is ErrStateConflict. The store folds every commit before it
 // is appended, so the ledger never holds an illegal step.
-func Fold(state ExecutionState, c *Commit) (ExecutionState, error) { //nolint:gocritic // hugeParam: a fold takes and returns the state by value
+func Fold(state ExecutionState, c *ledger.Commit) (ExecutionState, error) { //nolint:gocritic // hugeParam: a fold takes and returns the state by value
 	k := 0
 	for b := range c.Batches {
 		for i := range c.Batches[b].Events {
@@ -263,7 +250,7 @@ func Fold(state ExecutionState, c *Commit) (ExecutionState, error) { //nolint:go
 	return state, nil
 }
 
-func apply(s ExecutionState, e *Event) (ExecutionState, error) { //nolint:gocritic,gocyclo // hugeParam: value fold; gocyclo: one case per event type
+func apply(s ExecutionState, e *ledger.Event) (ExecutionState, error) { //nolint:gocritic,gocyclo // hugeParam: value fold; gocyclo: one case per event type
 	switch e.Type {
 	case EventExecutionAccepted:
 		if s.State != "" {
@@ -364,9 +351,9 @@ type Store interface {
 	// Load folds the key's ledger and reads its lease row in one
 	// transaction; ok is false for a key with no ledger, which is a proven
 	// absence (RUN-EXE-3).
-	Load(context.Context, effect.AssignmentKey) (Execution, Head, bool, error)
+	Load(context.Context, effect.AssignmentKey) (Execution, ledger.Head, bool, error)
 	// Read returns the key's commits from Seq from, in order, and the Head.
-	Read(context.Context, effect.AssignmentKey, CommitSeq) ([]Commit, Head, error)
+	Read(context.Context, effect.AssignmentKey, ledger.CommitSeq) ([]ledger.Commit, ledger.Head, error)
 	// Append commits c to the key's ledger. c.Seq must be Head.Next
 	// (ErrConflict). A commit whose CommitID already exists is
 	// ErrAlreadyApplied and nothing is written: the CommitID names the
@@ -375,7 +362,7 @@ type Store interface {
 	// append and may carry only events Fenced reports false for; otherwise
 	// the lease must be the key's current, unexpired lease (ErrLeaseLost).
 	// The commit is folded before it is written (ErrStateConflict).
-	Append(context.Context, Lease, effect.AssignmentKey, Commit) error
+	Append(context.Context, Lease, effect.AssignmentKey, ledger.Commit) error
 	// Acquire takes the key's lease for owner under a new Epoch and records
 	// execution_claimed in the same transaction. ok is false while another
 	// owner's lease is live or the execution is terminal; a key without a

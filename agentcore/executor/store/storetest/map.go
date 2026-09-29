@@ -13,6 +13,7 @@ import (
 	"time"
 
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
@@ -28,7 +29,7 @@ type Map struct {
 }
 
 type mapLedger struct {
-	commits []executionstore.Commit
+	commits []ledger.Commit
 	lease   executionstore.Lease
 	held    bool
 }
@@ -57,8 +58,8 @@ func (m *Map) ledger(key effect.AssignmentKey) *mapLedger {
 	return l
 }
 
-func (l *mapLedger) head() executionstore.Head {
-	return executionstore.Head{Next: executionstore.CommitSeq(len(l.commits))}
+func (l *mapLedger) head() ledger.Head {
+	return ledger.Head{Next: ledger.CommitSeq(len(l.commits))}
 }
 
 func (l *mapLedger) fold() (executionstore.ExecutionState, error) {
@@ -72,7 +73,7 @@ func (l *mapLedger) fold() (executionstore.ExecutionState, error) {
 	return state, nil
 }
 
-func (l *mapLedger) applied(id executionstore.CommitID) bool {
+func (l *mapLedger) applied(id ledger.CommitID) bool {
 	for i := range l.commits {
 		if l.commits[i].CommitID == id {
 			return true
@@ -94,38 +95,38 @@ func (l *mapLedger) execution() (executionstore.Execution, error) {
 }
 
 // Load folds the key's ledger and joins its lease (executionstore.Store).
-func (m *Map) Load(_ context.Context, key effect.AssignmentKey) (executionstore.Execution, executionstore.Head, bool, error) {
+func (m *Map) Load(_ context.Context, key effect.AssignmentKey) (executionstore.Execution, ledger.Head, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	l, ok := m.ledgers[key]
 	if !ok || len(l.commits) == 0 {
-		return executionstore.Execution{}, executionstore.Head{}, false, nil
+		return executionstore.Execution{}, ledger.Head{}, false, nil
 	}
 	exec, err := l.execution()
 	if err != nil {
-		return executionstore.Execution{}, executionstore.Head{}, false, err
+		return executionstore.Execution{}, ledger.Head{}, false, err
 	}
 	return exec, l.head(), true, nil
 }
 
 // Read returns the key's commits from Seq from (executionstore.Store).
-func (m *Map) Read(_ context.Context, key effect.AssignmentKey, from executionstore.CommitSeq) ([]executionstore.Commit, executionstore.Head, error) {
+func (m *Map) Read(_ context.Context, key effect.AssignmentKey, from ledger.CommitSeq) ([]ledger.Commit, ledger.Head, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	l, ok := m.ledgers[key]
 	if !ok {
-		return nil, executionstore.Head{}, nil
+		return nil, ledger.Head{}, nil
 	}
 	if int(from) >= len(l.commits) {
 		return nil, l.head(), nil
 	}
-	out := make([]executionstore.Commit, len(l.commits)-int(from))
+	out := make([]ledger.Commit, len(l.commits)-int(from))
 	copy(out, l.commits[from:])
 	return out, l.head(), nil
 }
 
 // Append commits c to the key's ledger (executionstore.Store).
-func (m *Map) Append(_ context.Context, lease executionstore.Lease, key effect.AssignmentKey, c executionstore.Commit) error { //nolint:gocritic // hugeParam: the Store contract takes the commit by value
+func (m *Map) Append(_ context.Context, lease executionstore.Lease, key effect.AssignmentKey, c ledger.Commit) error { //nolint:gocritic // hugeParam: the Store contract takes the commit by value
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	l := m.ledger(key)
@@ -183,11 +184,11 @@ func (m *Map) Acquire(_ context.Context, key effect.AssignmentKey, owner string,
 	}
 	out := executionstore.Lease{Key: key, Owner: owner, Epoch: epoch, UntilUnixMilli: now.Add(ttl).UnixMilli()}
 	if epoch != l.lease.Epoch {
-		ev, err := executionstore.NewEvent(executionstore.EventExecutionClaimed, now.UnixMilli(), executionstore.Claimed{Owner: owner, Epoch: epoch})
+		ev, err := ledger.NewEvent(executionstore.EventExecutionClaimed, now.UnixMilli(), executionstore.Claimed{Owner: owner, Epoch: epoch})
 		if err != nil {
 			return executionstore.Lease{}, false, err
 		}
-		c := executionstore.Commit{Seq: l.head().Next, CommitID: executionstore.DeriveCommitID(key, "claim", fmt.Sprint(uint64(epoch))), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}}
+		c := ledger.Commit{Seq: l.head().Next, CommitID: executionstore.DeriveCommitID(key, "claim", fmt.Sprint(uint64(epoch))), Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}}
 		if _, err := executionstore.Fold(state, &c); err != nil {
 			return executionstore.Lease{}, false, err
 		}

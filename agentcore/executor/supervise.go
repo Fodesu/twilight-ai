@@ -8,6 +8,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
@@ -56,12 +57,12 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			return err
 		}
 		bound := ExecutionRef{Provider: route.Provider, Ref: ref}
-		err = w.commit(ctx, lease, key, func(state *executionstore.Execution, _ executionstore.Head) (*executionstore.Commit, error) {
+		err = w.commit(ctx, lease, key, func(state *executionstore.Execution, _ ledger.Head) (*ledger.Commit, error) {
 			if state.ExecutionRef.Provider != "" {
 				return nil, nil
 			}
-			return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(key, "bind", fmt.Sprint(uint64(lease.Epoch))),
-				Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: bound})}}}}, nil
+			return &ledger.Commit{CommitID: executionstore.DeriveCommitID(key, "bind", fmt.Sprint(uint64(lease.Epoch))),
+				Batches: []ledger.EventBatch{{Events: []ledger.Event{w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: bound})}}}}, nil
 		})
 		if err != nil {
 			return err
@@ -196,15 +197,15 @@ func (w *Worker) replay(ctx context.Context, lease executionstore.Lease, claimed
 
 // restarted commits execution_restarted: from leaves, fresh continues.
 func (w *Worker) restarted(ctx context.Context, lease executionstore.Lease, from ExecutionRef, fresh string) error {
-	return w.commit(ctx, lease, lease.Key, func(state *executionstore.Execution, _ executionstore.Head) (*executionstore.Commit, error) {
+	return w.commit(ctx, lease, lease.Key, func(state *executionstore.Execution, _ ledger.Head) (*ledger.Commit, error) {
 		if state.ExecutionRef.Ref == fresh {
 			return nil, nil
 		}
 		if state.ExecutionRef != from {
 			return nil, fmt.Errorf("%w: restart of %+v, ledger holds %+v", executionstore.ErrStateConflict, from, state.ExecutionRef)
 		}
-		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, "restart", from.Ref),
-			Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(executionstore.EventExecutionRestarted, executionstore.Restarted{Superseded: from, Ref: fresh})}}}}, nil
+		return &ledger.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, "restart", from.Ref),
+			Batches: []ledger.EventBatch{{Events: []ledger.Event{w.event(executionstore.EventExecutionRestarted, executionstore.Restarted{Superseded: from, Ref: fresh})}}}}, nil
 	})
 }
 
@@ -469,7 +470,7 @@ func (w *Worker) heartbeat(lease executionstore.Lease, done <-chan struct{}) {
 // this one is dropped and dispatchErr, the error the caller was going to
 // report, is returned as it was.
 func (w *Worker) finishOwned(ctx context.Context, lease executionstore.Lease, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus, dispatchErr error) error {
-	err := w.commit(ctx, lease, lease.Key, func(current *executionstore.Execution, _ executionstore.Head) (*executionstore.Commit, error) {
+	err := w.commit(ctx, lease, lease.Key, func(current *executionstore.Execution, _ ledger.Head) (*ledger.Commit, error) {
 		if current.Terminal() {
 			return nil, nil
 		}

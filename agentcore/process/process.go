@@ -18,30 +18,18 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
-// The commit vocabulary is the kernel's (agentcore/ledger).
-type (
-	CommitSeq  = ledger.CommitSeq
-	CommitID   = ledger.CommitID
-	Epoch      = ledger.Epoch
-	EventType  = ledger.EventType
-	Event      = ledger.Event
-	Commit     = ledger.Commit
-	EventBatch = ledger.EventBatch
-	Head       = ledger.Head
-)
-
 const (
 	// EventDispatchPlanned: the process manager decided to hand the effect
 	// to the Executor again; Attempt numbers the redispatches from 1. It is
 	// written before the Dispatch and stays pending until dispatched.
-	EventDispatchPlanned EventType = "dispatch_planned"
+	EventDispatchPlanned ledger.EventType = "dispatch_planned"
 	// EventDispatched: the Dispatch of the planned attempt reached the
 	// Executor (accepted, or already held under the same key). Only now may
 	// the next attempt be planned.
-	EventDispatched EventType = "dispatched"
+	EventDispatched ledger.EventType = "dispatched"
 	// EventGivenUp: the process manager stopped redispatching; the reason is
 	// recorded and the Run disposes the effect (RUN-CMT-7).
-	EventGivenUp EventType = "given_up"
+	EventGivenUp ledger.EventType = "given_up"
 )
 
 // Planned is the payload of dispatch_planned.
@@ -63,7 +51,7 @@ type GivenUp struct {
 
 // deriveCommitID names a command on one key; the naming rule is this
 // domain's, the ledger only enforces uniqueness.
-func deriveCommitID(key effect.AssignmentKey, command, discriminator string) CommitID {
+func deriveCommitID(key effect.AssignmentKey, command, discriminator string) ledger.CommitID {
 	d, err := jsonstable.DigestCanonical(struct {
 		Key           effect.AssignmentKey `json:"scope"`
 		Command       string               `json:"command"`
@@ -72,21 +60,21 @@ func deriveCommitID(key effect.AssignmentKey, command, discriminator string) Com
 	if err != nil {
 		panic(err) // AssignmentKey is three strings; canonical encoding cannot fail
 	}
-	return CommitID(d)
+	return ledger.CommitID(d)
 }
 
 // PlannedCommitID names the decision to make the n-th redispatch.
-func PlannedCommitID(key effect.AssignmentKey, attempt int) CommitID {
+func PlannedCommitID(key effect.AssignmentKey, attempt int) ledger.CommitID {
 	return deriveCommitID(key, "process/dispatch_planned", fmt.Sprint(attempt))
 }
 
 // DispatchedCommitID names the completion of the n-th redispatch.
-func DispatchedCommitID(key effect.AssignmentKey, attempt int) CommitID {
+func DispatchedCommitID(key effect.AssignmentKey, attempt int) ledger.CommitID {
 	return deriveCommitID(key, "process/dispatched", fmt.Sprint(attempt))
 }
 
 // GivenUpCommitID names the one decision to stop.
-func GivenUpCommitID(key effect.AssignmentKey) CommitID {
+func GivenUpCommitID(key effect.AssignmentKey) ledger.CommitID {
 	return deriveCommitID(key, "process/given_up", "")
 }
 
@@ -115,7 +103,7 @@ func (s State) Pending() int {
 
 // Fold applies one commit; an event not legal from the state is
 // ledger.ErrStateConflict.
-func Fold(state State, c *Commit) (State, error) { //nolint:gocritic // hugeParam: a fold takes and returns the state by value
+func Fold(state State, c *ledger.Commit) (State, error) { //nolint:gocritic // hugeParam: a fold takes and returns the state by value
 	k := 0
 	for b := range c.Batches {
 		for i := range c.Batches[b].Events {
@@ -131,7 +119,7 @@ func Fold(state State, c *Commit) (State, error) { //nolint:gocritic // hugePara
 	return state, nil
 }
 
-func apply(s State, e *Event) (State, error) { //nolint:gocritic // hugeParam: value fold
+func apply(s State, e *ledger.Event) (State, error) { //nolint:gocritic // hugeParam: value fold
 	if s.GivenUp {
 		return s, errors.New("decision after given_up")
 	}
@@ -174,16 +162,16 @@ func apply(s State, e *Event) (State, error) { //nolint:gocritic // hugeParam: v
 // Store is the dispatch ledger authority, keyed by AssignmentKey.
 type Store interface {
 	// Load folds the key's ledger; ok is false for a key with no ledger.
-	Load(ctx context.Context, key effect.AssignmentKey) (State, Head, bool, error)
+	Load(ctx context.Context, key effect.AssignmentKey) (State, ledger.Head, bool, error)
 	// Read returns the key's commits from Seq from, in order, and the Head.
-	Read(ctx context.Context, key effect.AssignmentKey, from CommitSeq) ([]Commit, Head, error)
+	Read(ctx context.Context, key effect.AssignmentKey, from ledger.CommitSeq) ([]ledger.Commit, ledger.Head, error)
 	// Append commits c under the kernel's rules (agentcore/ledger): Seq is
 	// Head.Next or ErrConflict; a known CommitID is ErrAlreadyApplied and
 	// nothing is written; the commit is folded before it is written
 	// (ErrStateConflict). epoch is the Session Epoch of the owner whose
 	// reconciler writes: one below the highest the ledger has seen is
 	// ErrFenced, so a superseded owner's reconciler writes nothing.
-	Append(ctx context.Context, epoch Epoch, key effect.AssignmentKey, c Commit) error
+	Append(ctx context.Context, epoch ledger.Epoch, key effect.AssignmentKey, c ledger.Commit) error
 }
 
 // Plan returns the attempt the process manager is to make now: the planned
@@ -191,7 +179,7 @@ type Store interface {
 // Dispatch it announces (RUN-EXE-15). A crash between the record and the
 // Dispatch leaves the attempt pending, and the next reconciliation makes
 // the same attempt instead of a new one.
-func Plan(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey, now int64) (int, error) {
+func Plan(ctx context.Context, s Store, epoch ledger.Epoch, key effect.AssignmentKey, now int64) (int, error) {
 	state, head, _, err := s.Load(ctx, key)
 	if err != nil {
 		return 0, err
@@ -208,7 +196,7 @@ func Plan(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey, n
 
 // MarkDispatched records that the Dispatch of the planned attempt reached
 // the Executor; the attempt is no longer owed.
-func MarkDispatched(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey, attempt int, now int64) error {
+func MarkDispatched(ctx context.Context, s Store, epoch ledger.Epoch, key effect.AssignmentKey, attempt int, now int64) error {
 	state, head, _, err := s.Load(ctx, key)
 	if err != nil {
 		return err
@@ -220,7 +208,7 @@ func MarkDispatched(ctx context.Context, s Store, epoch Epoch, key effect.Assign
 }
 
 // GiveUp records that the process manager stops redispatching key.
-func GiveUp(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey, reason string, now int64) error {
+func GiveUp(ctx context.Context, s Store, epoch ledger.Epoch, key effect.AssignmentKey, reason string, now int64) error {
 	state, head, _, err := s.Load(ctx, key)
 	if err != nil {
 		return err
@@ -231,12 +219,12 @@ func GiveUp(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey,
 	return append1(ctx, s, epoch, key, head, GivenUpCommitID(key), EventGivenUp, GivenUp{Reason: reason}, now)
 }
 
-func append1(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey, head Head, id CommitID, typ EventType, payload any, now int64) error {
+func append1(ctx context.Context, s Store, epoch ledger.Epoch, key effect.AssignmentKey, head ledger.Head, id ledger.CommitID, typ ledger.EventType, payload any, now int64) error {
 	ev, err := ledger.NewEvent(typ, now, payload)
 	if err != nil {
 		return err
 	}
-	err = s.Append(ctx, epoch, key, Commit{Seq: head.Next, CommitID: id, Batches: []EventBatch{{Events: []Event{ev}}}})
+	err = s.Append(ctx, epoch, key, ledger.Commit{Seq: head.Next, CommitID: id, Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}})
 	if err == nil || errors.Is(err, ledger.ErrAlreadyApplied) {
 		return nil
 	}

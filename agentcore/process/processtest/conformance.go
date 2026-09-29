@@ -19,13 +19,13 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("ledger", func(t *testing.T) { testLedger(t, factory(t)) })
 }
 
-func commit(t *testing.T, seq process.CommitSeq, id process.CommitID, typ process.EventType, payload any) process.Commit {
+func commit(t *testing.T, seq ledger.CommitSeq, id ledger.CommitID, typ ledger.EventType, payload any) ledger.Commit {
 	t.Helper()
 	ev, err := ledger.NewEvent(typ, 1, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return process.Commit{Seq: seq, CommitID: id, Batches: []process.EventBatch{{Events: []process.Event{ev}}}}
+	return ledger.Commit{Seq: seq, CommitID: id, Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}}
 }
 
 // The dispatch ledger answers replays by identity, stale sequences and
@@ -43,7 +43,7 @@ func testLedger(t *testing.T, store process.Store) {
 	steps := []struct {
 		name    string
 		epoch   ledger.Epoch
-		commit  process.Commit
+		commit  ledger.Commit
 		wantErr error
 	}{
 		{"first plan opens the ledger", 1, commit(t, 0, process.PlannedCommitID(k1, 1), process.EventDispatchPlanned, process.Planned{Attempt: 1}), nil},

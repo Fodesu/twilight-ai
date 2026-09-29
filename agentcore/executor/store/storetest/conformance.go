@@ -9,6 +9,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
@@ -46,21 +47,21 @@ func assignment(id run.EffectID) effect.Assignment {
 
 func accept(t *testing.T, s executionstore.Store, a effect.Assignment) {
 	t.Helper()
-	ev, err := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: a})
+	ev, err := ledger.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: a})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Append(context.Background(), executionstore.Lease{}, a.Key(), executionstore.Commit{CommitID: executionstore.AcceptCommitID(a.Key()), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}}); err != nil {
+	if err := s.Append(context.Background(), executionstore.Lease{}, a.Key(), ledger.Commit{CommitID: executionstore.AcceptCommitID(a.Key()), Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func step(s executionstore.Store, lease executionstore.Lease, seq executionstore.CommitSeq, typ executionstore.EventType, payload any) error {
-	ev, err := executionstore.NewEvent(typ, 0, payload)
+func step(s executionstore.Store, lease executionstore.Lease, seq ledger.CommitSeq, typ ledger.EventType, payload any) error {
+	ev, err := ledger.NewEvent(typ, 0, payload)
 	if err != nil {
 		return err
 	}
-	return s.Append(context.Background(), lease, lease.Key, executionstore.Commit{Seq: seq, CommitID: executionstore.DeriveCommitID(lease.Key, "test", string(typ)+"/"+strconv.FormatUint(uint64(seq), 10)), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}})
+	return s.Append(context.Background(), lease, lease.Key, ledger.Commit{Seq: seq, CommitID: executionstore.DeriveCommitID(lease.Key, "test", string(typ)+"/"+strconv.FormatUint(uint64(seq), 10)), Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}})
 }
 
 // One execution ledger, two handles: the second handle stands for a second
@@ -79,8 +80,8 @@ func testLedger(t *testing.T, f Fixture) { //nolint:gocyclo // one scenario, che
 	accept(t, a, asg)
 	// A replayed acceptance is recognised by its identity and not written
 	// again; the Worker tells two Assignments apart by reading the ledger.
-	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg})
-	if err := b.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{CommitID: executionstore.AcceptCommitID(key), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}}); !errors.Is(err, executionstore.ErrAlreadyApplied) {
+	ev, _ := ledger.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg})
+	if err := b.Append(ctx, executionstore.Lease{}, key, ledger.Commit{CommitID: executionstore.AcceptCommitID(key), Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}}); !errors.Is(err, executionstore.ErrAlreadyApplied) {
 		t.Fatalf("replayed acceptance through the other handle = %v, want already applied", err)
 	}
 	if state, _, ok, err := b.Load(ctx, key); err != nil || !ok || state.Assignment.Key() != key {
@@ -223,8 +224,8 @@ func testSeedAborted(t *testing.T, f Fixture) {
 	if err != nil || !ok || !state.Aborted() || state.Outcome != nil || state.Assignment.Effect != "" || head.Next != 1 {
 		t.Fatalf("seeded aborted key = %+v head=%+v ok:%v %v, want a lone tombstone", state, head, ok, err)
 	}
-	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg})
-	if err := f.Store.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}}); !errors.Is(err, executionstore.ErrConflict) {
+	ev, _ := ledger.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg})
+	if err := f.Store.Append(ctx, executionstore.Lease{}, key, ledger.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Batches: []ledger.EventBatch{{Events: []ledger.Event{ev}}}}); !errors.Is(err, executionstore.ErrConflict) {
 		t.Fatalf("acceptance against the tombstone = %v, want the Seq 0 conflict a live Abort produces", err)
 	}
 	if owned, err := f.Store.ListOwned(ctx, "ignored"); err != nil || len(owned) != 0 {

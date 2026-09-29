@@ -12,31 +12,31 @@ import (
 
 // attempts is an in-memory dispatch ledger.
 type attempts struct {
-	commits map[effect.AssignmentKey][]process.Commit
-	epoch   map[effect.AssignmentKey]process.Epoch
+	commits map[effect.AssignmentKey][]ledger.Commit
+	epoch   map[effect.AssignmentKey]ledger.Epoch
 }
 
 func newAttempts() *attempts {
-	return &attempts{commits: map[effect.AssignmentKey][]process.Commit{}, epoch: map[effect.AssignmentKey]process.Epoch{}}
+	return &attempts{commits: map[effect.AssignmentKey][]ledger.Commit{}, epoch: map[effect.AssignmentKey]ledger.Epoch{}}
 }
 
-func (a *attempts) Load(_ context.Context, k effect.AssignmentKey) (process.State, process.Head, bool, error) {
+func (a *attempts) Load(_ context.Context, k effect.AssignmentKey) (process.State, ledger.Head, bool, error) {
 	cs := a.commits[k]
 	state := process.State{Key: k}
 	for i := range cs {
 		var err error
 		if state, err = process.Fold(state, &cs[i]); err != nil {
-			return process.State{}, process.Head{}, false, err
+			return process.State{}, ledger.Head{}, false, err
 		}
 	}
-	return state, process.Head{Next: process.CommitSeq(len(cs))}, len(cs) > 0, nil
+	return state, ledger.Head{Next: ledger.CommitSeq(len(cs))}, len(cs) > 0, nil
 }
 
-func (a *attempts) Read(_ context.Context, k effect.AssignmentKey, _ process.CommitSeq) ([]process.Commit, process.Head, error) {
-	return a.commits[k], process.Head{Next: process.CommitSeq(len(a.commits[k]))}, nil
+func (a *attempts) Read(_ context.Context, k effect.AssignmentKey, _ ledger.CommitSeq) ([]ledger.Commit, ledger.Head, error) {
+	return a.commits[k], ledger.Head{Next: ledger.CommitSeq(len(a.commits[k]))}, nil
 }
 
-func (a *attempts) Append(ctx context.Context, epoch process.Epoch, k effect.AssignmentKey, c process.Commit) error {
+func (a *attempts) Append(ctx context.Context, epoch ledger.Epoch, k effect.AssignmentKey, c ledger.Commit) error {
 	for _, have := range a.commits[k] {
 		if have.CommitID == c.CommitID {
 			return ledger.ErrAlreadyApplied

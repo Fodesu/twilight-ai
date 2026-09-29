@@ -18,6 +18,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -198,7 +199,7 @@ func (w *Worker) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFa
 
 // commitFn decides the commit to append from the current fold of a ledger;
 // a nil commit means there is nothing to do. The Seq is the caller's.
-type commitFn func(state *executionstore.Execution, head executionstore.Head) (*executionstore.Commit, error)
+type commitFn func(state *executionstore.Execution, head ledger.Head) (*ledger.Commit, error)
 
 // commit loads the key's fold, lets fn decide, and appends under lease (a
 // zero lease is an unfenced append). A commit the ledger already holds is
@@ -230,8 +231,8 @@ func (w *Worker) commit(ctx context.Context, lease executionstore.Lease, key eff
 	}
 }
 
-func (w *Worker) event(typ executionstore.EventType, payload any) executionstore.Event {
-	ev, err := executionstore.NewEvent(typ, w.now().UnixMilli(), payload)
+func (w *Worker) event(typ ledger.EventType, payload any) ledger.Event {
+	ev, err := ledger.NewEvent(typ, w.now().UnixMilli(), payload)
 	if err != nil {
 		// The payloads are the store's own closed types; encoding cannot fail.
 		panic(err)
@@ -245,15 +246,15 @@ func (w *Worker) event(typ executionstore.EventType, payload any) executionstore
 // fold has moved somewhere the step cannot follow (a settlement or a cancel
 // another writer landed first), so the caller stops rather than acts on a
 // step it did not take.
-func (w *Worker) transition(lease executionstore.Lease, typ executionstore.EventType, to effect.ExecutionStatus, command string) commitFn {
-	return func(state *executionstore.Execution, _ executionstore.Head) (*executionstore.Commit, error) {
+func (w *Worker) transition(lease executionstore.Lease, typ ledger.EventType, to effect.ExecutionStatus, command string) commitFn {
+	return func(state *executionstore.Execution, _ ledger.Head) (*ledger.Commit, error) {
 		if state.State == to {
 			return nil, nil
 		}
 		if !executionstore.LegalTransition(state.State, to) {
 			return nil, fmt.Errorf("%w: %s from %s", executionstore.ErrStateConflict, typ, state.State)
 		}
-		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s", uint64(lease.Epoch), state.State)), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(typ, nil)}}}}, nil
+		return &ledger.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s", uint64(lease.Epoch), state.State)), Batches: []ledger.EventBatch{{Events: []ledger.Event{w.event(typ, nil)}}}}, nil
 	}
 }
 
@@ -307,7 +308,7 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if ref == "" {
 		return errors.New("executor: backend prepared an empty execution ref")
 	}
-	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{
+	c := ledger.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Batches: []ledger.EventBatch{{Events: []ledger.Event{
 		w.event(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: a}),
 		w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: ExecutionRef{Provider: route.Provider, Ref: ref}}),
 	}}}}
@@ -385,7 +386,7 @@ func (w *Worker) opened(ctx context.Context, state *executionstore.Execution, di
 // the tombstone stands, whether written now or earlier; otherwise the live
 // state of the acceptance that won.
 func (w *Worker) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
-	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AbortCommitID(key), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{
+	c := ledger.Commit{Seq: 0, CommitID: executionstore.AbortCommitID(key), Batches: []ledger.EventBatch{{Events: []ledger.Event{
 		w.event(executionstore.EventExecutionAborted, executionstore.Aborted{Reason: "closed by its controller before acceptance"}),
 	}}}}
 	err := w.store.Append(ctx, executionstore.Lease{}, key, c)
@@ -437,15 +438,15 @@ func (w *Worker) RecoverExecution(ctx context.Context, key effect.AssignmentKey)
 // and a key without a ledger is ErrExecutionNotFound. Repeating it changes
 // nothing.
 func (w *Worker) Acknowledge(ctx context.Context, key effect.AssignmentKey) error {
-	return w.commit(ctx, executionstore.Lease{}, key, func(state *executionstore.Execution, _ executionstore.Head) (*executionstore.Commit, error) {
+	return w.commit(ctx, executionstore.Lease{}, key, func(state *executionstore.Execution, _ ledger.Head) (*ledger.Commit, error) {
 		if !state.Terminal() {
 			return nil, fmt.Errorf("%w: acknowledging an execution in state %s", executionstore.ErrStateConflict, state.State)
 		}
 		if state.Acknowledged || state.Aborted() {
 			return nil, nil // nothing was served, nothing to collect
 		}
-		return &executionstore.Commit{CommitID: executionstore.AcknowledgeCommitID(key),
-			Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(executionstore.EventOutcomeAcknowledged, nil)}}}}, nil
+		return &ledger.Commit{CommitID: executionstore.AcknowledgeCommitID(key),
+			Batches: []ledger.EventBatch{{Events: []ledger.Event{w.event(executionstore.EventOutcomeAcknowledged, nil)}}}}, nil
 	})
 }
 
@@ -458,7 +459,7 @@ func (w *Worker) Acknowledge(ctx context.Context, key effect.AssignmentKey) erro
 // the settle.
 func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	var ref ExecutionRef
-	err := w.commit(ctx, executionstore.Lease{}, key, func(state *executionstore.Execution, _ executionstore.Head) (*executionstore.Commit, error) {
+	err := w.commit(ctx, executionstore.Lease{}, key, func(state *executionstore.Execution, _ ledger.Head) (*ledger.Commit, error) {
 		ref = state.ExecutionRef
 		if state.Terminal() {
 			return nil, nil
@@ -480,9 +481,9 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 // settlement is the commit that ends an execution: execution_settled under
 // the settle CommitID, so the watcher's settle and a controller's Dispose
 // race for one identity and the loser reads the winner's Outcome.
-func (w *Worker) settlement(key effect.AssignmentKey, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus) *executionstore.Commit {
-	return &executionstore.Commit{CommitID: executionstore.SettleCommitID(key),
-		Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(executionstore.EventExecutionSettled, executionstore.Settled{State: state, Outcome: *outcome})}}}}
+func (w *Worker) settlement(key effect.AssignmentKey, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus) *ledger.Commit {
+	return &ledger.Commit{CommitID: executionstore.SettleCommitID(key),
+		Batches: []ledger.EventBatch{{Events: []ledger.Event{w.event(executionstore.EventExecutionSettled, executionstore.Settled{State: state, Outcome: *outcome})}}}}
 }
 
 // settled records that key reached a terminal state in the ledger: the

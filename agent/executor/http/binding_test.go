@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -141,7 +142,7 @@ func (b *uncertainBackend) GetOutcome(ctx context.Context, key effect.Assignment
 // failingCreateStore refuses every Append: the ledger store is unavailable.
 type failingCreateStore struct{ store.Store }
 
-func (failingCreateStore) Append(context.Context, store.Lease, effect.AssignmentKey, store.Commit) error {
+func (failingCreateStore) Append(context.Context, store.Lease, effect.AssignmentKey, ledger.Commit) error {
 	return errors.New("store unavailable")
 }
 

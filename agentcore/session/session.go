@@ -13,14 +13,7 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 )
 
-type (
-	SessionID string
-	// The commit vocabulary is the kernel's (agentcore/ledger).
-	CommitID  = ledger.CommitID
-	EventType = ledger.EventType
-	// Epoch is the writer ownership generation of a stream, from 1.
-	Epoch = ledger.Epoch
-)
+type SessionID string
 
 // Session is one live root and its loaded path. Reads and fork-point
 // resolution go through it. Appending is a Handle, which keeps the lease and
