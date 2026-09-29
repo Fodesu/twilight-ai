@@ -64,7 +64,7 @@ type Ports struct {
 	// Decisions resolve each preset's PromptBuilderRef (DEC-CAT): required.
 	// The core ships no builder; the agent built on it supplies its catalog
 	// (agent/prompt.DefaultPromptBuilders for the reference agent).
-	Decisions *decision.PromptBuilders
+	Decisions *decision.Catalog
 	// MissingEffects is the takeover policy for an Executing effect the
 	// Executor holds nothing for (RUN-CMT-7): the zero value disposes it,
 	// reconcile.RedispatchMissing hands it to the Executor again within a

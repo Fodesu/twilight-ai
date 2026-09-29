@@ -13,8 +13,6 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
-	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/sdk"
@@ -48,34 +46,34 @@ type ContextPromptBuilder struct {
 type Preface func(ctx context.Context, sources decision.Sources, sid session.SessionID) (string, error)
 
 // NewContextPromptBuilder is the PromptBuilderFactory of PromptContextV1.
-func NewContextPromptBuilder(ap preset.AgentPreset, sources decision.Sources) loop.PromptBuilder {
+func NewContextPromptBuilder(ap preset.AgentPreset, sources decision.Sources) decision.Builder {
 	return &ContextPromptBuilder{Sources: sources, Preset: ap}
 }
 
-func (p *ContextPromptBuilder) Build(ctx context.Context, hint plan.PromptInput) (loop.Prompt, error) {
+func (p *ContextPromptBuilder) Build(ctx context.Context, hint decision.Input) (decision.Prompt, error) {
 	if p.Sources.Projections == nil || p.Preset.Model == "" {
-		return loop.Prompt{}, errors.New("decision: builder requires projections and a model")
+		return decision.Prompt{}, errors.New("decision: builder requires projections and a model")
 	}
 	if hint.Scope == "" {
-		return loop.Prompt{}, errors.New("decision: builder hint has no session")
+		return decision.Prompt{}, errors.New("decision: builder hint has no session")
 	}
 	state, head, err := p.Sources.Projections.Load(ctx, session.SessionID(hint.Scope), chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {
-		return loop.Prompt{}, err
+		return decision.Prompt{}, err
 	}
 	cctx, ok := state.(chatlog.Context)
 	if !ok {
-		return loop.Prompt{}, fmt.Errorf("decision: context projection is %T", state)
+		return decision.Prompt{}, fmt.Errorf("decision: context projection is %T", state)
 	}
 	entries, err := chatlog.NewMaterializer(p.Sources.Content).Entries(ctx, cctx.Entries)
 	if err != nil {
-		return loop.Prompt{}, err
+		return decision.Prompt{}, err
 	}
 	system := p.Preset.SystemPrompt
 	if p.Preface != nil {
 		preface, err := p.Preface(ctx, p.Sources, session.SessionID(hint.Scope))
 		if err != nil {
-			return loop.Prompt{}, err
+			return decision.Prompt{}, err
 		}
 		if preface != "" {
 			if system != "" {
@@ -86,17 +84,17 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint plan.PromptInput)
 	}
 	msgs, err := p.messages(system, entries)
 	if err != nil {
-		return loop.Prompt{}, err
+		return decision.Prompt{}, err
 	}
 	specs, defs, err := p.Preset.ToolSpecs()
 	if err != nil {
-		return loop.Prompt{}, err
+		return decision.Prompt{}, err
 	}
 	ids := make([]run.InputID, 0, len(hint.Inputs))
 	for _, in := range hint.Inputs {
 		ids = append(ids, in.ID)
 	}
-	return loop.Prompt{
+	return decision.Prompt{
 		Model:    p.Preset.Model,
 		Request:  sdk.Request{Model: string(p.Preset.Model), Messages: msgs, Tools: defs},
 		InputIDs: ids,
@@ -202,17 +200,17 @@ func (p *ContextPromptBuilder) messages(system string, entries []chatlog.Materia
 	return msgs, nil
 }
 
-// DefaultPromptBuilders is the reference agent's catalog: the context builder
+// DefaultCatalog is the reference agent's catalog: the context builder
 // under PromptContextV1.
-func DefaultPromptBuilders() *decision.PromptBuilders { return PromptBuildersWith(nil) }
+func DefaultCatalog() *decision.Catalog { return CatalogWith(nil) }
 
-// PromptBuildersWith is the catalog whose context builder carries preface.
-func PromptBuildersWith(preface Preface) *decision.PromptBuilders {
-	factory := func(preset preset.AgentPreset, sources decision.Sources) loop.PromptBuilder {
+// CatalogWith is the catalog whose context builder carries preface.
+func CatalogWith(preface Preface) *decision.Catalog {
+	factory := func(preset preset.AgentPreset, sources decision.Sources) decision.Builder {
 		return &ContextPromptBuilder{Sources: sources, Preset: preset, Preface: preface}
 	}
-	builders, _ := decision.NewPromptBuilders(map[preset.PromptBuilderRef]decision.PromptBuilderFactory{PromptContextV1: factory})
-	return builders
+	catalog, _ := decision.NewCatalog(map[decision.BuilderRef]decision.PromptBuilderFactory{PromptContextV1: factory})
+	return catalog
 }
 
 // WorkspacePreface tells the model which workspace the Session works in

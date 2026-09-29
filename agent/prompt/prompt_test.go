@@ -14,7 +14,6 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/session"
@@ -68,7 +67,7 @@ func sources(state chatlog.Context, head session.Head, content fixedContent) dec
 }
 
 func testPreset() preset.AgentPreset {
-	return preset.AgentPreset{Model: "m-1", Prompt: prompt.PromptContextV1, SystemPrompt: "be brief"}
+	return preset.AgentPreset{Model: "m-1", PromptBuilder: prompt.PromptContextV1, SystemPrompt: "be brief"}
 }
 
 func entries() (chatlog.Context, fixedContent) {
@@ -88,9 +87,9 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	state, content := entries()
 	src := sources(state, session.Head{Next: 3}, content)
 	input := plan.PromptInput{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Digest: "sha256:in-1"}}}
-	var prompts []loop.Prompt
+	var prompts []decision.Prompt
 	for i := 0; i < 2; i++ {
-		builders := prompt.DefaultPromptBuilders() // a fresh process builds its own registry
+		builders := prompt.DefaultCatalog() // a fresh process builds its own registry
 		builder, err := builders.Resolve(testPreset(), src)
 		if err != nil {
 			t.Fatal(err)
@@ -109,11 +108,11 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	}
 
 	p := testPreset()
-	p.Prompt = "x/builder"
-	if _, err := prompt.DefaultPromptBuilders().Resolve(p, src); !errors.Is(err, decision.ErrUnknownPromptBuilder) {
+	p.PromptBuilder = "x/builder"
+	if _, err := prompt.DefaultCatalog().Resolve(p, src); !errors.Is(err, decision.ErrUnknownPromptBuilder) {
 		t.Fatalf("unknown builder: err = %v, want %v", err, decision.ErrUnknownPromptBuilder)
 	}
-	var none *decision.PromptBuilders
+	var none *decision.Catalog
 	if _, err := none.Resolve(testPreset(), src); err == nil {
 		t.Fatal("nil registry resolved")
 	}
@@ -126,7 +125,7 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 
 // DEC-CAT-1: registration rejects empty refs, nil factories and duplicates.
 func TestPromptBuilderRegistration(t *testing.T) {
-	builders, err := decision.NewPromptBuilders(nil)
+	builders, err := decision.NewCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

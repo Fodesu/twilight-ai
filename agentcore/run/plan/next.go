@@ -3,6 +3,7 @@ package plan
 import (
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/run"
 )
 
@@ -111,15 +112,9 @@ func NeedsRecovery(s run.MachineState) bool { //nolint:gocritic // hugeParam: re
 	}
 }
 
-// PromptInput is what the Loop hands the application PromptBuilder: the Run
-// boundary facts only. Conversation content (previous assistant output, tool
-// results) is read from the Session by the prompt builder itself.
-type PromptInput struct {
-	Scope      run.Scope // filled by the Loop; Next does not know it
-	RunID      run.RunID
-	SourceStep run.StepID
-	Inputs     []run.AgentInput
-}
+// PromptInput is the decision boundary's Input, re-exported under the name
+// the Run vocabulary uses.
+type PromptInput = decision.Input
 
 // Next derives the pending action from the current state (RUN-MCH-4).
 // Terminal states return ErrRunTerminal; callers check Status first.

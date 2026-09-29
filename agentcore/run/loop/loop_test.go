@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/felinics/twilight/agentcore/decision"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/plan"
@@ -91,7 +92,7 @@ type staticBuilder struct {
 	specs []ToolSpec
 }
 
-func (p staticBuilder) Build(_ context.Context, hint plan.PromptInput) (Prompt, error) {
+func (p staticBuilder) Build(_ context.Context, hint plan.PromptInput) (decision.Prompt, error) {
 	model := p.model
 	if model == "" {
 		model = testModel
@@ -104,7 +105,7 @@ func (p staticBuilder) Build(_ context.Context, hint plan.PromptInput) (Prompt, 
 	for i, in := range hint.Inputs {
 		ids[i] = in.ID
 	}
-	return Prompt{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
+	return decision.Prompt{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
 }
 
 // toolDef is the provider definition every test tool shares; ToolSpec keeps

@@ -110,7 +110,7 @@ type Config struct {
 	Registry preset.Registry
 	// Decisions resolve each preset's PromptBuilderRef; nil selects this
 	// agent's catalog, prompt.DefaultPromptBuilders().
-	Decisions *decision.PromptBuilders
+	Decisions *decision.Catalog
 
 	Ownership session.OpenOptions
 	// TargetResolver resolves the opaque resource target of each effect
@@ -328,7 +328,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 			c.TargetResolver = resolver
 		}
 		if c.Decisions == nil {
-			c.Decisions = prompt.PromptBuildersWith(prompt.WorkspacePreface)
+			c.Decisions = prompt.CatalogWith(prompt.WorkspacePreface)
 		}
 		if c.Workspaces.Provider != nil {
 			backend, err := sandbox.New(sandbox.Options{Workspaces: c.Workspaces.Store, Provider: c.Workspaces.Provider,
@@ -359,7 +359,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	observers := append([]writer.CommitObserver{forwardingObserver{&bus}}, c.Observers...)
 	decisions := c.Decisions
 	if decisions == nil {
-		decisions = prompt.DefaultPromptBuilders()
+		decisions = prompt.DefaultCatalog()
 	}
 	a, err := owner.New(owner.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,

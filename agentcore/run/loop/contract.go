@@ -19,26 +19,6 @@ import (
 // Run locally so every Executing target has one in-process owner (RUN-CMT-6).
 var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
 
-// PromptBuilder is the decision-layer port the host resolves from the
-// AgentPreset (DEC-PMT): it builds the next prompt from the surrounding
-// conversation, which it reads by the PromptInput's Scope (RUN-LOP-2). Loop
-// freezes the prompt into an agent-owned ModelRequest before crossing the
-// RunStore boundary.
-type PromptBuilder interface {
-	Build(context.Context, plan.PromptInput) (Prompt, error)
-}
-
-// Prompt is one built model input: the model to call, the provider request
-// (messages and tool definitions), the inputs it consumed, the freshness
-// token of the context it was built from, and the frozen tool specs.
-type Prompt struct {
-	Model    run.ModelRef
-	Request  sdk.Request
-	InputIDs []run.InputID
-	Token    run.PromptToken
-	Tools    []run.ToolSpec
-}
-
 // EffectContext identifies the effect a target is resolved for: the Run's
 // Scope and identity, the Step, the call of a tool effect, the EffectID the
 // effect is about to be started under, the kind of the effect and, for a tool

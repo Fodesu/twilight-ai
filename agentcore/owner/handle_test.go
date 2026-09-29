@@ -41,7 +41,7 @@ func basePorts(t *testing.T) owner.Ports {
 		t.Fatal(err)
 	}
 	bindings, ledger := artifacttest.Stores(t)
-	decisions, err := decision.NewPromptBuilders(nil)
+	decisions, err := decision.NewCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

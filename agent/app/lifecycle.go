@@ -132,7 +132,7 @@ func WithSystemPrompt(s string) PresetOption {
 
 // WithPrompt selects the decision component used by the preset.
 func WithPrompt(ref preset.PromptBuilderRef) PresetOption {
-	return func(p *preset.AgentPreset) { p.Prompt = ref }
+	return func(p *preset.AgentPreset) { p.PromptBuilder = ref }
 }
 
 // WithScheduling selects tool scheduling.
@@ -174,7 +174,7 @@ func NewPresetFromDefinitions(model run.ModelRef, defs []preset.PublicTool, opts
 	if model == "" {
 		return preset.AgentPreset{}, errNoModel
 	}
-	p := preset.AgentPreset{Model: model, Prompt: prompt.PromptContextV1, Tools: append([]preset.PublicTool(nil), defs...)}
+	p := preset.AgentPreset{Model: model, PromptBuilder: prompt.PromptContextV1, Tools: append([]preset.PublicTool(nil), defs...)}
 	for _, opt := range opts {
 		opt(&p)
 	}

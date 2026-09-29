@@ -9,12 +9,12 @@ import (
 // TestPresetDigestGolden freezes the preset digest and its field boundary:
 // every frozen decision input changes the digest.
 func TestPresetDigestGolden(t *testing.T) {
-	base := AgentPreset{Model: "m-1", Prompt: "twilight/decision/prompt/context-v1"}
+	base := AgentPreset{Model: "m-1", PromptBuilder: "twilight/decision/prompt/context-v1"}
 	d, err := DigestPreset(&base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "sha256:bbc2900dd3cbdec56088512aeab717f31fc7604e5495ac05ec82c0a68f204eef"
+	const want = "sha256:0df9e77f409900f02d12be56197ad6cdcf57f948d5ee56b388c9a0f89fdcfbf4"
 	if want == "" {
 		t.Errorf("UNSET preset digest = %s", d)
 	} else if string(d) != want {
@@ -26,7 +26,7 @@ func TestPresetDigestGolden(t *testing.T) {
 		mutate func(*AgentPreset)
 	}{
 		{"system prompt", func(p *AgentPreset) { p.SystemPrompt = "be brief" }},
-		{"builder", func(p *AgentPreset) { p.Prompt = "other/builder" }},
+		{"builder", func(p *AgentPreset) { p.PromptBuilder = "other/builder" }},
 		{"scheduling mode", func(p *AgentPreset) { p.Scheduling.Mode = run.ToolScheduleSequential }},
 		{"scheduling bound", func(p *AgentPreset) { p.Scheduling.MaxParallel = 2 }},
 		{"malformed retries", func(p *AgentPreset) { p.MalformedRetries = 1 }},
@@ -41,7 +41,7 @@ func TestPresetDigestGolden(t *testing.T) {
 }
 
 func TestValidatePreset(t *testing.T) {
-	ok := AgentPreset{Model: "m", Prompt: "p"}
+	ok := AgentPreset{Model: "m", PromptBuilder: "p"}
 	if err := ValidatePreset(&ok); err != nil {
 		t.Fatalf("valid preset rejected: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestValidatePreset(t *testing.T) {
 		mutate func(*AgentPreset)
 	}{
 		{"model", func(p *AgentPreset) { p.Model = "" }},
-		{"builder", func(p *AgentPreset) { p.Prompt = "" }},
+		{"builder", func(p *AgentPreset) { p.PromptBuilder = "" }},
 		{"scheduling mode", func(p *AgentPreset) { p.Scheduling.Mode = "round-robin" }},
 		{"scheduling bound", func(p *AgentPreset) { p.Scheduling.MaxParallel = -1 }},
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/jsonstable"
@@ -152,7 +153,7 @@ func loadState(t testing.TB, rt *runmod.SessionRunStore, w writer.Writer, runID 
 
 // newLoop builds a Loop over a LocalExecutor for tests; the executor no
 // longer reads frozen bodies (RUN-EXE-7), so the runtime is not wired in.
-func newLoop(t testing.TB, sink EventSink, models ModelCatalog, tools ToolCatalog, builder PromptBuilder, settings Settings, streaming bool) (*Loop, error) {
+func newLoop(t testing.TB, sink EventSink, models ModelCatalog, tools ToolCatalog, builder decision.Builder, settings Settings, streaming bool) (*Loop, error) {
 	if models == nil {
 		return nil, errors.New("agent: loop: nil model catalog")
 	}

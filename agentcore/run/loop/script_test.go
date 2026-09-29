@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/plan"
@@ -128,7 +129,7 @@ type scriptBuilder struct {
 	lastHint plan.PromptInput
 }
 
-func (p *scriptBuilder) Build(_ context.Context, hint plan.PromptInput) (loop.Prompt, error) {
+func (p *scriptBuilder) Build(_ context.Context, hint plan.PromptInput) (decision.Prompt, error) {
 	p.lastHint = hint
 	model := p.model
 	if model == "" {
@@ -142,5 +143,5 @@ func (p *scriptBuilder) Build(_ context.Context, hint plan.PromptInput) (loop.Pr
 	for i, in := range hint.Inputs {
 		ids[i] = in.ID
 	}
-	return loop.Prompt{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
+	return decision.Prompt{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
 }

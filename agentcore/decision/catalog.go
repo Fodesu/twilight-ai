@@ -4,25 +4,24 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/preset"
-	"github.com/felinics/twilight/agentcore/run/loop"
 )
 
-// PromptBuilderFactory builds the PromptBuilder of one PromptBuilderRef for
-// one AgentPreset. The factory is pure configuration: the builder it returns
-// reads state only through the Sources (DEC-CAT-1).
-type PromptBuilderFactory func(preset.AgentPreset, Sources) loop.PromptBuilder
+// PromptBuilderFactory builds the Builder of one BuilderRef for one
+// AgentPreset. The factory is pure configuration: the builder it returns
+// reads state only through the Sources.
+type PromptBuilderFactory func(preset.AgentPreset, Sources) Builder
 
-// PromptBuilders resolves PromptBuilderRefs on the Owner side (DEC-CAT-1).
-// It is the decision layer's only registry: every other decision input is
-// data on the AgentPreset itself.
-type PromptBuilders struct {
-	factories map[preset.PromptBuilderRef]PromptBuilderFactory
+// Catalog resolves BuilderRefs on the Owner side. It is the decision
+// layer's only registry: every other decision input is data on the
+// AgentPreset itself.
+type Catalog struct {
+	factories map[BuilderRef]PromptBuilderFactory
 }
 
-// NewPromptBuilders builds a registry; empty refs and nil factories are
-// rejected, duplicates conflict.
-func NewPromptBuilders(entries map[preset.PromptBuilderRef]PromptBuilderFactory) (*PromptBuilders, error) {
-	c := &PromptBuilders{factories: make(map[preset.PromptBuilderRef]PromptBuilderFactory, len(entries))}
+// NewCatalog builds a registry; empty refs and nil factories are rejected,
+// duplicates conflict.
+func NewCatalog(entries map[BuilderRef]PromptBuilderFactory) (*Catalog, error) {
+	c := &Catalog{factories: make(map[BuilderRef]PromptBuilderFactory, len(entries))}
 	for ref, f := range entries {
 		if err := c.Register(ref, f); err != nil {
 			return nil, err
@@ -32,7 +31,7 @@ func NewPromptBuilders(entries map[preset.PromptBuilderRef]PromptBuilderFactory)
 }
 
 // Register adds one prompt builder; the ref must be new.
-func (c *PromptBuilders) Register(ref preset.PromptBuilderRef, f PromptBuilderFactory) error {
+func (c *Catalog) Register(ref BuilderRef, f PromptBuilderFactory) error {
 	if ref == "" || f == nil {
 		return fmt.Errorf("decision: prompt builder registration requires a ref and a factory")
 	}
@@ -43,15 +42,15 @@ func (c *PromptBuilders) Register(ref preset.PromptBuilderRef, f PromptBuilderFa
 	return nil
 }
 
-// Resolve returns the builder of preset.Prompt or ErrUnknownPromptBuilder
-// (DEC-CAT-2).
-func (c *PromptBuilders) Resolve(ap preset.AgentPreset, sources Sources) (loop.PromptBuilder, error) {
+// Resolve returns the builder of the preset's PromptBuilder ref or
+// ErrUnknownPromptBuilder.
+func (c *Catalog) Resolve(ap preset.AgentPreset, sources Sources) (Builder, error) {
 	if c == nil {
 		return nil, fmt.Errorf("decision: no prompt builders configured")
 	}
-	f, ok := c.factories[ap.Prompt]
+	f, ok := c.factories[ap.PromptBuilder]
 	if !ok {
-		return nil, fmt.Errorf("%w: %q", ErrUnknownPromptBuilder, ap.Prompt)
+		return nil, fmt.Errorf("%w: %q", ErrUnknownPromptBuilder, ap.PromptBuilder)
 	}
 	return f(ap, sources), nil
 }

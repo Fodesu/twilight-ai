@@ -51,8 +51,8 @@ type PublicTool struct {
 type AgentPreset struct {
 	Model run.ModelRef `json:"model"`
 	Tools []PublicTool `json:"tools,omitempty"`
-	// Prompt names the decision component resolved on the Owner side.
-	Prompt PromptBuilderRef `json:"prompt"`
+	// PromptBuilder names the decision component resolved on the Owner side.
+	PromptBuilder PromptBuilderRef `json:"promptBuilder"`
 	// Scheduling is how the tool calls of one step run: parallel (default) or
 	// sequential, with an optional bound on concurrent workers. It is frozen
 	// onto each ToolStep.
@@ -75,11 +75,11 @@ func DigestPreset(p *AgentPreset) (jsonstable.Digest, error) {
 	body := struct {
 		Model            run.ModelRef       `json:"model"`
 		Tools            []PublicTool       `json:"tools,omitempty"`
-		Prompt           PromptBuilderRef   `json:"prompt"`
+		PromptBuilder    PromptBuilderRef   `json:"promptBuilder"`
 		Scheduling       run.ToolScheduling `json:"scheduling,omitempty"`
 		MalformedRetries uint8              `json:"malformedRetries,omitempty"`
 		SystemPrompt     string             `json:"systemPrompt,omitempty"`
-	}{p.Model, p.Tools, p.Prompt, p.Scheduling, p.MalformedRetries, p.SystemPrompt}
+	}{p.Model, p.Tools, p.PromptBuilder, p.Scheduling, p.MalformedRetries, p.SystemPrompt}
 	raw, err := jsonstable.EncodeTypedPayload(1, DigestDomain, body)
 	if err != nil {
 		return "", err
@@ -93,7 +93,7 @@ func ValidatePreset(p *AgentPreset) error {
 	switch {
 	case p.Model == "":
 		return errors.New("preset: preset requires a model")
-	case p.Prompt == "":
+	case p.PromptBuilder == "":
 		return errors.New("preset: preset requires a prompt builder ref")
 	}
 	if m := p.Scheduling.Mode; m != "" && m != run.ToolScheduleParallel && m != run.ToolScheduleSequential {

@@ -54,7 +54,7 @@ type Driver struct {
 	Turns     turn.Reader
 	Executor  effect.ExecutionPort
 	Presets   Presets
-	Decisions *decision.PromptBuilders
+	Decisions *decision.Catalog
 	Sources   decision.Sources
 	// Targets resolves the opaque target of each effect (RUN-LOP-9); every
 	// Loop shares it.
