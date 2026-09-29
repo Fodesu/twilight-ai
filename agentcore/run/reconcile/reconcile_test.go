@@ -12,7 +12,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/plan"
-	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -85,8 +85,8 @@ func watching(t *testing.T, port effect.ExecutionPort) *effect.Watcher {
 	return w
 }
 
-func executingModel(eff run.EffectID) *runtime.Snapshot {
-	return &runtime.Snapshot{State: run.MachineState{
+func executingModel(eff run.EffectID) *store.Snapshot {
+	return &store.Snapshot{State: run.MachineState{
 		RunID: "r1", Status: run.RunActive,
 		Current: run.ModelStep{RefValue: run.StepRef{RunID: "r1", ID: "s1"}, Model: "m", RequestDigest: "sha256:req", Status: run.ModelExecuting, Effect: eff},
 	}}

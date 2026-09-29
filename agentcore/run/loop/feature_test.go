@@ -20,8 +20,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/plan"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -93,8 +93,8 @@ type Feature struct {
 	runCtx context.Context
 	runID  run.RunID
 	runs   *runmod.SessionRunStore
-	rt     runtime.RunStore // runs bound to w
-	w      writer.Writer    // the owner's capability over defaultSession
+	rt     store.RunStore // runs bound to w
+	w      writer.Writer  // the owner's capability over defaultSession
 
 	model   run.ModelRef
 	results []sdk.ModelResult
@@ -238,7 +238,7 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.rt.Commit(f.ctx, runtime.CommitRequest{Base: snap.Position, Command: env})
+	_, err = f.rt.Commit(f.ctx, store.CommitRequest{Base: snap.Position, Command: env})
 	return err
 }
 
@@ -388,7 +388,7 @@ func (f *Feature) ensureLoop() {
 	f.loop = l
 }
 
-func (f *Feature) load() runtime.Snapshot {
+func (f *Feature) load() store.Snapshot {
 	f.t.Helper()
 	snap, err := f.rt.Load(f.ctx, f.runID)
 	if err != nil {
@@ -411,7 +411,7 @@ func (f *Feature) waiting() run.ResponseRequest {
 	return reqs[0]
 }
 
-func (f *Feature) commit(cmd run.AgentCommand) runtime.CommitResult {
+func (f *Feature) commit(cmd run.AgentCommand) store.CommitResult {
 	f.t.Helper()
 	snap := f.load()
 	cmd = f.withEffect(cmd, snap)
@@ -420,7 +420,7 @@ func (f *Feature) commit(cmd run.AgentCommand) runtime.CommitResult {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	res, err := f.rt.Commit(f.ctx, runtime.CommitRequest{
+	res, err := f.rt.Commit(f.ctx, store.CommitRequest{
 		Base: snap.Position, Command: env,
 	})
 	if err != nil {
@@ -429,7 +429,7 @@ func (f *Feature) commit(cmd run.AgentCommand) runtime.CommitResult {
 	return res
 }
 
-func (f *Feature) commandID(cmd run.AgentCommand, snap runtime.Snapshot) run.CommandID {
+func (f *Feature) commandID(cmd run.AgentCommand, snap store.Snapshot) run.CommandID {
 	switch c := cmd.(type) {
 	case run.AcceptInput:
 		return schema.Identity().DeriveInputCommandID(f.runID, c.InputIDs()...)
@@ -520,7 +520,7 @@ func (f *Feature) facts() []run.Fact {
 // withEffect fills the derived effect identity of a start or recovery that
 // names none (RUN-WIR-1): the model effect from the current step's rejected
 // count, the tool effect from the call, the recovered effect from the step.
-func (f *Feature) withEffect(cmd run.AgentCommand, snap runtime.Snapshot) run.AgentCommand {
+func (f *Feature) withEffect(cmd run.AgentCommand, snap store.Snapshot) run.AgentCommand {
 	switch c := cmd.(type) {
 	case run.StartModelExecution:
 		if c.Effect == "" {
@@ -569,14 +569,14 @@ func (f *Feature) withEffect(cmd run.AgentCommand, snap runtime.Snapshot) run.Ag
 }
 
 // executingModelEffect is the effect the current ModelStep is executing.
-func executingModelEffect(snap runtime.Snapshot) run.EffectID {
+func executingModelEffect(snap store.Snapshot) run.EffectID {
 	ms, _ := snap.State.Current.(run.ModelStep)
 	return ms.Effect
 }
 
 // executingToolEffect is the effect the named call of the current ToolStep
 // is executing.
-func executingToolEffect(snap runtime.Snapshot, callID run.CallID) run.EffectID {
+func executingToolEffect(snap store.Snapshot, callID run.CallID) run.EffectID {
 	ts, _ := snap.State.Current.(run.ToolStep)
 	for _, call := range ts.Calls {
 		if call.CallID == callID {

@@ -11,7 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
-	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -19,12 +19,12 @@ import (
 // asked to commit, so a test can assert what a fenced Loop still tried to
 // write.
 type commitLog struct {
-	runtime.RunStore
+	store.RunStore
 	mu   sync.Mutex
 	cmds []AgentCommand
 }
 
-func (c *commitLog) Commit(ctx context.Context, req runtime.CommitRequest) (runtime.CommitResult, error) {
+func (c *commitLog) Commit(ctx context.Context, req store.CommitRequest) (store.CommitResult, error) {
 	c.mu.Lock()
 	c.cmds = append(c.cmds, req.Command.Command)
 	c.mu.Unlock()
@@ -121,7 +121,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, runtime.ErrOwnershipLost) {
+		if !errors.Is(err, store.ErrOwnershipLost) {
 			t.Fatalf("loop error = %v, want ErrOwnershipLost", err)
 		}
 	case <-time.After(2 * time.Second):
@@ -181,7 +181,7 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, runtime.ErrOwnershipLost) {
+		if !errors.Is(err, store.ErrOwnershipLost) {
 			t.Fatalf("loop error = %v, want ErrOwnershipLost", err)
 		}
 	case <-time.After(2 * time.Second):

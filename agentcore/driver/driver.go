@@ -22,7 +22,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
-	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -180,10 +180,10 @@ func (d *Driver) loopFor(ref preset.PresetRef) (*loop.Loop, error) {
 
 // beforePrepare hands the Loop's hook to the Planner with the Writer the
 // bound store commits through.
-func (d *Driver) beforePrepare(ctx context.Context, store runtime.RunStore, input plan.PromptInput) error {
-	owned, ok := store.(interface{ Writer() writer.Writer })
+func (d *Driver) beforePrepare(ctx context.Context, st store.RunStore, input plan.PromptInput) error {
+	owned, ok := st.(interface{ Writer() writer.Writer })
 	if !ok {
-		return fmt.Errorf("driver: run store %T exposes no writer for the planner", store)
+		return fmt.Errorf("driver: run store %T exposes no writer for the planner", st)
 	}
 	return d.Planner.BeforePrepare(ctx, owned.Writer(), input)
 }

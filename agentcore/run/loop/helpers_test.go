@@ -11,8 +11,8 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	. "github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -143,7 +143,7 @@ func recordFacts(t testing.TB, rt *runmod.SessionRunStore, runID RunID) []Fact {
 	return record.Facts
 }
 
-func loadState(t testing.TB, rt *runmod.SessionRunStore, w writer.Writer, runID RunID) runtime.Snapshot {
+func loadState(t testing.TB, rt *runmod.SessionRunStore, w writer.Writer, runID RunID) store.Snapshot {
 	t.Helper()
 	snap, err := rt.Bind(w).Load(context.Background(), runID)
 	if err != nil {

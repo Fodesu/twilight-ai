@@ -22,7 +22,7 @@
 // agent/run/canonical the digest and identity rules, agent/run/wire the
 // persisted fact and command protocol, agent/run/frozen the frozen-body
 // protocol, agent/run/schema the version binding, agent/run/plan the next
-// action and the takeover dispositions, and agent/run/runtime the RunStore
+// action and the takeover dispositions, and agent/run/store the RunStore
 // port and commit evaluation. Outside model/sdkconv the protocol tier depends
 // only on agent/es, agent/jsonstable and itself.
 //

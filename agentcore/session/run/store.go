@@ -9,8 +9,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/run/wire"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -31,7 +31,7 @@ func DefaultSnapshotPolicy(_, after *run.MachineState) bool {
 	return open
 }
 
-// Config assembles a SessionRunStore (agent-runtime.md 10).
+// Config assembles a SessionRunStore (agent-store.md 10).
 type Config struct {
 	Registry *extension.Registry
 	// Store is the read side: Record folds from it (through Cache) without
@@ -51,7 +51,7 @@ type Config struct {
 }
 
 // SessionRunStore is the Session adapter of the Run core: it realizes
-// runtime.RunStore over a Session Writer (Bind), reads Runs by SessionID without
+// store.RunStore over a Session Writer (Bind), reads Runs by SessionID without
 // ownership (Record), and contributes the Run module's Parts to a cross-module
 // unit of work (Command, CreateRun). It is the only code that encodes Run
 // facts as twilight/run/ events.
@@ -81,7 +81,7 @@ func (s *SessionRunStore) nowMilli() int64 { return s.cfg.Now().UnixMilli() }
 // ownershipError maps the Writer's ownership loss onto the Run sentinel.
 func ownershipError(err error) error {
 	if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost) {
-		return fmt.Errorf("%w: %w", runtime.ErrOwnershipLost, err)
+		return fmt.Errorf("%w: %w", store.ErrOwnershipLost, err)
 	}
 	return err
 }
@@ -100,10 +100,10 @@ func loadMachine(view writer.View) (Machine, error) {
 
 // --- bound port ---------------------------------------------------------------------
 
-// Bind returns the runtime.RunStore over one Session Writer: the caller's
+// Bind returns the store.RunStore over one Session Writer: the caller's
 // ownership capability, so every command of a drive lands on the same Writer,
 // epoch and projection view (OWN-HDL-2).
-func (s *SessionRunStore) Bind(w writer.Writer) runtime.RunStore { return &bound{s: s, w: w} }
+func (s *SessionRunStore) Bind(w writer.Writer) store.RunStore { return &bound{s: s, w: w} }
 
 type bound struct {
 	s *SessionRunStore
@@ -118,42 +118,42 @@ func (b *bound) Writer() writer.Writer { return b.w }
 
 // Load reads the Writer's transactional projection (RUN-CMT-2); a Run the
 // projection no longer holds is folded from its own stream (RUN-CMT-1).
-func (b *bound) Load(ctx context.Context, runID run.RunID) (runtime.Snapshot, error) {
-	if err := runtime.CheckContext(ctx); err != nil {
-		return runtime.Snapshot{}, err
+func (b *bound) Load(ctx context.Context, runID run.RunID) (store.Snapshot, error) {
+	if err := store.CheckContext(ctx); err != nil {
+		return store.Snapshot{}, err
 	}
 	sid := b.w.SessionID()
 	state, _, err := b.w.Projections().Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
 	if err != nil {
-		return runtime.Snapshot{}, err
+		return store.Snapshot{}, err
 	}
 	m, ok := state.(Machine)
 	if !ok {
-		return runtime.Snapshot{}, fmt.Errorf("runmod: machine projection is %T", state)
+		return store.Snapshot{}, fmt.Errorf("runmod: machine projection is %T", state)
 	}
 	if snap, ok := m.snapshot(runID); ok {
 		return snap, nil
 	}
 	record, err := b.s.record(ctx, sid, runID, nil, session.Head{})
 	if err != nil {
-		return runtime.Snapshot{}, err
+		return store.Snapshot{}, err
 	}
 	return record.Snapshot, nil
 }
 
 // Commit is one Run command as a unit of work of its own: the Run module's
 // Part alone (RUN-CMT-3).
-func (b *bound) Commit(ctx context.Context, req runtime.CommitRequest) (runtime.CommitResult, error) {
-	if err := runtime.CheckContext(ctx); err != nil {
-		return runtime.CommitResult{}, err
+func (b *bound) Commit(ctx context.Context, req store.CommitRequest) (store.CommitResult, error) {
+	if err := store.CheckContext(ctx); err != nil {
+		return store.CommitResult{}, err
 	}
 	cmd, err := b.s.Command(ctx, req)
 	if err != nil {
-		return runtime.CommitResult{}, err
+		return store.CommitResult{}, err
 	}
 	res, err := unit.Commit(ctx, b.w, b.s.nowMilli(), unit.Work{CommitID: session.CommitID(req.Command.ID), Parts: []unit.Part{cmd}})
 	if err != nil {
-		return runtime.CommitResult{}, ownershipError(err)
+		return store.CommitResult{}, ownershipError(err)
 	}
 	return cmd.Result(ctx, b.w, &res)
 }
@@ -165,7 +165,7 @@ func (b *bound) FrozenRequest(ctx context.Context, digest run.Digest) (model.Mod
 // FrozenRequest returns the request body a Prepared or Executing ModelStep
 // names by RequestDigest (RUN-WIR-4).
 func (s *SessionRunStore) FrozenRequest(ctx context.Context, digest run.Digest) (model.ModelRequest, error) {
-	if err := runtime.CheckContext(ctx); err != nil {
+	if err := store.CheckContext(ctx); err != nil {
 		return model.ModelRequest{}, err
 	}
 	if digest == "" {
@@ -191,7 +191,7 @@ func (s *SessionRunStore) FrozenRequest(ctx context.Context, digest run.Digest) 
 // ErrRunTerminal, ErrStaleRuntime, ErrCommandConflict, ErrRunNotFound.
 type Command struct {
 	s   *SessionRunStore
-	req runtime.CommitRequest
+	req store.CommitRequest
 
 	prepared bool
 	before   run.MachineState
@@ -203,7 +203,7 @@ type Command struct {
 // Command builds the Part of one command. The bodies it names by digest are
 // stored before the unit commits: Put is idempotent and content-addressed,
 // so a rejected or replayed command leaves nothing inconsistent behind.
-func (s *SessionRunStore) Command(ctx context.Context, req runtime.CommitRequest) (*Command, error) {
+func (s *SessionRunStore) Command(ctx context.Context, req store.CommitRequest) (*Command, error) {
 	if req.Command.RunID == "" || req.Command.ID == "" {
 		return nil, errors.New("runmod: command requires RunID and CommandID")
 	}
@@ -227,21 +227,21 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 		if _, exists := view.StreamHead(Stream(runID)); exists {
 			return nil, run.ErrRunTerminal
 		}
-		return nil, runtime.ErrRunNotFound
+		return nil, store.ErrRunNotFound
 	}
-	decision, err := runtime.EvaluateCommit(state, proj.Positions[runID], c.req)
+	decision, err := store.EvaluateCommit(state, proj.Positions[runID], c.req)
 	if err != nil {
 		return nil, err
 	}
 	switch decision.Kind {
-	case runtime.DecisionConflict:
+	case store.DecisionConflict:
 		return nil, run.ErrCommandConflict
-	case runtime.DecisionStale:
+	case store.DecisionStale:
 		if decision.Reject != nil && !errors.Is(decision.Reject, run.ErrStaleRuntime) {
 			return nil, fmt.Errorf("%w: %w", run.ErrStaleRuntime, decision.Reject)
 		}
 		return nil, run.ErrStaleRuntime
-	case runtime.DecisionTerminal:
+	case store.DecisionTerminal:
 		return nil, run.ErrRunTerminal
 	}
 	events := make([]writer.TypedEvent, 0, len(decision.Facts))
@@ -257,32 +257,32 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 
 // Result maps the unit's outcome onto the Run's CommitResult. w is the Writer
 // the unit committed through; a replay reads the current snapshot from it.
-func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.CommitResult) (runtime.CommitResult, error) {
+func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.CommitResult) (store.CommitResult, error) {
 	switch res.Outcome {
 	case writer.CommitApplied:
 		if !c.prepared {
-			return runtime.CommitResult{}, errors.New("runmod: commit applied without the run part")
+			return store.CommitResult{}, errors.New("runmod: commit applied without the run part")
 		}
 		c.s.afterCommit(ctx, w, &c.before, &c.after)
-		return runtime.CommitResult{Status: runtime.CommitAccepted, Facts: c.facts,
-			Snapshot: runtime.Snapshot{State: c.after, Position: c.position}}, nil
+		return store.CommitResult{Status: store.CommitAccepted, Facts: c.facts,
+			Snapshot: store.Snapshot{State: c.after, Position: c.position}}, nil
 	case writer.CommitAlreadyApplied:
 		// Idempotency is the Session's (SessionID, CommitID) index alone
 		// (RUN-CMT-5): every Run CommandID is content-derived, so a hit is the
 		// same command and nothing is re-decided.
 		snapshot, err := c.s.Bind(w).Load(ctx, c.req.Command.RunID)
 		if err != nil {
-			return runtime.CommitResult{}, err
+			return store.CommitResult{}, err
 		}
 		facts, err := c.s.factsOf(res.Commit, c.req.Command.RunID)
 		if err != nil {
-			return runtime.CommitResult{}, err
+			return store.CommitResult{}, err
 		}
-		return runtime.CommitResult{Status: runtime.CommitAlreadyApplied, Snapshot: snapshot, Facts: facts}, nil
+		return store.CommitResult{Status: store.CommitAlreadyApplied, Snapshot: snapshot, Facts: facts}, nil
 	case writer.CommitConflict:
-		return runtime.CommitResult{}, run.ErrCommandConflict
+		return store.CommitResult{}, run.ErrCommandConflict
 	default:
-		return runtime.CommitResult{}, fmt.Errorf("runmod: commit: %s: %s", res.Outcome, res.Detail)
+		return store.CommitResult{}, fmt.Errorf("runmod: commit: %s: %s", res.Outcome, res.Detail)
 	}
 }
 
@@ -393,7 +393,7 @@ func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]wr
 // RunID in stream order, folded and compared with the projection.
 type Record struct {
 	Created  session.StreamSeq
-	Snapshot runtime.Snapshot
+	Snapshot store.Snapshot
 	Events   []session.Event
 	Facts    []run.Fact
 }
@@ -401,7 +401,7 @@ type Record struct {
 // Record folds a Run from the Store by SessionID; it needs no ownership
 // (OWN-HDL-2).
 func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, runID run.RunID) (Record, error) {
-	if err := runtime.CheckContext(ctx); err != nil {
+	if err := store.CheckContext(ctx); err != nil {
 		return Record{}, err
 	}
 	state, head, err := s.reader.Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
@@ -455,15 +455,15 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 		position = run.RunPosition(i)
 	}
 	if len(record.Facts) == 0 {
-		return Record{}, runtime.ErrRunNotFound
+		return Record{}, store.ErrRunNotFound
 	}
-	state, err := runtime.FoldRun(record.Facts)
+	state, err := store.FoldRun(record.Facts)
 	if err != nil {
 		return Record{}, fmt.Errorf("runmod: record: %w", err)
 	}
 	if expect != nil && page.Head == expectHead && !wire.StatesEquivalent(&state, expect) {
 		return Record{}, errors.New("runmod: record: projection diverges from the event fold")
 	}
-	record.Snapshot = runtime.Snapshot{State: state, Position: position}
+	record.Snapshot = store.Snapshot{State: state, Position: position}
 	return record, nil
 }

@@ -7,8 +7,8 @@ import (
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/run/wire"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -42,13 +42,13 @@ func (m Machine) clone() Machine {
 	return out
 }
 
-// snapshot returns the runtime.Snapshot of an active Run.
-func (m Machine) snapshot(runID run.RunID) (runtime.Snapshot, bool) {
+// snapshot returns the store.Snapshot of an active Run.
+func (m Machine) snapshot(runID run.RunID) (store.Snapshot, bool) {
 	ms, ok := m.Active[runID]
 	if !ok {
-		return runtime.Snapshot{}, false
+		return store.Snapshot{}, false
 	}
-	return runtime.Snapshot{State: ms, Position: m.Positions[runID]}, true
+	return store.Snapshot{State: ms, Position: m.Positions[runID]}, true
 }
 
 // Apply folds one decoded run event (RUN-MCH-3 via Protocol.Evolve).

@@ -1,9 +1,9 @@
-// Package runtimetest is the RUN-CMP-2 Runtime conformance suite. It takes a
+// Package storetest is the RunStore conformance suite (RUN-CMP-2). It takes a
 // session.Store factory so the Memory store and every durable adapter run the
 // same assertions; it asserts Run semantics only and leaves group atomicity,
 // ownership fencing and cache equivalence to the kernel and
 // Module Framework suites.
-package runtimetest
+package storetest
 
 import (
 	"context"
@@ -15,8 +15,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -234,7 +234,7 @@ func (h *harness) startRun(turnID turn.TurnID, runID run.RunID, inputs ...run.Ag
 	h.mustApply(h.startGroup(turnID, runID, 1, inputs...))
 }
 
-func (h *harness) load(runID run.RunID) runtime.Snapshot {
+func (h *harness) load(runID run.RunID) store.Snapshot {
 	h.t.Helper()
 	snap, err := h.rt.Bind(h.writer()).Load(h.ctx, runID)
 	if err != nil {
@@ -274,7 +274,7 @@ func (a attachPart) Prepare(_ context.Context, _ writer.View, now int64) ([]writ
 
 // commitResult is a Run command's result plus the stored commit it landed in.
 type commitResult struct {
-	runtime.CommitResult
+	store.CommitResult
 	Events []session.Event
 	Head   session.Head
 }
@@ -292,7 +292,7 @@ func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID 
 	if err != nil {
 		h.fatal(err)
 	}
-	req := runtime.CommitRequest{Base: base, Command: env}
+	req := store.CommitRequest{Base: base, Command: env}
 	if len(attach) == 0 {
 		res, err := rt.Bind(w).Commit(h.ctx, req)
 		if err != nil {
@@ -317,7 +317,7 @@ func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID 
 
 // withCommit looks the command's stored commit up so a test can inspect the
 // group it produced.
-func (h *harness) withCommit(res runtime.CommitResult, id session.CommitID) commitResult {
+func (h *harness) withCommit(res store.CommitResult, id session.CommitID) commitResult {
 	h.t.Helper()
 	var out commitResult
 	out.CommitResult = res
@@ -379,7 +379,7 @@ func (h *harness) spec() run.ToolSpec {
 }
 
 // preparedCommand builds PrepareModelRequest against snap with the derived ids.
-func (h *harness) preparedCommand(snap runtime.Snapshot, withTool bool) (run.PrepareModelRequest, run.CommandID) {
+func (h *harness) preparedCommand(snap store.Snapshot, withTool bool) (run.PrepareModelRequest, run.CommandID) {
 	h.t.Helper()
 	req := sdk.Request{Model: "m-1", Messages: []sdk.Message{sdk.UserMessage("go")}}
 	var specs []run.ToolSpec
@@ -419,7 +419,7 @@ func (h *harness) startModel(runID run.RunID, step run.StepID) run.EffectID {
 	h.t.Helper()
 	eff := h.modelEffect(runID, step)
 	res := h.mustCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
-	if res.Status != runtime.CommitAccepted {
+	if res.Status != store.CommitAccepted {
 		h.fatal("start was not accepted")
 	}
 	return eff
@@ -483,7 +483,7 @@ func (h *harness) startTool(runID run.RunID, step run.StepID, call run.CallID) r
 	h.t.Helper()
 	eff := toolEffect(runID, step, call)
 	res := h.mustCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartToolCall{StepID: step, CallID: call, Effect: eff})
-	if res.Status != runtime.CommitAccepted {
+	if res.Status != store.CommitAccepted {
 		h.fatal("tool start was not accepted")
 	}
 	return eff

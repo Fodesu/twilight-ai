@@ -24,8 +24,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 )
 
 // Verdict is the reconciler's decision for one Executing target.
@@ -229,7 +229,7 @@ func verdictOf(state effect.AttachmentState) (Verdict, error) {
 // RUN-EXE-16). The recovery command of a disposed effect is identified by
 // the effect (RUN-WIR-1), so any owner that plans the same state issues the
 // same command.
-func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtime.Snapshot) ([]Decision, error) {
+func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *store.Snapshot) ([]Decision, error) {
 	targets := plan.RecoveryTargets(&snapshot.State)
 	if len(targets) == 0 {
 		return nil, nil
@@ -477,7 +477,7 @@ func (r *Reconciler) probeOrphan(ctx context.Context, key effect.AssignmentKey, 
 // Apply commits the Dispose decisions through the bound store and returns
 // how many were accepted. A decision another actor has already overtaken
 // (stale, terminal, conflict) is skipped.
-func Apply(ctx context.Context, store runtime.RunStore, decisions []Decision) (int, error) {
+func Apply(ctx context.Context, st store.RunStore, decisions []Decision) (int, error) {
 	n := 0
 	for i := range decisions {
 		d := &decisions[i]
@@ -488,14 +488,14 @@ func Apply(ctx context.Context, store runtime.RunStore, decisions []Decision) (i
 		if err != nil {
 			return n, err
 		}
-		res, err := store.Commit(ctx, runtime.CommitRequest{Command: env})
+		res, err := st.Commit(ctx, store.CommitRequest{Command: env})
 		if err != nil {
 			if errors.Is(err, run.ErrStaleRuntime) || errors.Is(err, run.ErrRunTerminal) || errors.Is(err, run.ErrCommandConflict) {
 				continue
 			}
 			return n, err
 		}
-		if res.Status == runtime.CommitAccepted {
+		if res.Status == store.CommitAccepted {
 			n++
 		}
 	}
@@ -505,15 +505,15 @@ func Apply(ctx context.Context, store runtime.RunStore, decisions []Decision) (i
 // Reconcile is Plan then Apply for one Run: the takeover disposition of its
 // Executing targets (RUN-CMT-7). It returns the number of accepted recovery
 // commands.
-func (r *Reconciler) Reconcile(ctx context.Context, store runtime.RunStore, snapshot *runtime.Snapshot) (int, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, st store.RunStore, snapshot *store.Snapshot) (int, error) {
 	if r.Lifetime != nil {
 		if err := r.Lifetime.Err(); err != nil {
 			return 0, err
 		}
 	}
-	decisions, err := r.Plan(ctx, store.Scope(), snapshot)
+	decisions, err := r.Plan(ctx, st.Scope(), snapshot)
 	if err != nil {
 		return 0, err
 	}
-	return Apply(ctx, store, decisions)
+	return Apply(ctx, st, decisions)
 }

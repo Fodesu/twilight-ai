@@ -16,8 +16,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 
@@ -297,10 +297,10 @@ func TestLoopParallelBounded(t *testing.T) {
 	}
 }
 
-type staleCommitRuntime struct{ runtime.RunStore }
+type staleCommitRuntime struct{ store.RunStore }
 
-func (staleCommitRuntime) Commit(context.Context, runtime.CommitRequest) (runtime.CommitResult, error) {
-	return runtime.CommitResult{}, ErrStaleRuntime
+func (staleCommitRuntime) Commit(context.Context, store.CommitRequest) (store.CommitResult, error) {
+	return store.CommitResult{}, ErrStaleRuntime
 }
 
 // A stale start rejection is not an error: the Loop returns and the next
@@ -319,7 +319,7 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	stepID := StepID("step-1")
-	snapshot := &runtime.Snapshot{State: MachineState{
+	snapshot := &store.Snapshot{State: MachineState{
 		RunID: "run-1", Status: RunActive,
 		Current: ToolStep{
 			RefValue: StepRef{RunID: "run-1", ID: stepID},
@@ -354,16 +354,16 @@ func newResponseLossRuntime(t *testing.T) (*responseLossRuntime, writer.Writer) 
 	return &responseLossRuntime{SessionRunStore: rt, count: make(map[CommandID]int)}, w
 }
 
-func (r *responseLossRuntime) Bind(w writer.Writer) runtime.RunStore {
+func (r *responseLossRuntime) Bind(w writer.Writer) store.RunStore {
 	return lossyStore{RunStore: r.SessionRunStore.Bind(w), r: r}
 }
 
 type lossyStore struct {
-	runtime.RunStore
+	store.RunStore
 	r *responseLossRuntime
 }
 
-func (s lossyStore) Commit(ctx context.Context, req runtime.CommitRequest) (runtime.CommitResult, error) {
+func (s lossyStore) Commit(ctx context.Context, req store.CommitRequest) (store.CommitResult, error) {
 	r := s.r
 	result, err := s.RunStore.Commit(ctx, req)
 	if err != nil {
@@ -379,7 +379,7 @@ func (s lossyStore) Commit(ctx context.Context, req runtime.CommitRequest) (runt
 	}
 	r.mu.Unlock()
 	if lose && count <= 2 {
-		return runtime.CommitResult{}, errors.New("test: response lost")
+		return store.CommitResult{}, errors.New("test: response lost")
 	}
 	return result, nil
 }

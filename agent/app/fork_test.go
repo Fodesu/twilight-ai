@@ -9,7 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/runtime"
+	runstore "github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -144,7 +144,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	if _, err := h.Owner.Runs.Record(ctx, "parent", p1Run); err != nil {
 		t.Fatalf("parent record of its own run: %v", err)
 	}
-	if _, err := h.Owner.Runs.Record(ctx, "regen", p1Run); !errors.Is(err, runtime.ErrRunNotFound) {
+	if _, err := h.Owner.Runs.Record(ctx, "regen", p1Run); !errors.Is(err, runstore.ErrRunNotFound) {
 		t.Fatalf("child record of the parent's run = %v, want ErrRunNotFound", err)
 	}
 	childTurns, err := turn.ReadSurface(ctx, h.Owner.Projections, "regen")

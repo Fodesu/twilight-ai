@@ -14,8 +14,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -666,9 +666,9 @@ func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error 
 func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	cases := []struct {
 		name string
-		exec func(t *testing.T, rt runtime.RunStore) Executor
+		exec func(t *testing.T, rt store.RunStore) Executor
 	}{
-		{"remote outcome", func(*testing.T, runtime.RunStore) Executor {
+		{"remote outcome", func(*testing.T, store.RunStore) Executor {
 			return &missingBodyExecutor{recordingExecutor: *newRecordingExecutor()}
 		}},
 	}

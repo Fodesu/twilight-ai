@@ -8,8 +8,8 @@ import (
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 )
 
 func toolCallIndex(step run.ToolStep, callID run.CallID) int {
@@ -28,7 +28,7 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 // effect and handed to the Executor. It returns the dispatched keys; an empty
 // list with no error means nothing is executing on this Loop's behalf and the
 // reload decides.
-func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events EventSink, snapshot *runtime.Snapshot, act plan.StartToolCalls) ([]AssignmentKey, error) {
+func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, act plan.StartToolCalls) ([]AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	ts, ok := snapshot.State.Current.(run.ToolStep)
 	if !ok || ts.RefValue.ID != act.StepID {

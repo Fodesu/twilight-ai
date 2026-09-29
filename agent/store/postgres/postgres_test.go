@@ -20,7 +20,7 @@ import (
 	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/process/processtest"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
-	"github.com/felinics/twilight/agentcore/session/run/runtimetest"
+	runstoretest "github.com/felinics/twilight/agentcore/session/run/storetest"
 	"github.com/felinics/twilight/agentcore/session/sessiontest"
 	"github.com/felinics/twilight/agentcore/turn/turntest"
 )
@@ -108,9 +108,9 @@ func TestSessionKernelConformance(t *testing.T) {
 	})
 }
 
-func TestSessionRuntimeConformance(t *testing.T) {
-	runtimetest.Run(t, func(t testing.TB) runtimetest.Fixture {
-		return runtimetest.Fixture{Store: postgrestest.Open(t).Sessions()}
+func TestSessionRunStoreConformance(t *testing.T) {
+	runstoretest.Run(t, func(t testing.TB) runstoretest.Fixture {
+		return runstoretest.Fixture{Store: postgrestest.Open(t).Sessions()}
 	})
 }
 

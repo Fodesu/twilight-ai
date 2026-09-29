@@ -9,7 +9,7 @@ import (
 	run "github.com/felinics/twilight/agentcore/run"
 	effect "github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
-	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/store"
 )
 
 // ErrRunAlreadyRunning identifies a second local driver for the same Run.
@@ -72,7 +72,7 @@ type Settings struct {
 // PrepareHook is Settings.BeforePrepare: the store is the Loop's own bound
 // RunStore and input the PromptInput the plan is about to hand the
 // PromptBuilder.
-type PrepareHook func(ctx context.Context, store runtime.RunStore, input plan.PromptInput) error
+type PrepareHook func(ctx context.Context, store store.RunStore, input plan.PromptInput) error
 
 // --- EventSink: realtime observation, never authority (RUN-LOP-6) ---
 

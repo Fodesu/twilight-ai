@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/session/filestore"
-	"github.com/felinics/twilight/agentcore/session/run/runtimetest"
+	"github.com/felinics/twilight/agentcore/session/run/storetest"
 	"github.com/felinics/twilight/agentcore/session/sessiontest"
 )
 
@@ -33,7 +33,7 @@ func TestKernelConformance(t *testing.T) {
 }
 
 func TestRuntimeConformance(t *testing.T) {
-	runtimetest.Run(t, func(t testing.TB) runtimetest.Fixture {
-		return runtimetest.Fixture{Store: newStore(t)}
+	storetest.Run(t, func(t testing.TB) storetest.Fixture {
+		return storetest.Fixture{Store: newStore(t)}
 	})
 }

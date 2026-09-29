@@ -12,7 +12,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/run/wire"
 )
 
@@ -44,11 +44,11 @@ type frozenValues struct {
 // must be the store the Writers' Admission resolves against. A content store
 // of another Authority answers every Get with ErrUnauthorized, which surfaces
 // as an error rather than a miss.
-func FrozenValues(store artifact.ContentStore, bindings artifact.BindingStore) (frozen.Store, error) {
-	if store == nil || bindings == nil {
+func FrozenValues(content artifact.ContentStore, bindings artifact.BindingStore) (frozen.Store, error) {
+	if content == nil || bindings == nil {
 		return nil, errors.New("runmod: frozen values require a content store and a binding store")
 	}
-	return &frozenValues{store: store, bindings: bindings}, nil
+	return &frozenValues{store: content, bindings: bindings}, nil
 }
 
 func (f *frozenValues) Put(ctx context.Context, digest run.Digest, val []byte) error {
@@ -170,10 +170,10 @@ type Content struct {
 }
 
 // NewContent builds the materializer over a frozen.Store.
-func NewContent(store frozen.Store) *Content { return &Content{Frozen: store} }
+func NewContent(st frozen.Store) *Content { return &Content{Frozen: st} }
 
 func (c *Content) raw(ctx context.Context, what string, digest run.Digest) ([]byte, error) {
-	if err := runtime.CheckContext(ctx); err != nil {
+	if err := store.CheckContext(ctx); err != nil {
 		return nil, err
 	}
 	if digest == "" {

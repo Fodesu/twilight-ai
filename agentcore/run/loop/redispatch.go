@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	run "github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/store"
 )
 
 // ErrEffectNotExecuting reports a Redispatch of an effect the Run is not
@@ -20,7 +20,7 @@ var ErrEffectNotExecuting = errors.New("agent: loop: effect is not executing")
 // not complete (a crash between the start fact and the call) is completed
 // here. The Executor recognises a replayed Assignment by its key, so a
 // Redispatch of an effect it already holds changes nothing (RUN-EXE-3).
-func (l *Loop) Redispatch(ctx context.Context, rt runtime.RunStore, key AssignmentKey) error {
+func (l *Loop) Redispatch(ctx context.Context, rt store.RunStore, key AssignmentKey) error {
 	if err := l.checkArgs(ctx, rt, key.RunID); err != nil {
 		return err
 	}

@@ -11,11 +11,11 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/plan"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 )
 
-func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events EventSink, snapshot *runtime.Snapshot, hint plan.PromptInput) error {
+func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, hint plan.PromptInput) error {
 	hint.Scope = rt.Scope()
 	p, err := l.Builder.Build(ctx, hint)
 	if err != nil {
@@ -80,7 +80,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events E
 // the reload should decide (another actor moved the step). A model catalog
 // that cannot serve the step withdraws it to Open and reports the error: no
 // model call has happened.
-func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events EventSink, snapshot *runtime.Snapshot, stepID run.StepID) (*AssignmentKey, error) {
+func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, stepID run.StepID) (*AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	prepared, ok := snapshot.State.Current.(run.ModelStep)
 	if !ok || prepared.RefValue.ID != stepID {
@@ -115,7 +115,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 	if !ok || modelStep.RefValue.ID != stepID || modelStep.Status != run.ModelExecuting || modelStep.Effect != ref.id {
 		// The start (or its one-shot replay) landed but the step is no longer
 		// Executing: something settled it meanwhile. Reload decides.
-		if start.Status == runtime.CommitAlreadyApplied {
+		if start.Status == store.CommitAlreadyApplied {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("agent: loop: started step %q is not current", stepID)

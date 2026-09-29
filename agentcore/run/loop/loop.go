@@ -11,8 +11,8 @@ import (
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 )
 
 // Loop is the decision interpreter of one Run (RUN-LOP-2). It holds no
@@ -185,14 +185,14 @@ func (l *Loop) isDriving(runID run.RunID) bool {
 	return ok && s.driving
 }
 
-func (l *Loop) checkArgs(ctx context.Context, store runtime.RunStore, runID run.RunID) error {
+func (l *Loop) checkArgs(ctx context.Context, st store.RunStore, runID run.RunID) error {
 	if ctx == nil {
 		return errors.New("agent: loop: nil context")
 	}
-	if store == nil {
+	if st == nil {
 		return errors.New("agent: loop: nil run store")
 	}
-	if store.Scope() == "" || runID == "" {
+	if st.Scope() == "" || runID == "" {
 		return errors.New("agent: loop: empty Scope or RunID")
 	}
 	return nil
@@ -213,8 +213,8 @@ func (l *Loop) wrapSink(events EventSink) EventSink {
 // blocking Run of the same Run is reported as ErrRunAlreadyRunning. store is
 // the RunStore bound to the caller's write capability: every commit of the
 // step goes through it (OWN-HDL-2).
-func (l *Loop) Advance(ctx context.Context, store runtime.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
-	if err := l.checkArgs(ctx, store, runID); err != nil {
+func (l *Loop) Advance(ctx context.Context, st store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
+	if err := l.checkArgs(ctx, st, runID); err != nil {
 		return LoopResult{}, err
 	}
 	if l.isDriving(runID) {
@@ -226,14 +226,14 @@ func (l *Loop) Advance(ctx context.Context, store runtime.RunStore, runID run.Ru
 		return LoopResult{}, ErrRunAlreadyRunning
 	}
 	defer s.step.Unlock()
-	return l.advance(ctx, store, runID, l.wrapSink(events))
+	return l.advance(ctx, st, runID, l.wrapSink(events))
 }
 
 // advance is the body of Advance. It only dispatches assignments and returns
 // their keys; outcome retrieval is a separate message-shaped operation through
 // Executor.GetOutcome. This keeps the Executor boundary usable across process
 // boundaries.
-func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
+func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return LoopResult{}, err
@@ -243,7 +243,7 @@ func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID
 			return LoopResult{}, err
 		}
 		if snapshot.State.RunID != runID {
-			return LoopResult{}, fmt.Errorf("agent: loop: runtime returned RunID %q for %q", snapshot.State.RunID, runID)
+			return LoopResult{}, fmt.Errorf("agent: loop: store returned RunID %q for %q", snapshot.State.RunID, runID)
 		}
 		if snapshot.State.Status.Terminal() {
 			return l.finish(ctx, events, rt.Scope(), runID, snapshot.State.Result), nil
@@ -324,25 +324,25 @@ func (l *Loop) finish(ctx context.Context, events EventSink, scope run.Scope, ru
 // LoopFinished when the settlement terminated the Run, LoopDelivered when the
 // host should Advance next, LoopDropped for a stale Outcome. Ownership loss
 // is returned as is (RUN-LOP-5).
-func (l *Loop) Deliver(ctx context.Context, store runtime.RunStore, out Outcome, events EventSink) (LoopResult, error) {
-	if err := l.checkArgs(ctx, store, out.Key.RunID); err != nil {
+func (l *Loop) Deliver(ctx context.Context, st store.RunStore, out Outcome, events EventSink) (LoopResult, error) {
+	if err := l.checkArgs(ctx, st, out.Key.RunID); err != nil {
 		return LoopResult{}, err
 	}
 	s := l.acquire(out.Key.RunID)
 	defer l.release(out.Key.RunID)
 	s.step.Lock()
 	defer s.step.Unlock()
-	return l.deliver(ctx, store, out, l.wrapSink(events))
+	return l.deliver(ctx, st, out, l.wrapSink(events))
 }
 
-func (l *Loop) deliver(ctx context.Context, rt runtime.RunStore, out Outcome, events EventSink) (LoopResult, error) {
+func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, events EventSink) (LoopResult, error) {
 	if out.Key.Session != "" && out.Key.Session != rt.Scope() {
 		return LoopResult{Disposition: LoopDropped}, nil
 	}
 	runID := out.Key.RunID
 	snapshot, err := rt.Load(ctx, runID)
 	if err != nil {
-		if errors.Is(err, runtime.ErrRunNotFound) {
+		if errors.Is(err, store.ErrRunNotFound) {
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
 		return LoopResult{}, err
@@ -406,7 +406,7 @@ func (l *Loop) deliver(ctx context.Context, rt runtime.RunStore, out Outcome, ev
 // Deliver themselves. The caller context bounds the drive: on cancellation the
 // in-flight assignments of the Run are cancelled and their Outcomes are still
 // settled (RUN-LOP-5) before ctx.Err() is returned.
-func (l *Loop) Run(ctx context.Context, rt runtime.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
+func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, rt, runID); err != nil {
 		return LoopResult{}, err
 	}
@@ -554,12 +554,12 @@ func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes cha
 // (RUN-LOP-5): if the first attempt actually committed and only the response
 // was lost, the replay returns AlreadyApplied instead of re-executing an
 // expensive step. Ownership loss is never retried.
-func (l *Loop) commit(ctx context.Context, rt runtime.RunStore, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) (runtime.CommitResult, error) {
+func (l *Loop) commit(ctx context.Context, rt store.RunStore, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) (store.CommitResult, error) {
 	env, err := schema.Wire().Envelope(runID, id, cmd)
 	if err != nil {
-		return runtime.CommitResult{}, err
+		return store.CommitResult{}, err
 	}
-	req := runtime.CommitRequest{Base: base, Command: env}
+	req := store.CommitRequest{Base: base, Command: env}
 	res, err := rt.Commit(ctx, req)
 	if err != nil && !retriable(err) && !ownershipLost(err) {
 		res, err = rt.Commit(ctx, req)

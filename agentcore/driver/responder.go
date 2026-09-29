@@ -7,8 +7,8 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -189,7 +189,7 @@ func (d *Driver) respond(ctx context.Context, w writer.Writer, a *answer) (bool,
 // lostOwnership reports a commit fenced by a new owner, as the Writer
 // (EXT-WRT-4) or the kernel (SES-OWN-2) reports it.
 func lostOwnership(err error) bool {
-	return errors.Is(err, runtime.ErrOwnershipLost) || errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost)
+	return errors.Is(err, store.ErrOwnershipLost) || errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost)
 }
 
 // settleResponse commits the answer: SubmitToolResponse with the payload,
@@ -215,7 +215,7 @@ func (d *Driver) settleResponse(ctx context.Context, w writer.Writer, a *answer,
 	if err != nil {
 		return err
 	}
-	_, err = d.Runs.Bind(w).Commit(ctx, runtime.CommitRequest{Command: env})
+	_, err = d.Runs.Bind(w).Commit(ctx, store.CommitRequest{Command: env})
 	if errors.Is(err, run.ErrRunTerminal) {
 		return nil // settled by another actor already: nothing to do here
 	}

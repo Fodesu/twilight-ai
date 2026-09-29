@@ -8,7 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
-	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -81,7 +81,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 
 	// The dead owner's worker finally returns: its settlement is fenced.
 	close(block)
-	if err := <-firstDone; !errors.Is(err, runtime.ErrOwnershipLost) {
+	if err := <-firstDone; !errors.Is(err, store.ErrOwnershipLost) {
 		t.Fatalf("old owner loop error = %v, want ErrOwnershipLost", err)
 	}
 	// Nothing of the old owner reached the ledger after the takeover.

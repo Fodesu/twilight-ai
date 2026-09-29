@@ -9,8 +9,8 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/plan"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -68,7 +68,7 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, wo
 	if err != nil {
 		switch {
 		case errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}):
-			return fmt.Errorf("%w: %w", runtime.ErrOwnershipLost, err)
+			return fmt.Errorf("%w: %w", store.ErrOwnershipLost, err)
 		case errors.Is(err, chatlog.ErrNotSubmitted), errors.Is(err, runmod.ErrRunExists):
 			return fmt.Errorf("%w: %w", turn.ErrConflict, err)
 		}
@@ -171,7 +171,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req turn.Del
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
-	accept, err := c.Runs.Command(ctx, runtime.CommitRequest{Command: env})
+	accept, err := c.Runs.Command(ctx, store.CommitRequest{Command: env})
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
@@ -207,7 +207,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req turn.StopRe
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
-	cancel, err := c.Runs.Command(ctx, runtime.CommitRequest{Command: env})
+	cancel, err := c.Runs.Command(ctx, store.CommitRequest{Command: env})
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}

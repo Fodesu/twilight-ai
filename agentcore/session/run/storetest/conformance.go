@@ -1,4 +1,4 @@
-package runtimetest
+package storetest
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/run/wire"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -67,14 +67,14 @@ func testCreation(t *testing.T, factory Factory) {
 		t.Fatalf("position = %d, want 1 (last run event of the start group)", snap.Position)
 	}
 	// Unknown RunID.
-	if _, err := h.rt.Bind(h.writer()).Load(h.ctx, "nope"); !errors.Is(err, runtime.ErrRunNotFound) {
+	if _, err := h.rt.Bind(h.writer()).Load(h.ctx, "nope"); !errors.Is(err, store.ErrRunNotFound) {
 		t.Fatalf("load unknown = %v", err)
 	}
-	if _, err := h.rt.Record(h.ctx, sid, "nope"); !errors.Is(err, runtime.ErrRunNotFound) {
+	if _, err := h.rt.Record(h.ctx, sid, "nope"); !errors.Is(err, store.ErrRunNotFound) {
 		t.Fatalf("record unknown = %v", err)
 	}
 	env, _ := schema.Wire().Envelope("nope", schema.Identity().DeriveInputCommandID("nope", "x"), run.NextStep(input("x")))
-	if _, err := h.rt.Bind(h.writer()).Commit(h.ctx, runtime.CommitRequest{Command: env}); !errors.Is(err, runtime.ErrRunNotFound) {
+	if _, err := h.rt.Bind(h.writer()).Commit(h.ctx, store.CommitRequest{Command: env}); !errors.Is(err, store.ErrRunNotFound) {
 		t.Fatalf("commit unknown = %v", err)
 	}
 	// Terminated Run: Load returns the terminal state, Commit is terminal.
@@ -112,11 +112,11 @@ func testReplayAndBase(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	first := h.mustCommit("r1", schema.Identity().DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
-	if first.Status != runtime.CommitAccepted {
+	if first.Status != store.CommitAccepted {
 		t.Fatal("first accept not accepted")
 	}
 	again := h.mustCommit("r1", schema.Identity().DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
-	if again.Status != runtime.CommitAlreadyApplied || len(again.Events) != len(first.Events) || again.Head != first.Head {
+	if again.Status != store.CommitAlreadyApplied || len(again.Events) != len(first.Events) || again.Head != first.Head {
 		t.Fatalf("replay = %+v", again)
 	}
 	if h.head() != first.Head {
@@ -125,7 +125,7 @@ func testReplayAndBase(t *testing.T, factory Factory) {
 	// Prepare is a hard CAS on the Run's own position.
 	snap := h.load("r1")
 	stale := snap.Position - 1
-	cmd, id := h.preparedCommand(runtime.Snapshot{State: snap.State, Position: stale}, false)
+	cmd, id := h.preparedCommand(store.Snapshot{State: snap.State, Position: stale}, false)
 	if _, err := h.commit("r1", id, stale, cmd); !errors.Is(err, run.ErrStaleRuntime) {
 		t.Fatalf("stale prepare = %v", err)
 	}
@@ -136,7 +136,7 @@ func testReplayAndBase(t *testing.T, factory Factory) {
 	// Terminal replay: an accepted command replays after termination.
 	h.mustCommit("r1", "cancel", prepared.Snapshot.Position, run.CancelRun{})
 	replay := h.mustCommit("r1", schema.Identity().DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
-	if replay.Status != runtime.CommitAlreadyApplied || !replay.Snapshot.State.Status.Terminal() {
+	if replay.Status != store.CommitAlreadyApplied || !replay.Snapshot.State.Status.Terminal() {
 		t.Fatalf("terminal replay = %+v", replay)
 	}
 	if _, err := h.commit("r1", schema.Identity().DeriveInputCommandID("r1", "in-4"), 0, run.NextStep(input("in-4"))); !errors.Is(err, run.ErrRunTerminal) {
@@ -203,7 +203,7 @@ func testStartAndEffect(t *testing.T, factory Factory) {
 	// Same-effect replay is AlreadyApplied; a start naming another effect of
 	// the step finds the step already Executing.
 	replay := h.mustCommit("r1", schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
-	if replay.Status != runtime.CommitAlreadyApplied {
+	if replay.Status != store.CommitAlreadyApplied {
 		t.Fatalf("start replay = %+v", replay)
 	}
 	other := schema.Identity().DeriveEffectID("r1", step, "", 1)
@@ -234,12 +234,12 @@ func testStartAndEffect(t *testing.T, factory Factory) {
 		t.Fatal("settlement did not end the run")
 	}
 	again := h.mustCommit("r1", settleID, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
-	if again.Status != runtime.CommitAlreadyApplied {
+	if again.Status != store.CommitAlreadyApplied {
 		t.Fatalf("settlement replay = %+v", again)
 	}
 	// After settlement the start still replays; a new command is terminal.
 	replay = h.mustCommit("r1", schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
-	if replay.Status != runtime.CommitAlreadyApplied {
+	if replay.Status != store.CommitAlreadyApplied {
 		t.Fatalf("start replay after settlement = %+v", replay)
 	}
 }
@@ -259,7 +259,7 @@ func testDeclineToolCall(t *testing.T, factory Factory) {
 		t.Fatalf("decline under a foreign id = %v", err)
 	}
 	res := h.mustCommit("r1", id, 0, decline)
-	if res.Status != runtime.CommitAccepted {
+	if res.Status != store.CommitAccepted {
 		t.Fatalf("decline = %v", res.Status)
 	}
 	if types := eventTypes(res.Events); len(types) != 1 || types[0] != runmod.Prefix+"tool_call_failed" {
@@ -272,12 +272,12 @@ func testDeclineToolCall(t *testing.T, factory Factory) {
 	// The CommandID names the decline of this call: a replay, with the same
 	// or another reason, is AlreadyApplied and the first decline stands
 	// (RUN-CMT-5).
-	if again := h.mustCommit("r1", id, 0, decline); again.Status != runtime.CommitAlreadyApplied {
+	if again := h.mustCommit("r1", id, 0, decline); again.Status != store.CommitAlreadyApplied {
 		t.Fatalf("decline replay = %v", again.Status)
 	}
 	different := decline
 	different.Failure.Message = "another reason"
-	if again := h.mustCommit("r1", id, 0, different); again.Status != runtime.CommitAlreadyApplied {
+	if again := h.mustCommit("r1", id, 0, different); again.Status != store.CommitAlreadyApplied {
 		t.Fatalf("decline with other content = %v, want already applied", again.Status)
 	}
 	// A Pending call has no effect to settle: a Known failure naming the
@@ -515,13 +515,13 @@ func testSettlementReplay(t *testing.T, factory Factory) {
 	if !first.Snapshot.State.Status.Terminal() {
 		t.Fatalf("settlement = %+v", first.Snapshot.State.Status)
 	}
-	if again, err := h.commit("r1", id, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("one")}); err != nil || again.Status != runtime.CommitAlreadyApplied {
+	if again, err := h.commit("r1", id, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("one")}); err != nil || again.Status != store.CommitAlreadyApplied {
 		t.Fatalf("same result replay = %v %v", again.Status, err)
 	}
-	if again, err := h.commit("r1", id, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("two")}); err != nil || again.Status != runtime.CommitAlreadyApplied {
+	if again, err := h.commit("r1", id, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("two")}); err != nil || again.Status != store.CommitAlreadyApplied {
 		t.Fatalf("different result under the same effect = %v %v, want already applied", again.Status, err)
 	}
-	if again, err := h.commit("r1", id, 0, run.SubmitModelFailure{StepID: step, Effect: eff, Failure: run.StepFailure{Class: run.FailureProvider, Message: "x"}}); err != nil || again.Status != runtime.CommitAlreadyApplied {
+	if again, err := h.commit("r1", id, 0, run.SubmitModelFailure{StepID: step, Effect: eff, Failure: run.StepFailure{Class: run.FailureProvider, Message: "x"}}); err != nil || again.Status != store.CommitAlreadyApplied {
 		t.Fatalf("failure under a settled effect = %v %v, want already applied", again.Status, err)
 	}
 	if after := h.load("r1"); after.Position != first.Snapshot.Position || !after.State.Status.Terminal() {
@@ -592,7 +592,7 @@ func testProjection(t *testing.T, factory Factory) {
 		t.Fatalf("recreating an ended run = %v, want ErrRunExists", err)
 	}
 	// An illegal fact sequence does not fold.
-	if _, err := runtime.FoldRun([]run.Fact{run.InputAccepted{Input: input("x")}}); err == nil {
+	if _, err := store.FoldRun([]run.Fact{run.InputAccepted{Input: input("x")}}); err == nil {
 		t.Fatal("fold without created succeeded")
 	}
 }
@@ -793,7 +793,7 @@ func testReattach(t *testing.T, factory Factory) {
 	}
 	// The Outcome of the effect the executor kept settles under that effect.
 	res := h.mustCommit("r1", schema.Identity().DeriveSettlementCommandID(modelEff), 0, run.SubmitModelResult{StepID: modelStep, Effect: modelEff, Result: textResult("done")})
-	if res.Status != runtime.CommitAccepted || !res.Snapshot.State.Status.Terminal() {
+	if res.Status != store.CommitAccepted || !res.Snapshot.State.Status.Terminal() {
 		t.Fatalf("settlement after reattach = %v %v", res.Status, res.Snapshot.State.Status)
 	}
 	for _, f := range h.record("r1").Facts {
@@ -812,7 +812,7 @@ func testOwnershipLost(t *testing.T, factory Factory) {
 	old, oldWriter := h.takeover()
 	head := h.head()
 	_, err := h.commitWith(old, oldWriter, "r1", schema.Identity().DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("late")})
-	if !errors.Is(err, runtime.ErrOwnershipLost) {
+	if !errors.Is(err, store.ErrOwnershipLost) {
 		t.Fatalf("old owner commit = %v, want ErrOwnershipLost", err)
 	}
 	if h.head() != head {

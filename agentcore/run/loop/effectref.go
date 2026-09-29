@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	run "github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 )
 
 // effectRef is one effect of a Run as this Loop addresses it: the derived
@@ -47,7 +47,7 @@ func (e *effectRef) recoveryID() run.CommandID {
 // When the accepted settlement terminates the Run, the terminal RunResult is
 // returned: the RunStore already handed back the folded state, so the Loop
 // finishes from it instead of reloading a Run the projection no longer holds.
-func (l *Loop) settle(ctx context.Context, rt runtime.RunStore, events EventSink, e *effectRef, base run.RunPosition, cmd run.AgentCommand) (*run.RunResult, error) {
+func (l *Loop) settle(ctx context.Context, rt store.RunStore, events EventSink, e *effectRef, base run.RunPosition, cmd run.AgentCommand) (*run.RunResult, error) {
 	id := e.settlementID()
 	if _, recovering := cmd.(run.RecoverModelExecution); recovering {
 		id = e.recoveryID()
@@ -73,4 +73,4 @@ func (l *Loop) settle(ctx context.Context, rt runtime.RunStore, events EventSink
 }
 
 // ownershipLost reports the terminal ownership error (RUN-LOP-5).
-func ownershipLost(err error) bool { return errors.Is(err, runtime.ErrOwnershipLost) }
+func ownershipLost(err error) bool { return errors.Is(err, store.ErrOwnershipLost) }

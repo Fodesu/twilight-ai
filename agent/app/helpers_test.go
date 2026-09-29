@@ -17,7 +17,7 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
-	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -68,10 +68,10 @@ func durablePorts(t testing.TB, cfg app.Config) app.Config {
 
 // runState reads a Run's committed state by SessionID: the lease-free read
 // (OWN-HDL-2), so a test observes without owning.
-func runState(a *app.Application, sid session.SessionID, runID run.RunID) (runtime.Snapshot, error) {
+func runState(a *app.Application, sid session.SessionID, runID run.RunID) (store.Snapshot, error) {
 	record, err := a.Owner.Runs.Record(context.Background(), sid, runID)
 	if err != nil {
-		return runtime.Snapshot{}, err
+		return store.Snapshot{}, err
 	}
 	return record.Snapshot, nil
 }
@@ -224,7 +224,7 @@ func errorsIsOwnershipLost(err error) string {
 	if err == nil {
 		return "no error"
 	}
-	if errors.Is(err, runtime.ErrOwnershipLost) {
+	if errors.Is(err, store.ErrOwnershipLost) {
 		return "ownership lost"
 	}
 	return err.Error()

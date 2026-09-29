@@ -18,8 +18,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
-	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/store"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -284,7 +284,7 @@ func decode[T any](t testing.TB, registry *extension.Registry, event *session.Ev
 	return v
 }
 
-func (h *harness) load(runID run.RunID) runtime.Snapshot {
+func (h *harness) load(runID run.RunID) store.Snapshot {
 	h.t.Helper()
 	snap, err := h.rt.Bind(h.writer()).Load(h.ctx, runID)
 	if err != nil {
@@ -308,7 +308,7 @@ func (h *harness) modelEffect(runID run.RunID, step run.StepID) run.EffectID {
 // commitResult is a Run command's result plus the events of the commit it
 // landed in.
 type commitResult struct {
-	runtime.CommitResult
+	store.CommitResult
 	Events []session.Event
 }
 
@@ -318,7 +318,7 @@ func (h *harness) runCommit(runID run.RunID, id run.CommandID, base run.RunPosit
 	if err != nil {
 		h.fatal(err)
 	}
-	res, err := h.rt.Bind(h.writer()).Commit(h.ctx, runtime.CommitRequest{Base: base, Command: env})
+	res, err := h.rt.Bind(h.writer()).Commit(h.ctx, store.CommitRequest{Base: base, Command: env})
 	if err != nil {
 		return commitResult{}, err
 	}
@@ -399,7 +399,7 @@ func (h *harness) executingModel(runID run.RunID) (run.StepID, run.EffectID) {
 	step := h.prepare(runID, nil)
 	eff := h.modelEffect(runID, step)
 	res := h.mustRunCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
-	if res.Status != runtime.CommitAccepted {
+	if res.Status != store.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
 	return step, eff
@@ -427,7 +427,7 @@ func (h *harness) waitingTool(runID run.RunID) {
 	spec := h.spec(run.ApprovalRequired)
 	step := h.prepare(runID, []run.ToolSpec{spec})
 	eff := h.modelEffect(runID, step)
-	if res := h.mustRunCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff}); res.Status != runtime.CommitAccepted {
+	if res := h.mustRunCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff}); res.Status != store.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
 	args := run.MustParseCanonicalJSON(`{"q":1}`)
