@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/runtime"
@@ -68,7 +69,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	var order atomic.Int32
 	var slowCall atomic.Value // CallID of the worker that arrived second
 	tool := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(ctx context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
 			slow := order.Add(1) == 2 // the second worker to start is B
 			if slow {
 				slowCall.Store(req.CallID)
@@ -87,7 +88,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
 	loop, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2")}}},
-		fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}, staticBuilder{specs: []ToolSpec{spec}}, Settings{Scheduling: ToolScheduling{MaxParallel: 2}}, false)
+		fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": tool}}, staticBuilder{specs: []ToolSpec{spec}}, Settings{Scheduling: ToolScheduling{MaxParallel: 2}}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -22,13 +22,13 @@ import (
 
 // setup composes a Host over an in-memory store with one model and one tool,
 // registers the preset and opens a Session whose new Turns are named t2, t3, ...
-func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts app.SessionOptions) (*app.Application, preset.PresetRef, session.SessionID, *app.Session) {
+func setup(t *testing.T, model local.ModelInvoker, tool *gateTool, opts app.SessionOptions) (*app.Application, preset.PresetRef, session.SessionID, *app.Session) {
 	t.Helper()
-	tools := []loop.ExecutableTool{}
+	tools := []local.ExecutableTool{}
 	if tool != nil {
 		tools = append(tools, tool)
 	}
-	h := newHost(t, app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tools...)
+	h := newHost(t, app.Config{}, map[run.ModelRef]local.ModelInvoker{"m-1": model}, tools...)
 	const sid session.SessionID = "s-1"
 	if err := h.CreateSession(context.Background(), sid); err != nil {
 		t.Fatal(err)
@@ -211,8 +211,8 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 			{ToolCallID: "c2", ToolName: "lookup", Input: sdk.ParseToolArguments(`{}`)},
 			{ToolCallID: "c3", ToolName: "approve", Input: sdk.ParseToolArguments(`{}`)},
 		}}}}
-	h := newHost(t, app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool, approval)
-	pref, err := h.RegisterPreset("sequential", mustPreset("m-1", []loop.ExecutableTool{tool, approval},
+	h := newHost(t, app.Config{}, map[run.ModelRef]local.ModelInvoker{"m-1": model}, tool, approval)
+	pref, err := h.RegisterPreset("sequential", mustPreset("m-1", []local.ExecutableTool{tool, approval},
 		app.WithScheduling(run.ToolScheduling{Mode: run.ToolScheduleSequential})))
 	if err != nil {
 		t.Fatal(err)

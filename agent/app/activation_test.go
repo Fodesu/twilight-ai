@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
@@ -62,7 +62,7 @@ func TestTurnsOfOneSessionRunOnDifferentProcesses(t *testing.T) {
 	inboxStore := shared.Inbox()
 	root := t.TempDir()
 	preset := mustPreset("m-1", nil, app.WithSystemPrompt("be brief"))
-	build := func(name string, model loop.ModelInvoker, scan time.Duration) *app.Application {
+	build := func(name string, model local.ModelInvoker, scan time.Duration) *app.Application {
 		cfg := exampleStores(root, name)
 		cfg.Inbox = inboxStore
 		cfg.Presets = []app.Preset{{ID: "b1", Value: preset}}
@@ -70,7 +70,7 @@ func TestTurnsOfOneSessionRunOnDifferentProcesses(t *testing.T) {
 		cfg.Activation = &app.Activation{Preset: "b1", IdleRelease: 50 * time.Millisecond, Scan: scan,
 			Options: app.SessionOptions{InboxPoll: 50 * time.Millisecond}}
 		cfg.Warn = func(err error) { t.Logf("%s: warn: %v", name, err) }
-		return newHost(t, cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+		return newHost(t, cfg, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	}
 	// Only a scans, and slowly: a command enqueued through b must be b's
 	// activation, not a's scan racing it (both are legal; the test pins one).
@@ -153,7 +153,7 @@ func TestActivationConfiguration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := durablePorts(t, tc.cfg)
-			cfg.Executor = app.ExecutorConfig{Models: map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}}
+			cfg.Executor = app.ExecutorConfig{Models: map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}}}
 			h, err := app.Build(cfg)
 			if (err == nil) != tc.build {
 				t.Fatalf("build = %v, want ok=%v", err, tc.build)

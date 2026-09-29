@@ -7,6 +7,7 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/context/compaction"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -56,7 +57,7 @@ func (echoTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectEx
 func (echoTool) Replay() run.ReplayPolicy                  { return run.ReplayAllowed }
 func (echoTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
 func (echoTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (echoTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (echoTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }
 
@@ -68,8 +69,8 @@ func TestCompactionRunsBetweenStepsOfATurn(t *testing.T) {
 	ctx := context.Background()
 	model := &stepModel{answers: []sdk.ModelResult{toolCallAnswer(), toolCallAnswer()}}
 	h := newHost(t, app.Config{Store: filestoretest.Store(t), Content: durableContent(t), Ownership: session.OpenOptions{Takeover: true}},
-		map[run.ModelRef]loop.ModelInvoker{"m-1": model}, echoTool{})
-	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{echoTool{}}))
+		map[run.ModelRef]local.ModelInvoker{"m-1": model}, echoTool{})
+	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{echoTool{}}))
 	if err != nil {
 		t.Fatal(err)
 	}

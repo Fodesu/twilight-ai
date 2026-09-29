@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/filestore"
@@ -80,8 +80,8 @@ func TestSpawnRunsChildSessionAndReturnsReply(t *testing.T) {
 		text("parent done"),
 	}}
 	store, content := filestoretest.Store(t), durableContent(t)
-	h := newHost(t, app.Config{Store: store, Content: content, Spawn: &spawn.Options{}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-	pref, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
+	h := newHost(t, app.Config{Store: store, Content: content, Spawn: &spawn.Options{}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+	pref, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 	// takes the parent over, finds its spawn call waiting for the
 	// Responder's answer, and continues the same child from its durable
 	// state (SPN-4); no execution record is involved.
-	open := func(model loop.ModelInvoker, takeover bool) (*app.Application, *app.Session, preset.PresetRef) {
+	open := func(model local.ModelInvoker, takeover bool) (*app.Application, *app.Session, preset.PresetRef) {
 		t.Helper()
 		store, err := filestore.New(root)
 		if err != nil {
@@ -198,8 +198,8 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = records.Close() })
 		cfg.Executions = records.Executions()
-		h := newHost(t, cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-		pref, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
+		h := newHost(t, cfg, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+		pref, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -282,8 +282,8 @@ func TestSpawnValidation(t *testing.T) {
 			model := &scriptedRequests{answers: []sdk.ModelResult{spawnCall(tc.args), text("recovered")}}
 			store := filestoretest.Store(t)
 			opts := spawn.Options{MaxDepth: tc.maxDepth}
-			h := newHost(t, app.Config{Store: store, Content: durableContent(t), Spawn: &opts}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-			pref, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{opts.ExecutableTool()}))
+			h := newHost(t, app.Config{Store: store, Content: durableContent(t), Spawn: &opts}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+			pref, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{opts.ExecutableTool()}))
 			if err != nil {
 				t.Fatal(err)
 			}

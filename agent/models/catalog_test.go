@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/models"
 	"github.com/felinics/twilight/agent/secrets"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -60,7 +60,7 @@ func TestCatalogBindsLogicalRefToPhysicalModel(t *testing.T) {
 	if err != nil || result.Text != "from vendor-small-2" {
 		t.Fatalf("generate = %+v, %v", result, err)
 	}
-	stream, err := inv.(loop.StreamingModelInvoker).Stream(ctx, frozen)
+	stream, err := inv.(local.StreamingModelInvoker).Stream(ctx, frozen)
 	if err != nil {
 		t.Fatal(err)
 	}

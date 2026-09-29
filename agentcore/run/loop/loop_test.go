@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/decision"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
@@ -52,15 +53,15 @@ func (b *blockingInvoker) Generate(context.Context, sdk.Request) (sdk.ModelResul
 	return textResult("done"), nil
 }
 
-type fakeCatalog struct{ invoker ModelInvoker }
+type fakeCatalog struct{ invoker local.ModelInvoker }
 
-func (c fakeCatalog) ResolveModel(ModelRef) (ModelInvoker, error) { return c.invoker, nil }
+func (c fakeCatalog) ResolveModel(ModelRef) (local.ModelInvoker, error) { return c.invoker, nil }
 
 type fakeTool struct {
 	ref       ToolRef
 	def       sdk.ToolDefinition
 	policy    ResponsePolicy
-	execute   func(context.Context, ToolExecutionRequest) ToolExecutionOutcome
+	execute   func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome
 	valErr    error
 	replay    ReplayPolicy
 	placement ToolPlacement
@@ -72,13 +73,15 @@ func (f *fakeTool) ResponsePolicy() ResponsePolicy        { return f.policy }
 func (f *fakeTool) Replay() ReplayPolicy                  { return f.replay }
 func (f *fakeTool) Placement() ToolPlacement              { return f.placement }
 func (f *fakeTool) ValidateArguments(CanonicalJSON) error { return f.valErr }
-func (f *fakeTool) Execute(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
+func (f *fakeTool) Execute(ctx context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
 	return f.execute(ctx, req)
 }
 
-type fakeToolCatalog struct{ tools map[ToolRef]ExecutableTool }
+type fakeToolCatalog struct {
+	tools map[ToolRef]local.ExecutableTool
+}
 
-func (c fakeToolCatalog) ResolveTool(ref ToolRef) (ExecutableTool, error) {
+func (c fakeToolCatalog) ResolveTool(ref ToolRef) (local.ExecutableTool, error) {
 	t, ok := c.tools[ref]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool %q", ref)
@@ -176,7 +179,7 @@ func TestLoopRejectsConcurrentRunForSameID(t *testing.T) {
 
 type errCatalog struct{ err error }
 
-func (c errCatalog) ResolveModel(ModelRef) (ModelInvoker, error) { return nil, c.err }
+func (c errCatalog) ResolveModel(ModelRef) (local.ModelInvoker, error) { return nil, c.err }
 
 func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	rt, w := loopRuntime(t)
@@ -237,7 +240,7 @@ func TestLoopParallelBounded(t *testing.T) {
 	gate := make(chan struct{})
 	started := make(chan struct{}, 3)
 	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome {
 			cur := concurrent.Add(1)
 			for {
 				p := peak.Load()
@@ -252,7 +255,7 @@ func TestLoopParallelBounded(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2", "c3"), textResult("done")}}
 	rt, w := loopRuntime(t)
-	loop, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{Scheduling: ToolScheduling{MaxParallel: 2}}, false)
 
 	done := make(chan struct{})
@@ -295,10 +298,10 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 	args := cj(`{}`)
 	callID := schema.Identity().DeriveCallID("model-1", 0)
 	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome {
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: args}}
 		}}
-	loop, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
 		staticBuilder{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -413,12 +416,12 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	var executions atomic.Int32
 	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(_ context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(_ context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
 			executions.Add(1)
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
-	loop, err := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, err := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)

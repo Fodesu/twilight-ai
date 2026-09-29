@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -33,7 +34,7 @@ func (t *targetTool) ResponsePolicy() run.ResponsePolicy        { return run.Dir
 func (t *targetTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
 func (t *targetTool) Placement() run.ToolPlacement              { return run.PlacementWorkspace }
 func (t *targetTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (t *targetTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (t *targetTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.seen <- req.Target
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }
@@ -101,8 +102,8 @@ func TestTargetResolverSeam(t *testing.T) {
 				tc.resolver.bind(sid, ws1)
 				cfg.TargetResolver = tc.resolver
 			}
-			h := newHost(t, cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool)
-			preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{tool}))
+			h := newHost(t, cfg, map[run.ModelRef]local.ModelInvoker{"m-1": model}, tool)
+			preset, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{tool}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -159,8 +160,8 @@ func TestForkChildTargetIsApplicationPolicy(t *testing.T) {
 	done := sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer(), done, toolCallAnswer(), done, toolCallAnswer(), done}}
 	h := newHost(t, app.Config{Store: filestoretest.Store(t), TargetResolver: resolver},
-		map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool)
-	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{tool}))
+		map[run.ModelRef]local.ModelInvoker{"m-1": model}, tool)
+	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{tool}))
 	if err != nil {
 		t.Fatal(err)
 	}

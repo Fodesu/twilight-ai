@@ -222,7 +222,7 @@ func (l *Loop) modelRejectDisposition(step *run.ModelStep, _ run.StepFailure) ru
 }
 
 // bindToolCalls validates tool-call IDs/order/shape and produces bindings
-// from the frozen ToolSpecs (RUN-MCH-2). It never calls ExecutableTool.
+// from the frozen ToolSpecs (RUN-MCH-2). It never calls local.ExecutableTool.
 func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]run.ToolCallBinding, error) {
 	if len(result.ToolCalls) == 0 {
 		return nil, nil

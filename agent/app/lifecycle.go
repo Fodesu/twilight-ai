@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/executor/sandbox"
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -148,7 +148,7 @@ func WithMalformedRetries(n uint8) PresetOption {
 // NewPreset constructs the common preset shape. Tool implementations are
 // used only to freeze their public definitions; they are not stored in the
 // preset.
-func NewPreset(model run.ModelRef, impls []loop.ExecutableTool, opts ...PresetOption) (preset.AgentPreset, error) {
+func NewPreset(model run.ModelRef, impls []local.ExecutableTool, opts ...PresetOption) (preset.AgentPreset, error) {
 	defs := make([]preset.PublicTool, 0, len(impls))
 	seen := make(map[run.ToolRef]struct{}, len(impls))
 	for _, tool := range impls {

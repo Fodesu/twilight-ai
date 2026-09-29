@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
@@ -364,11 +365,11 @@ func (f *Feature) ensureLoop() {
 	}
 	f.invoker = &scriptInvoker{results: f.results}
 	f.builder = &scriptBuilder{model: f.model, specs: f.specs, defs: f.defs}
-	tools := make(map[run.ToolRef]loop.ExecutableTool, len(f.tools))
+	tools := make(map[run.ToolRef]local.ExecutableTool, len(f.tools))
 	for ref, tool := range f.tools {
 		tools[ref] = tool
 	}
-	backend, err := loop.NewLocalExecutor(scriptCatalog{invoker: f.invoker, err: f.resolveErr}, scriptToolCatalog{tools}, nil, false)
+	backend, err := local.NewLocalExecutor(scriptCatalog{invoker: f.invoker, err: f.resolveErr}, scriptToolCatalog{tools}, nil, false)
 	if err != nil {
 		f.t.Fatal(err)
 	}

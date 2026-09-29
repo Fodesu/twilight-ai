@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -43,13 +44,13 @@ func Example_jsonlPrototype() {
 	defer os.RemoveAll(root)
 
 	tool := &stagedTool{}
-	preset := mustPreset("m-1", []loop.ExecutableTool{tool})
+	preset := mustPreset("m-1", []local.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
 	cfg1 := exampleStores(root, "process-1")
 	cfg1.Clock = clock.Now
-	p1 := buildHost(cfg1, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
+	p1 := buildHost(cfg1, map[run.ModelRef]local.ModelInvoker{"m-1": model1}, tool)
 	profile1, err := p1.RegisterPreset("jsonl-agent", preset)
 	if err != nil {
 		panic(err)
@@ -131,7 +132,7 @@ func Example_jsonlPrototype() {
 	if !ok {
 		panic("example stores are file-backed")
 	}
-	p2 := buildHost(cfg2, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
+	p2 := buildHost(cfg2, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
 	if _, err := p2.RegisterPreset("jsonl-agent", preset); err != nil {
 		panic(err)
 	}
@@ -218,7 +219,7 @@ func (t *stagedTool) ResponsePolicy() run.ResponsePolicy        { return run.Dir
 func (t *stagedTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
 func (t *stagedTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
 func (t *stagedTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (t *stagedTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (t *stagedTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.mu.Lock()
 	var st *toolStage
 	if len(t.stages) > 0 {

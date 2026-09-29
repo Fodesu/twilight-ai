@@ -10,11 +10,10 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/context/compaction"
-	executorlocal "github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -61,7 +60,7 @@ func messageTexts(req sdk.Request) []string {
 // a restart shares both, since the ledger names the frozen bodies by digest.
 func openCompactSession(t *testing.T, store session.Stores, content artifact.ContentStore, model *compactAwareModel, opts app.SessionOptions) (*app.Application, *app.Session) {
 	t.Helper()
-	h := newHost(t, app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	h := newHost(t, app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
@@ -201,15 +200,15 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	store := filestoretest.Store(t)
 	content := durableContent(t)
 	model := &compactAwareModel{}
-	cat, err := executorlocal.NewCatalog(map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	cat, err := local.NewCatalog(map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	if err != nil {
 		t.Fatal(err)
 	}
-	local, err := executorlocal.NewLocalExecutor(cat, nil, false)
+	backend, err := local.NewLocalExecutor(cat, cat, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), []executor.Route{executorlocal.Route(local)})
+	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), []executor.Route{local.Route(backend)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,7 @@
 // the secrets.Resolver the deployment provides (a mounted Kubernetes
 // Secret, a local configuration, a vault). The catalog document therefore
 // never carries a credential and serves every deployment unchanged. The package lives in
-// agent/, not agentcore/: Agent Core knows the loop.ModelCatalog seam and
+// agent/, not agentcore/: Agent Core knows the local.ModelCatalog seam and
 // the frozen ModelRef, and nothing about providers or credentials.
 package models
 
@@ -18,9 +18,9 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/secrets"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	anthropic "github.com/felinics/twilight/provider/anthropic/messages"
 	copilot "github.com/felinics/twilight/provider/github/copilot"
 	google "github.com/felinics/twilight/provider/google/generativeai"
@@ -60,9 +60,9 @@ type credential struct {
 	authToken string
 }
 
-// Catalog is loop.ModelCatalog over the built entries.
+// Catalog is local.ModelCatalog over the built entries.
 type Catalog struct {
-	invokers map[run.ModelRef]loop.ModelInvoker
+	invokers map[run.ModelRef]local.ModelInvoker
 }
 
 // Build resolves every Entry's credential through resolver and constructs
@@ -80,7 +80,7 @@ func Build(ctx context.Context, entries []Entry, resolver secrets.Resolver) (*Ca
 		cred    credential
 	}
 	providers := map[endpoint]sdk.Provider{}
-	c := &Catalog{invokers: make(map[run.ModelRef]loop.ModelInvoker, len(entries))}
+	c := &Catalog{invokers: make(map[run.ModelRef]local.ModelInvoker, len(entries))}
 	for _, e := range entries {
 		if e.Ref == "" || e.Model == "" {
 			return nil, fmt.Errorf("models: entry %q needs a ref and a model", e.Ref)
@@ -108,7 +108,7 @@ func Build(ctx context.Context, entries []Entry, resolver secrets.Resolver) (*Ca
 // FromModels builds a catalog over ready sdk.Models, for hosts that
 // construct providers themselves and for tests.
 func FromModels(models map[run.ModelRef]*sdk.Model) (*Catalog, error) {
-	c := &Catalog{invokers: make(map[run.ModelRef]loop.ModelInvoker, len(models))}
+	c := &Catalog{invokers: make(map[run.ModelRef]local.ModelInvoker, len(models))}
 	for ref, m := range models {
 		if ref == "" || m == nil || m.Provider == nil {
 			return nil, fmt.Errorf("models: ref %q needs a model with a provider", ref)
@@ -118,8 +118,8 @@ func FromModels(models map[run.ModelRef]*sdk.Model) (*Catalog, error) {
 	return c, nil
 }
 
-// ResolveModel is loop.ModelCatalog.
-func (c *Catalog) ResolveModel(ref run.ModelRef) (loop.ModelInvoker, error) {
+// ResolveModel is local.ModelCatalog.
+func (c *Catalog) ResolveModel(ref run.ModelRef) (local.ModelInvoker, error) {
 	inv, ok := c.invokers[ref]
 	if !ok {
 		return nil, fmt.Errorf("models: unknown model ref %q", ref)
@@ -128,8 +128,8 @@ func (c *Catalog) ResolveModel(ref run.ModelRef) (loop.ModelInvoker, error) {
 }
 
 // Invokers returns the catalog as the map app.ExecutorConfig.Models takes.
-func (c *Catalog) Invokers() map[run.ModelRef]loop.ModelInvoker {
-	out := make(map[run.ModelRef]loop.ModelInvoker, len(c.invokers))
+func (c *Catalog) Invokers() map[run.ModelRef]local.ModelInvoker {
+	out := make(map[run.ModelRef]local.ModelInvoker, len(c.invokers))
 	for ref, inv := range c.invokers {
 		out[ref] = inv
 	}
@@ -234,7 +234,7 @@ func (i *invoker) Stream(ctx context.Context, req sdk.Request) (sdk.ModelStream,
 }
 
 var (
-	_ loop.ModelCatalog          = (*Catalog)(nil)
-	_ loop.ModelInvoker          = (*invoker)(nil)
-	_ loop.StreamingModelInvoker = (*invoker)(nil)
+	_ local.ModelCatalog          = (*Catalog)(nil)
+	_ local.ModelInvoker          = (*invoker)(nil)
+	_ local.StreamingModelInvoker = (*invoker)(nil)
 )

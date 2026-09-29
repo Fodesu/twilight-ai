@@ -1,4 +1,4 @@
-package loop
+package local
 
 import (
 	"context"
@@ -21,9 +21,8 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// The Loop package keeps aliases for the protocol types so existing Run/Loop
-// call sites remain source-compatible. The definitions live in run/effect;
-// this package owns only the local execution implementation and Loop helpers.
+// Aliases keep the protocol types this implementation speaks
+// source-compatible with run/effect; the definitions live there.
 type AssignmentKind = effect.AssignmentKind
 
 type AssignmentKey = effect.AssignmentKey
@@ -84,11 +83,7 @@ var (
 )
 
 // ErrExecutorRejected reports an assignment the executor would not start.
-var ErrExecutorRejected = errors.New("agent: loop: executor rejected the assignment")
-
-// ErrModelUnavailable reports a model assignment the executor cannot serve,
-// found by Validate before the start barrier: the step stays Prepared.
-var ErrModelUnavailable = errors.New("agent: loop: executor cannot serve the model")
+var ErrExecutorRejected = errors.New("local: executor rejected the assignment")
 
 // --- LocalExecutor ------------------------------------------------------------
 

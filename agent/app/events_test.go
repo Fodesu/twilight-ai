@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -23,7 +23,7 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-events"
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
-	h := newHost(t, app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
+	h := newHost(t, app.Config{}, map[run.ModelRef]local.ModelInvoker{"m-1": gate})
 	presetRef, err := h.RegisterPreset("a1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestBackgroundDriveFailureIsReportedOnTheStream(t *testing.T) {
 		case warned <- err:
 		default:
 		}
-	}}, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}})
+	}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
 	presetRef, err := h.RegisterPreset("a1", mustPreset("m-missing", nil))
 	if err != nil {
 		t.Fatal(err)

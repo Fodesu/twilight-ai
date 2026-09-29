@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	executorlocal "github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/executor"
@@ -28,15 +28,15 @@ func newAuthority(t *testing.T) *owner.Owner {
 // executor and fresh durable stores under t.TempDir().
 func basePorts(t *testing.T) owner.Ports {
 	t.Helper()
-	catalog, err := executorlocal.NewCatalog(nil)
+	catalog, err := local.NewCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend, err := executorlocal.NewLocalExecutor(catalog, nil, false)
+	backend, err := local.NewLocalExecutor(catalog, catalog, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec, err := executor.NewWorker(context.Background(), storetest.NewMap(nil), []executor.Route{executorlocal.Route(backend)})
+	exec, err := executor.NewWorker(context.Background(), storetest.NewMap(nil), []executor.Route{local.Route(backend)})
 	if err != nil {
 		t.Fatal(err)
 	}

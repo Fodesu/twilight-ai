@@ -18,7 +18,7 @@ import (
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/executor/http"
-	executorlocal "github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/executor/sandbox"
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/spawn"
@@ -63,8 +63,8 @@ type ExecutorConfig struct {
 
 	// Models and Tools are required for ExecutorLocal. They are ignored by
 	// ExecutorRemote because implementations live in the worker process.
-	Models map[run.ModelRef]loop.ModelInvoker
-	Tools  []loop.ExecutableTool
+	Models map[run.ModelRef]local.ModelInvoker
+	Tools  []local.ExecutableTool
 
 	// Endpoint and HTTP configure ExecutorRemote.
 	Endpoint string
@@ -540,15 +540,15 @@ func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *ex
 	}
 	switch c.Executor.Mode {
 	case "", ExecutorLocal:
-		catalog, err := executorlocal.NewCatalog(c.Executor.Models, c.Executor.Tools...)
+		catalog, err := local.NewCatalog(c.Executor.Models, c.Executor.Tools...)
 		if err != nil {
 			return nil, nil, err
 		}
-		backend, err := executorlocal.NewLocalExecutor(catalog, c.Worker.Progress, true)
+		backend, err := local.NewLocalExecutor(catalog, catalog, c.Worker.Progress, true)
 		if err != nil {
 			return nil, nil, err
 		}
-		return worker(executorlocal.Route(backend))
+		return worker(local.Route(backend))
 	case ExecutorRemote:
 		if c.Executor.Endpoint == "" {
 			return nil, nil, errors.New("app: remote executor requires an endpoint")

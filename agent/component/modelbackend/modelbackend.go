@@ -10,11 +10,11 @@ import (
 	stdhttp "net/http"
 
 	"github.com/felinics/twilight/agent/executor/backendhttp"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/models"
 	"github.com/felinics/twilight/agent/secrets"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 )
 
 // Config is the model backend's document.
@@ -30,17 +30,17 @@ type Config struct {
 
 // Component is the composed model backend.
 type Component struct {
-	Backend  *loop.LocalExecutor
+	Backend  *local.LocalExecutor
 	progress *executor.ProgressHub
 }
 
 // New composes a model backend over a ready catalog.
-func New(catalog loop.ModelCatalog, streaming bool) (*Component, error) {
+func New(catalog local.ModelCatalog, streaming bool) (*Component, error) {
 	if catalog == nil {
 		return nil, errors.New("modelbackend: a model catalog is required")
 	}
 	progress := executor.NewProgressHub(0)
-	backend, err := loop.NewLocalExecutor(catalog, noTools{}, progress, streaming)
+	backend, err := local.NewLocalExecutor(catalog, noTools{}, progress, streaming)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +74,6 @@ func (c *Component) Close(context.Context) error { return nil }
 
 type noTools struct{}
 
-func (noTools) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
+func (noTools) ResolveTool(ref run.ToolRef) (local.ExecutableTool, error) {
 	return nil, errors.New("modelbackend: serves no tools: " + string(ref))
 }

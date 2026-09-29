@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	ownerhttp "github.com/felinics/twilight/agent/app/http"
 	"github.com/felinics/twilight/agent/environment/local"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/workspace/workspacetest"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
@@ -19,7 +20,6 @@ import (
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -66,7 +66,7 @@ func newOwner(t *testing.T) (*app.Application, *ownerhttp.Client) {
 		Inbox:      &inboxtest.Map{},
 		Workspaces: &app.WorkspaceConfig{Store: &workspacetest.Map{}, Provider: provider, Backend: local.Backend},
 		Ownership:  session.OpenOptions{Owner: "owner-a", LeaseDuration: time.Minute},
-		Executor:   app.ExecutorConfig{Models: map[run.ModelRef]loop.ModelInvoker{"m-1": &echoModel{}}},
+		Executor:   app.ExecutorConfig{Models: map[run.ModelRef]executorlocal.ModelInvoker{"m-1": &echoModel{}}},
 	})
 	if err != nil {
 		t.Fatal(err)

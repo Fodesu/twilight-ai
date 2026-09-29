@@ -8,6 +8,7 @@ import (
 
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/environment/local"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -32,7 +33,7 @@ func runTool(t *testing.T, tool tools.Tool, env environment.Environment, args st
 	if err := tool.ValidateArguments(a); err != nil {
 		t.Fatalf("%s validate %s = %v", tool.Ref(), args, err)
 	}
-	return tool.Run(context.Background(), env, &loop.ToolExecutionRequest{RunID: "r", StepID: "s", CallID: "c", ToolRef: tool.Ref(), Arguments: a})
+	return tool.Run(context.Background(), env, &executorlocal.ToolExecutionRequest{RunID: "r", StepID: "s", CallID: "c", ToolRef: tool.Ref(), Arguments: a})
 }
 
 func output(t *testing.T, out loop.ToolExecutionOutcome) string {
@@ -101,10 +102,10 @@ func TestWorkspaceTools(t *testing.T) {
 	}
 	// An environment without the capability is unavailable, never a crash.
 	bare := bareEnvironment{}
-	if f := failure(t, tools.Shell{}.Run(context.Background(), bare, &loop.ToolExecutionRequest{Arguments: run.MustParseCanonicalJSON(`{"command":"true"}`)})); f.Class != run.FailureUnavailable {
+	if f := failure(t, tools.Shell{}.Run(context.Background(), bare, &executorlocal.ToolExecutionRequest{Arguments: run.MustParseCanonicalJSON(`{"command":"true"}`)})); f.Class != run.FailureUnavailable {
 		t.Fatalf("shell without an executor = %+v", f)
 	}
-	if f := failure(t, tools.ReadFile{}.Run(context.Background(), bare, &loop.ToolExecutionRequest{Arguments: run.MustParseCanonicalJSON(`{"path":"x"}`)})); f.Class != run.FailureUnavailable {
+	if f := failure(t, tools.ReadFile{}.Run(context.Background(), bare, &executorlocal.ToolExecutionRequest{Arguments: run.MustParseCanonicalJSON(`{"path":"x"}`)})); f.Class != run.FailureUnavailable {
 		t.Fatalf("read without a filesystem = %+v", f)
 	}
 }

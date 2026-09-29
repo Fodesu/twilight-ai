@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/runtime"
@@ -25,14 +26,14 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{}, 1)
 	slow := &fakeTool{ref: "slow", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(ctx context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
 			started <- struct{}{}
 			<-block
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
 	call := sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: "slow", Input: sdk.ParseToolArguments(`{"x":1}`)}}}
-	first, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{call}}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"slow": slow}},
+	first, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{call}}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"slow": slow}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +60,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 		t.Fatalf("after takeover current = %T, want Open", snap.State.Current)
 	}
 
-	second, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"slow": slow}},
+	second, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"slow": slow}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)

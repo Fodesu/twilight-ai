@@ -12,13 +12,13 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/environment/local"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agent/workspace/workspacetest"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
@@ -39,11 +39,11 @@ type workspaceHost struct {
 
 // newWorkspaceHost builds an application with the workspace layer over the
 // local provider, and a preset whose tools are the workspace tools.
-func newWorkspaceHost(t *testing.T, model loop.ModelInvoker, cfg app.Config) *workspaceHost {
+func newWorkspaceHost(t *testing.T, model executorlocal.ModelInvoker, cfg app.Config) *workspaceHost {
 	return newWorkspaceHostWith(t, model, cfg, false)
 }
 
-func newWorkspaceHostWith(t *testing.T, model loop.ModelInvoker, cfg app.Config, snapshotAfterTurn bool) *workspaceHost {
+func newWorkspaceHostWith(t *testing.T, model executorlocal.ModelInvoker, cfg app.Config, snapshotAfterTurn bool) *workspaceHost {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "envs")
 	provider, err := local.New(root)
@@ -52,7 +52,7 @@ func newWorkspaceHostWith(t *testing.T, model loop.ModelInvoker, cfg app.Config,
 	}
 	store := &workspacetest.Map{}
 	cfg.Workspaces = &app.WorkspaceConfig{Store: store, Provider: provider, Backend: local.Backend, SnapshotAfterTurn: snapshotAfterTurn}
-	h := newHost(t, cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	h := newHost(t, cfg, map[run.ModelRef]executorlocal.ModelInvoker{"m-1": model})
 	defs, err := app.WorkspaceTools(nil)
 	if err != nil {
 		t.Fatal(err)

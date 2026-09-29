@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/artifact"
@@ -29,7 +30,7 @@ import (
 // newHost builds a colocated application for tests: a LocalExecutor over the
 // given models and tools; the Runtime still writes request bodies to
 // cfg.Content (RUN-WIR-4) and the executor never reads them back (RUN-EXE-7).
-func newHost(t testing.TB, cfg app.Config, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *app.Application {
+func newHost(t testing.TB, cfg app.Config, models map[run.ModelRef]local.ModelInvoker, tools ...local.ExecutableTool) *app.Application {
 	t.Helper()
 	cfg = durablePorts(t, cfg)
 	cfg.Executor = app.ExecutorConfig{Models: models, Tools: tools}
@@ -105,7 +106,7 @@ func exampleStores(root, worker string) app.Config {
 
 // buildHost is newHost for the Example functions: cfg is complete and a
 // failure is a panic.
-func buildHost(cfg app.Config, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *app.Application {
+func buildHost(cfg app.Config, models map[run.ModelRef]local.ModelInvoker, tools ...local.ExecutableTool) *app.Application {
 	cfg.Executor = app.ExecutorConfig{Models: models, Tools: tools}
 	a, err := app.Build(cfg)
 	if err != nil {
@@ -121,7 +122,7 @@ func durableContent(t testing.TB) artifact.ContentStore {
 }
 
 // mustPreset builds the one-model AgentPreset the tests register.
-func mustPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...app.PresetOption) preset.AgentPreset {
+func mustPreset(model run.ModelRef, tools []local.ExecutableTool, opts ...app.PresetOption) preset.AgentPreset {
 	p, err := app.NewPreset(model, tools, opts...)
 	if err != nil {
 		panic(err)
@@ -185,7 +186,7 @@ func (t *gateTool) ResponsePolicy() run.ResponsePolicy        { return run.Direc
 func (t *gateTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
 func (t *gateTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
 func (t *gateTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (t *gateTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (t *gateTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.started <- struct{}{}
 	<-t.release
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}

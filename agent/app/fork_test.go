@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -31,7 +31,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 		{Text: "edited answer", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}},
 	}}
 	store, content := filestoretest.Store(t), durableContent(t)
-	h := newHost(t, app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	h := newHost(t, app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestForkInsideActiveTurnIsRefused(t *testing.T) {
 	const sid session.SessionID = "s-fork-active"
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
 	store := filestoretest.Store(t)
-	h := newHost(t, app.Config{Store: store}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
+	h := newHost(t, app.Config{Store: store}, map[run.ModelRef]local.ModelInvoker{"m-1": gate})
 	presetRef, err := h.RegisterPreset("a1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)

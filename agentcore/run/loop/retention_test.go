@@ -5,25 +5,26 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/sdk"
 )
 
-// echoExecutor is a LocalExecutor over one tool that returns its arguments.
-func echoExecutor(t *testing.T) (*LocalExecutor, ToolSpec) {
+// echoExecutor is a local.LocalExecutor over one tool that returns its arguments.
+func echoExecutor(t *testing.T) (*local.LocalExecutor, ToolSpec) {
 	t.Helper()
 	tool := &fakeTool{ref: "echo", def: toolDef("echo"), policy: DirectExecution,
-		execute: func(_ context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(_ context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
-	exec, err := NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}, nil, false)
+	exec, err := local.NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": tool}}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return exec, toolSpec(t, "echo", DirectExecution)
 }
 
-// A LocalExecutor keeps a bounded number of terminal entries: once more than
+// A local.LocalExecutor keeps a bounded number of terminal entries: once more than
 // the retained count have closed, the oldest is forgotten and every read of
 // its ref reports a missing execution, while the newer ones stay terminal.
 func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {

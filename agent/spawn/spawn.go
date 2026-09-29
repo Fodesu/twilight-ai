@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -156,7 +157,7 @@ func ArgumentsConflict(prov Provenance, args Arguments) bool {
 // catalogs. Its ResponsePolicy is ExternalResponse: a call waits, and the
 // Responder the Driver holds for the tool answers it (SPN-1, DRV-4). Execute
 // never runs.
-func Tool(ref run.ToolRef) loop.ExecutableTool { return tool{ref: ref} }
+func Tool(ref run.ToolRef) local.ExecutableTool { return tool{ref: ref} }
 
 type tool struct{ ref run.ToolRef }
 
@@ -194,7 +195,7 @@ func (tool) ValidateArguments(args run.CanonicalJSON) error {
 	return err
 }
 
-func (t tool) Execute(context.Context, loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (t tool) Execute(context.Context, local.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureExecution,
 		Message: fmt.Sprintf("%s is answered by the spawn Responder (app.Config.Spawn), never executed", t.ref)}}
 }

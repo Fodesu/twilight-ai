@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -42,7 +43,7 @@ func (m streamingModel) Stream(context.Context, sdk.Request) (sdk.ModelStream, e
 func TestModelDeltasReachTheEventStream(t *testing.T) {
 	ctx := context.Background()
 	h := newHost(t, app.Config{Store: filestoretest.Store(t), Content: durableContent(t), Ownership: session.OpenOptions{Takeover: true}},
-		map[run.ModelRef]loop.ModelInvoker{"m-1": streamingModel{deltas: []string{"hel", "lo"}}})
+		map[run.ModelRef]local.ModelInvoker{"m-1": streamingModel{deltas: []string{"hel", "lo"}}})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)

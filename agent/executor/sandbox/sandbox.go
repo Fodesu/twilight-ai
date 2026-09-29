@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agent/environment"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/executor"
@@ -46,7 +47,7 @@ type Options struct {
 
 // Backend is the workspace backend.
 type Backend struct {
-	inner *loop.LocalExecutor
+	inner *local.LocalExecutor
 	envs  *manager
 }
 
@@ -75,7 +76,7 @@ func New(opts Options) (*Backend, error) {
 		}
 		catalog[t.Ref()] = &adapter{tool: t, envs: envs}
 	}
-	inner, err := loop.NewLocalExecutor(noModels{}, catalog, opts.Progress, false)
+	inner, err := local.NewLocalExecutor(noModels{}, catalog, opts.Progress, false)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +129,7 @@ func (b *Backend) Start(ctx context.Context, ref string, a effect.Assignment) er
 	if failure, err := b.Validate(ctx, a); err != nil {
 		return err
 	} else if failure != nil {
-		return fmt.Errorf("%w: %s: %s", loop.ErrExecutorRejected, failure.Class, failure.Message)
+		return fmt.Errorf("%w: %s: %s", local.ErrExecutorRejected, failure.Class, failure.Message)
 	}
 	return b.inner.Start(ctx, ref, a)
 }
@@ -172,13 +173,13 @@ var ErrNothingToSnapshot = workspace.ErrNothingToSnapshot
 
 type noModels struct{}
 
-func (noModels) ResolveModel(ref run.ModelRef) (loop.ModelInvoker, error) {
+func (noModels) ResolveModel(ref run.ModelRef) (local.ModelInvoker, error) {
 	return nil, fmt.Errorf("sandbox: no model %s: the workspace backend serves tool calls only", ref)
 }
 
-type toolCatalog map[run.ToolRef]loop.ExecutableTool
+type toolCatalog map[run.ToolRef]local.ExecutableTool
 
-func (c toolCatalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
+func (c toolCatalog) ResolveTool(ref run.ToolRef) (local.ExecutableTool, error) {
 	t, ok := c[ref]
 	if !ok {
 		return nil, fmt.Errorf("sandbox: unknown workspace tool %s", ref)
@@ -193,7 +194,7 @@ type adapter struct {
 	envs *manager
 }
 
-var _ loop.ExecutableTool = (*adapter)(nil)
+var _ local.ExecutableTool = (*adapter)(nil)
 
 func (a *adapter) Ref() run.ToolRef                            { return a.tool.Ref() }
 func (a *adapter) Definition() sdk.ToolDefinition              { return a.tool.Definition() }
@@ -202,7 +203,7 @@ func (a *adapter) Replay() run.ReplayPolicy                    { return a.tool.R
 func (a *adapter) Placement() run.ToolPlacement                { return run.PlacementWorkspace }
 func (a *adapter) ValidateArguments(v run.CanonicalJSON) error { return a.tool.ValidateArguments(v) }
 
-func (a *adapter) Execute(ctx context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome { //nolint:gocritic // hugeParam: loop.ExecutableTool.Execute takes the request by value
+func (a *adapter) Execute(ctx context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome { //nolint:gocritic // hugeParam: local.ExecutableTool.Execute takes the request by value
 	if req.Target == nil || req.Target.Kind != workspace.TargetKind || req.Target.ID == "" {
 		return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureInvalidInput, Message: "workspace tool call without a workspace target"}, Retry: run.RetryNever}
 	}

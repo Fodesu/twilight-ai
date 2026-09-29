@@ -1,7 +1,7 @@
 // Package tools holds the workspace-placed tools of the reference agent:
 // tools that run inside the Environment the Session's workspace is
 // materialized in (run.PlacementWorkspace). A Tool declares itself like a
-// loop.ExecutableTool but executes against an Environment the sandbox
+// local.ExecutableTool but executes against an Environment the sandbox
 // backend resolves from the Assignment's target; it never sees the host.
 package tools
 
@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agent/environment"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/sdk"
@@ -28,7 +29,7 @@ type Tool interface {
 	// environment.
 	ValidateArguments(run.CanonicalJSON) error
 	// Run executes the call inside env.
-	Run(ctx context.Context, env environment.Environment, req *loop.ToolExecutionRequest) loop.ToolExecutionOutcome
+	Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) loop.ToolExecutionOutcome
 }
 
 // Default is the reference agent's workspace tool set.

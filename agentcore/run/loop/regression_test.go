@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -17,12 +18,12 @@ import (
 func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome {
 			panic("nil map write")
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
 	rt, w := loopRuntime(t)
-	interpreter, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	interpreter, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
 	res, err := interpreter.Run(context.Background(), rt.Bind(w), "run-1", nil)
@@ -81,7 +82,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	spec := ToolSpec{Ref: "fs.read", Name: "read", DefinitionDigest: d, Policy: DirectExecution}
 	executed := atomic.Bool{}
 	tool := &fakeTool{ref: "fs.read", def: def, policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome {
 			executed.Store(true)
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
 		}}
@@ -94,7 +95,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 		textResult("done"),
 	}}
 	rt, w := loopRuntime(t)
-	interpreter, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"fs.read": tool}},
+	interpreter, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"fs.read": tool}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
 	res, err := interpreter.Run(context.Background(), rt.Bind(w), "run-1", nil)

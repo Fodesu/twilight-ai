@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -70,11 +71,11 @@ func (s *scriptInvoker) lastResult() (sdk.ModelResult, bool) {
 }
 
 type scriptCatalog struct {
-	invoker loop.ModelInvoker
+	invoker local.ModelInvoker
 	err     error
 }
 
-func (c scriptCatalog) ResolveModel(run.ModelRef) (loop.ModelInvoker, error) {
+func (c scriptCatalog) ResolveModel(run.ModelRef) (local.ModelInvoker, error) {
 	if c.err != nil {
 		return nil, c.err
 	}
@@ -99,7 +100,7 @@ func (s *scriptTool) ValidateArguments(run.CanonicalJSON) error {
 	return nil
 }
 
-func (s *scriptTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (s *scriptTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	s.ran.Add(1)
 	if s.unknown {
 		return loop.ToolExecutionUnknown{Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "lost"}}
@@ -111,10 +112,10 @@ func (s *scriptTool) Execute(_ context.Context, req loop.ToolExecutionRequest) l
 }
 
 type scriptToolCatalog struct {
-	tools map[run.ToolRef]loop.ExecutableTool
+	tools map[run.ToolRef]local.ExecutableTool
 }
 
-func (c scriptToolCatalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
+func (c scriptToolCatalog) ResolveTool(ref run.ToolRef) (local.ExecutableTool, error) {
 	tool, ok := c.tools[ref]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool %q", ref)

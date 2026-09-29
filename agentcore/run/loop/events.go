@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 
 	run "github.com/felinics/twilight/agentcore/run"
@@ -36,20 +35,6 @@ func (l *Loop) emitCommitted(ctx context.Context, events EventSink, scope run.Sc
 	})
 }
 
-// progressSink is the ToolProgressSink of one tool execution: each payload
-// becomes a tool_progress frame of the call's key (RUN-EXE-12).
-type progressSink struct {
-	sink effect.ProgressSink
-	key  AssignmentKey
-}
-
-func (p *progressSink) Publish(ctx context.Context, progress ToolProgress) {
-	if p.sink == nil {
-		return
-	}
-	p.sink.Publish(ctx, effect.ProgressFrame{Key: p.key, Kind: effect.ProgressToolProgress, Payload: progress.Payload})
-}
-
 // forwardProgress subscribes to key's frames on a ProgressPort and emits
 // each as a provisional Event on the drive's sink (RUN-LOP-6): this is how
 // deltas produced wherever the effect runs reach the host's observation
@@ -80,12 +65,4 @@ func progressEventKind(k effect.ProgressKind) (EventKind, bool) {
 	default:
 		return "", false
 	}
-}
-
-func mustJSON(v any) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return []byte("null")
-	}
-	return b
 }

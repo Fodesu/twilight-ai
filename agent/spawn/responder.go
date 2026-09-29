@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -43,7 +43,7 @@ func (o Options) ToolRef() run.ToolRef {
 // ExecutableTool is the model-facing definition of the spawn tool for preset
 // catalogs. Its Execute never runs: the tool's ResponsePolicy is
 // ExternalResponse and the Responder answers the wait (SPN-1).
-func (o Options) ExecutableTool() loop.ExecutableTool { return Tool(o.ToolRef()) }
+func (o Options) ExecutableTool() local.ExecutableTool { return Tool(o.ToolRef()) }
 
 func (o Options) depth() int {
 	if o.MaxDepth <= 0 {

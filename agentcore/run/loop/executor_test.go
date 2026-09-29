@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -520,14 +521,14 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	}
 }
 
-// LocalExecutor is the colocated Backend: Start runs the effect under the
+// local.LocalExecutor is the colocated Backend: Start runs the effect under the
 // Ref Prepare derived, Outcome reads the eventual result and Cancel stops an
 // in-flight effect.
 func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	block := make(chan struct{})
 	seenTarget := make(chan *TargetRef, 1)
 	tool := &fakeTool{ref: "echo", def: toolDef("echo"), policy: DirectExecution,
-		execute: func(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(ctx context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
 			seenTarget <- req.Target
 			select {
 			case <-ctx.Done():
@@ -536,7 +537,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 				return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 			}
 		}}
-	exec, err := NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}, nil, false)
+	exec, err := local.NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": tool}}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +738,7 @@ func TestLocalExecutorValidateChecksToolDeclarations(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := &fakeTool{ref: "echo", def: sdk.ToolDefinition{Name: "echo"}, policy: DirectExecution, replay: tc.declared, placement: tc.declaredPlacement}
-			exec, err := NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}, nil, false)
+			exec, err := local.NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": tool}}, nil, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -758,7 +759,7 @@ func TestLocalExecutorValidateChecksToolDeclarations(t *testing.T) {
 			if (failure != nil) != (tc.mismatch != "") || (failure != nil && !strings.Contains(failure.Message, tc.mismatch)) {
 				t.Fatalf("validate = %+v, want mismatch %q", failure, tc.mismatch)
 			}
-			if ref, err := exec.Restart(context.Background(), RefOf(a.Key()), a); err != nil || ref != RefOf(a.Key())+"#1" {
+			if ref, err := exec.Restart(context.Background(), local.RefOf(a.Key()), a); err != nil || ref != local.RefOf(a.Key())+"#1" {
 				t.Fatalf("restart = %q, %v", ref, err)
 			}
 		})
@@ -766,8 +767,8 @@ func TestLocalExecutorValidateChecksToolDeclarations(t *testing.T) {
 }
 
 // awaitRef reads ref's Outcome until it is readable: Outcome is a plain read
-// and the LocalExecutor announces settlement through its notice.Source.
-func awaitRef(ctx context.Context, exec *LocalExecutor, ref string) (Outcome, error) {
+// and the local.LocalExecutor announces settlement through its notice.Source.
+func awaitRef(ctx context.Context, exec *local.LocalExecutor, ref string) (Outcome, error) {
 	for {
 		out, err := exec.Outcome(ctx, ref)
 		if !errors.Is(err, ErrOutcomeNotReady) {

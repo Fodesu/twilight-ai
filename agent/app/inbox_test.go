@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -37,9 +37,9 @@ func (f *resolveFails) Resolve(ctx context.Context, sid session.SessionID, seq u
 
 // inboxHost builds an application with an inbox; the Session is created but
 // not opened, so commands can be left for its next owner.
-func inboxHost(t *testing.T, store inbox.Store, model loop.ModelInvoker, tools ...loop.ExecutableTool) (*app.Application, preset.PresetRef, session.SessionID) {
+func inboxHost(t *testing.T, store inbox.Store, model local.ModelInvoker, tools ...local.ExecutableTool) (*app.Application, preset.PresetRef, session.SessionID) {
 	t.Helper()
-	h := newHost(t, app.Config{Inbox: store}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tools...)
+	h := newHost(t, app.Config{Inbox: store}, map[run.ModelRef]local.ModelInvoker{"m-1": model}, tools...)
 	const sid session.SessionID = "s-inbox"
 	if err := h.CreateSession(context.Background(), sid); err != nil {
 		t.Fatal(err)

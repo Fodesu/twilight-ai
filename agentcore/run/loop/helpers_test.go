@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/decision"
@@ -151,9 +152,9 @@ func loadState(t testing.TB, rt *runmod.SessionRunStore, w writer.Writer, runID 
 	return snap
 }
 
-// newLoop builds a Loop over a LocalExecutor for tests; the executor no
+// newLoop builds a Loop over a local.LocalExecutor for tests; the executor no
 // longer reads frozen bodies (RUN-EXE-7), so the runtime is not wired in.
-func newLoop(t testing.TB, sink EventSink, models ModelCatalog, tools ToolCatalog, builder decision.Builder, settings Settings, streaming bool) (*Loop, error) {
+func newLoop(t testing.TB, sink EventSink, models local.ModelCatalog, tools local.ToolCatalog, builder decision.Builder, settings Settings, streaming bool) (*Loop, error) {
 	if models == nil {
 		return nil, errors.New("agent: loop: nil model catalog")
 	}
@@ -161,7 +162,7 @@ func newLoop(t testing.TB, sink EventSink, models ModelCatalog, tools ToolCatalo
 		return nil, errors.New("agent: loop: nil tool catalog")
 	}
 	hub := executor.NewProgressHub(0)
-	backend, err := NewLocalExecutor(models, tools, hub, streaming)
+	backend, err := local.NewLocalExecutor(models, tools, hub, streaming)
 	if err != nil {
 		return nil, err
 	}

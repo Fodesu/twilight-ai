@@ -10,8 +10,6 @@ import (
 	effect "github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/runtime"
-
-	"github.com/felinics/twilight/sdk"
 )
 
 // ErrRunAlreadyRunning identifies a second local driver for the same Run.
@@ -75,80 +73,6 @@ type Settings struct {
 // RunStore and input the PromptInput the plan is about to hand the
 // PromptBuilder.
 type PrepareHook func(ctx context.Context, store runtime.RunStore, input plan.PromptInput) error
-
-// ModelCatalog resolves a frozen run.ModelRef into an invoker at execution time;
-// provider binding never enters the frozen request. The same ModelRef must
-// resolve to equivalent execution semantics for the life of a Run (RUN-LOP-7).
-type ModelCatalog interface {
-	ResolveModel(run.ModelRef) (ModelInvoker, error)
-}
-
-type ModelInvoker interface {
-	Generate(context.Context, sdk.Request) (sdk.ModelResult, error)
-}
-
-// StreamingModelInvoker is an optional optimization; it must produce the same
-// final ModelResult as Generate.
-type StreamingModelInvoker interface {
-	Stream(context.Context, sdk.Request) (sdk.ModelStream, error)
-}
-
-type ToolCatalog interface {
-	ResolveTool(run.ToolRef) (ExecutableTool, error)
-}
-
-type ToolExecutionRequest struct {
-	RunID  run.RunID
-	StepID run.StepID
-	CallID run.CallID
-	// Effect is the tool effect the call was started under; it identifies the
-	// Outcome the Executor returns through its message-shaped port (RUN-EXE-2).
-	Effect           run.EffectID
-	ToolRef          run.ToolRef
-	DefinitionDigest run.Digest
-	Arguments        run.CanonicalJSON
-	// Target is an opaque resource reference supplied by the application; the
-	// Loop does not interpret it.
-	Target   *run.TargetRef
-	Progress ToolProgressSink
-}
-
-// ExecutableTool is the application-side execution contract (RUN-LOP-1).
-type ExecutableTool interface {
-	Ref() run.ToolRef
-	Definition() sdk.ToolDefinition
-	ResponsePolicy() run.ResponsePolicy
-	// ValidateArguments runs before the start barrier and must not produce
-	// external effects.
-	ValidateArguments(run.CanonicalJSON) error
-	Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
-	// Replay declares whether Execute may run again for the same call after
-	// an earlier execution was lost (RUN-EXE-9, TRN-DUR-4). Every tool
-	// answers; the zero value ReplayUnknown is the answer of a tool whose
-	// author has not judged it. The declaration is frozen into the ToolSpec
-	// and carried on every call and Assignment.
-	Replay() run.ReplayPolicy
-	// Placement declares where the tool runs (RUN-LOP-9): in the executor
-	// process, or inside the Session's workspace, in which case its calls
-	// need a target and are routed to the workspace backend. Every tool
-	// answers; the declaration is frozen into the ToolSpec.
-	Placement() run.ToolPlacement
-}
-
-// Tool outcomes belong to the process-independent effect protocol. Aliases
-// keep the local tool implementation source-compatible.
-type ToolExecutionOutcome = effect.ToolExecutionOutcome
-type ToolExecutionSucceeded = effect.ToolExecutionSucceeded
-type ToolExecutionFailed = effect.ToolExecutionFailed
-type ToolExecutionUnknown = effect.ToolExecutionUnknown
-
-type ToolProgressSink interface {
-	Publish(context.Context, ToolProgress)
-}
-
-type ToolProgress struct {
-	Payload json.RawMessage
-}
 
 // --- EventSink: realtime observation, never authority (RUN-LOP-6) ---
 

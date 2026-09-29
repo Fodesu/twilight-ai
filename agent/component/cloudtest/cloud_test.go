@@ -39,7 +39,6 @@ import (
 	"github.com/felinics/twilight/agentcore/process/processtest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -183,7 +182,7 @@ func (c *cluster) shutdown() {
 	}
 }
 
-func newCluster(t *testing.T, model loop.ModelInvoker) *cluster {
+func newCluster(t *testing.T, model executorlocal.ModelInvoker) *cluster {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
@@ -191,7 +190,7 @@ func newCluster(t *testing.T, model loop.ModelInvoker) *cluster {
 		sessions: filepath.Join(t.TempDir(), "sessions"), content: filepath.Join(t.TempDir(), "content"), envRoot: filepath.Join(t.TempDir(), "envs")}
 	c.records = storetest.NewMap(c.clock.Now)
 	// model backend
-	catalog, err := executorlocal.NewCatalog(map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	catalog, err := executorlocal.NewCatalog(map[run.ModelRef]executorlocal.ModelInvoker{"m-1": model})
 	if err != nil {
 		t.Fatal(err)
 	}
