@@ -96,7 +96,7 @@ type staticBuilder struct {
 	specs []ToolSpec
 }
 
-func (p staticBuilder) Build(_ context.Context, hint plan.PromptInput) (decision.Prompt, error) {
+func (p staticBuilder) Build(_ context.Context, hint decision.Input) (decision.Prompt, error) {
 	model := p.model
 	if model == "" {
 		model = testModel

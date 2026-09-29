@@ -15,7 +15,7 @@ import (
 type Action interface{ action() }
 
 type NeedModelRequest struct {
-	Hint PromptInput
+	Hint decision.Input
 }
 
 func (NeedModelRequest) action() {}
@@ -43,78 +43,11 @@ type StartToolCalls struct {
 func (StartToolCalls) action() {}
 
 // Idle means the Run is still active and Next has no executable action.
-// Application inspects MachineState with WaitingCalls, ExecutingCalls, and
-// NeedsRecovery. Loop does not interpret those queries.
+// Application inspects MachineState with the run package's WaitingCalls,
+// ExecutingCalls and NeedsRecovery queries. Loop does not interpret them.
 type Idle struct{}
 
 func (Idle) action() {}
-
-// WaitingCalls returns the Waits of the current ToolStep: the ResponseRequest
-// of every ToolWaiting call. Application uses this after Loop returns
-// LoopWaiting. The result is detached.
-func WaitingCalls(s run.MachineState) []run.ResponseRequest { //nolint:gocritic // hugeParam: read-only query over a detached state value
-	ts, ok := s.Current.(run.ToolStep)
-	if !ok {
-		return nil
-	}
-	var out []run.ResponseRequest
-	for i := range ts.Calls {
-		c := &ts.Calls[i]
-		if c.Status != run.ToolWaiting || c.Waiting == nil {
-			continue
-		}
-		cloned := run.CloneResponseRequest(c.Waiting)
-		if cloned != nil {
-			out = append(out, *cloned)
-		}
-	}
-	return out
-}
-
-// ExecutingCalls returns CallIDs still Executing on the current ToolStep.
-func ExecutingCalls(s run.MachineState) []run.CallID { //nolint:gocritic // hugeParam: read-only query over a detached state value
-	ts, ok := s.Current.(run.ToolStep)
-	if !ok {
-		return nil
-	}
-	var out []run.CallID
-	for i := range ts.Calls {
-		c := &ts.Calls[i]
-		if c.Status == run.ToolExecuting {
-			out = append(out, c.CallID)
-		}
-	}
-	return out
-}
-
-// NeedsRecovery reports that an execution is in flight and this process has
-// no Start effect for it: a ModelStep is Executing, or a ToolStep has
-// Executing calls and no Pending calls.
-func NeedsRecovery(s run.MachineState) bool { //nolint:gocritic // hugeParam: read-only query over a detached state value
-	switch cur := s.Current.(type) {
-	case run.ModelStep:
-		return cur.Status == run.ModelExecuting
-	case run.ToolStep:
-		pending := false
-		executing := false
-		for i := range cur.Calls {
-			c := &cur.Calls[i]
-			switch c.Status {
-			case run.ToolPending:
-				pending = true
-			case run.ToolExecuting:
-				executing = true
-			}
-		}
-		return executing && !pending
-	default:
-		return false
-	}
-}
-
-// PromptInput is the decision boundary's Input, re-exported under the name
-// the Run vocabulary uses.
-type PromptInput = decision.Input
 
 // Next derives the pending action from the current state (RUN-MCH-4).
 // Terminal states return ErrRunTerminal; callers check Status first.
@@ -130,7 +63,7 @@ func Next(s run.MachineState) (Action, error) {
 		if s.LastToolStep != nil {
 			source = s.LastToolStep.RefValue.ID
 		}
-		return NeedModelRequest{Hint: PromptInput{
+		return NeedModelRequest{Hint: decision.Input{
 			RunID:      s.RunID,
 			SourceStep: source,
 			Inputs:     append([]run.AgentInput(nil), s.PendingInputs...),

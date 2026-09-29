@@ -19,7 +19,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
-	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
@@ -404,7 +403,7 @@ func (f *Feature) state() run.MachineState {
 
 func (f *Feature) waiting() run.ResponseRequest {
 	f.t.Helper()
-	reqs := plan.WaitingCalls(f.state())
+	reqs := run.WaitingCalls(f.state())
 	if len(reqs) == 0 {
 		f.t.Fatal("no waiting call")
 	}

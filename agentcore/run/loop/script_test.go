@@ -11,7 +11,6 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
-	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -127,10 +126,10 @@ type scriptBuilder struct {
 	model    run.ModelRef
 	specs    []run.ToolSpec
 	defs     map[run.ToolRef]sdk.ToolDefinition
-	lastHint plan.PromptInput
+	lastHint decision.Input
 }
 
-func (p *scriptBuilder) Build(_ context.Context, hint plan.PromptInput) (decision.Prompt, error) {
+func (p *scriptBuilder) Build(_ context.Context, hint decision.Input) (decision.Prompt, error) {
 	p.lastHint = hint
 	model := p.model
 	if model == "" {

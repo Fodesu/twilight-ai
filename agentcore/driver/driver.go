@@ -20,7 +20,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
-	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
@@ -129,7 +128,7 @@ func (d *Driver) OutcomeWatcher() *effect.Watcher { return d.watcher() }
 // being driven, so what it commits (an in-turn checkpoint, APP-CKP-1) is
 // what the PromptBuilder reads next. Errors stop the drive.
 type Planner interface {
-	BeforePrepare(ctx context.Context, w writer.Writer, input plan.PromptInput) error
+	BeforePrepare(ctx context.Context, w writer.Writer, input decision.Input) error
 }
 
 // New returns a Driver with no Loops built and no Sessions open.
@@ -180,7 +179,7 @@ func (d *Driver) loopFor(ref preset.PresetRef) (*loop.Loop, error) {
 
 // beforePrepare hands the Loop's hook to the Planner with the Writer the
 // bound store commits through.
-func (d *Driver) beforePrepare(ctx context.Context, st store.RunStore, input plan.PromptInput) error {
+func (d *Driver) beforePrepare(ctx context.Context, st store.RunStore, input decision.Input) error {
 	owned, ok := st.(interface{ Writer() writer.Writer })
 	if !ok {
 		return fmt.Errorf("driver: run store %T exposes no writer for the planner", st)

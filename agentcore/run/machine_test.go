@@ -472,8 +472,8 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	if _, ok := eff.(plan.Idle); !ok {
 		t.Fatalf("action after B completed = %#v, want Idle", eff)
 	}
-	if reqs := plan.WaitingCalls(s); len(reqs) != 1 || reqs[0].CallID != cid(stepID, 0) {
-		t.Fatalf("WaitingCalls = %#v", plan.WaitingCalls(s))
+	if reqs := run.WaitingCalls(s); len(reqs) != 1 || reqs[0].CallID != cid(stepID, 0) {
+		t.Fatalf("WaitingCalls = %#v", run.WaitingCalls(s))
 	}
 
 	// Answer A via approval; approving moves to Pending, then completing it

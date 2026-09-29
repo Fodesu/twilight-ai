@@ -15,7 +15,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -86,7 +85,7 @@ func entries() (chatlog.Context, fixedContent) {
 func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	state, content := entries()
 	src := sources(state, session.Head{Next: 3}, content)
-	input := plan.PromptInput{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Digest: "sha256:in-1"}}}
+	input := decision.Input{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Digest: "sha256:in-1"}}}
 	var prompts []decision.Prompt
 	for i := 0; i < 2; i++ {
 		builders := prompt.DefaultCatalog() // a fresh process builds its own registry
@@ -175,13 +174,13 @@ func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: tc.entries}, session.Head{}, content))
-			if _, err := builder.Build(context.Background(), plan.PromptInput{Scope: "s"}); err == nil {
+			if _, err := builder.Build(context.Background(), decision.Input{Scope: "s"}); err == nil {
 				t.Fatal("unpaired history produced a provider request")
 			}
 		})
 	}
 	builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: []chatlog.Entry{call, input, result}}, session.Head{}, content))
-	prompt, err := builder.Build(context.Background(), plan.PromptInput{Scope: "s"})
+	prompt, err := builder.Build(context.Background(), decision.Input{Scope: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}

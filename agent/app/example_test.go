@@ -12,7 +12,6 @@ import (
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
-	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -148,7 +147,7 @@ func waitForExecutingCall(ctx context.Context, h *app.Application, sid session.S
 		if err == nil {
 			if v, ok := surface.Turns[turnID]; ok && v.RunID != "" {
 				snap, err := runState(h, sid, v.RunID)
-				if err == nil && len(plan.ExecutingCalls(snap.State)) == 1 {
+				if err == nil && len(run.ExecutingCalls(snap.State)) == 1 {
 					return v.RunID
 				}
 			}

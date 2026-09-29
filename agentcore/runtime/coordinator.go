@@ -8,7 +8,6 @@ import (
 
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
@@ -254,10 +253,10 @@ func (c *Coordinator) responseFor(ctx context.Context, ref turn.TurnRef, view *t
 	switch {
 	case snapshot.State.Status.Terminal():
 		resp.Disposition = turn.ResumeFinished
-	case plan.NeedsRecovery(snapshot.State):
+	case run.NeedsRecovery(snapshot.State):
 		resp.Disposition = turn.ResumeWaitingForRecovery
 	default:
-		resp.Waiting = plan.WaitingCalls(snapshot.State)
+		resp.Waiting = run.WaitingCalls(snapshot.State)
 		if len(resp.Waiting) > 0 {
 			resp.Disposition = turn.ResumeWaitingForResponse
 		}

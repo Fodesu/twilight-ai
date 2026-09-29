@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/plan"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -68,7 +67,7 @@ func RequireQuiescentRun(v writer.View) error {
 	case run.Open:
 		return nil
 	case run.ToolStep:
-		if calls := plan.ExecutingCalls(state); len(calls) > 0 {
+		if calls := run.ExecutingCalls(state); len(calls) > 0 {
 			return fmt.Errorf("%w: turn %s has %d executing tool call(s)", turn.ErrConflict, active.TurnID, len(calls))
 		}
 		return nil

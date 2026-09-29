@@ -296,7 +296,7 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 				return LoopResult{Disposition: LoopDispatched, Dispatched: dispatched}, nil
 			}
 		case plan.Idle:
-			recovery := plan.NeedsRecovery(snapshot.State)
+			recovery := run.NeedsRecovery(snapshot.State)
 			reason := WaitReason("")
 			if recovery {
 				reason = ExecutionRecovery

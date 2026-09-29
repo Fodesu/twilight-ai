@@ -37,7 +37,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
-	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -235,7 +234,7 @@ type Application struct {
 // of a Run, while it is Open, the Session's automatic compaction policy runs
 // against the context the next model request will read. Failures reach
 // CompactWarn and never stop the drive.
-func (app *Application) BeforePrepare(ctx context.Context, w writer.Writer, _ plan.PromptInput) error {
+func (app *Application) BeforePrepare(ctx context.Context, w writer.Writer, _ decision.Input) error {
 	app.mu.RLock()
 	s := app.sessions[w.SessionID()]
 	app.mu.RUnlock()
