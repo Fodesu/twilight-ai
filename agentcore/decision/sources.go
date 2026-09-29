@@ -1,5 +1,5 @@
-// Package decision is the decision seam of the agent core
-// (docs/design/agent-decision.md): the catalog that resolves an AgentPreset's
+// Package decision is the decision seam of the agent core: the catalog that
+// resolves an AgentPreset's
 // PromptBuilderRef to a PromptBuilder and the Sources a builder reads from.
 // It holds no builder of its own and no input content shape (the agent's
 // input package owns that, DEC-INP-1): how a model

@@ -1,4 +1,4 @@
-// Package turn is the first-party Turn module (docs/design/agent-turn.md):
+// Package turn is the first-party Turn module:
 // the logical turn, mid-turn input delivery and settlement. Which Run
 // executes which attempt of a Turn is the attempt module's fact
 // (agent/session/attempt); attempt outcomes are the Run's own run_ended

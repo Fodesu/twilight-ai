@@ -32,6 +32,4 @@
 // execution interpreter with its model/tool ports, and agent/run/reconcile the
 // takeover reconciliation against the execution store. The transport encoding
 // of the effect port belongs to the Executor, in agent/executor/protocol.
-//
-// See docs/design/agent-run.md for the governing specification.
 package run

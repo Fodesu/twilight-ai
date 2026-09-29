@@ -1,5 +1,5 @@
-// Package chatlog is the first-party conversation module
-// (docs/design/agent-session-chatlog.md). It owns the conversation's own
+// Package chatlog is the first-party conversation module. It owns the
+// conversation's own
 // facts -- the input lifecycle, summaries, compactions and out-of-band
 // result supersession -- and projects the conversation (Surface) and the
 // model-facing context (Context) from those facts together with the Run

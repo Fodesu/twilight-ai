@@ -1,5 +1,5 @@
-// Package session is the commit-ledger kernel of a Twilight Session
-// (docs/design/agent-session.md). The lineage is a tree of immutable commit
+// Package session is the commit-ledger kernel of a Twilight Session. The
+// lineage is a tree of immutable commit
 // segments (SES-LIN-1). The package owns the header, the Commit as the
 // atomic unit of append, logical streams within commits, Session-level
 // writer ownership with epoch fencing, and ordered reads over an append-only
