@@ -11,12 +11,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/executor/notice"
 	run "github.com/felinics/twilight/agentcore/run"
 	effect "github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/sdk"
 )

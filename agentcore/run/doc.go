@@ -23,10 +23,10 @@
 // persisted fact and command protocol, agent/run/frozen the frozen-body
 // protocol, agent/run/schema the version binding, agent/run/plan the next
 // action and the takeover dispositions, and agent/run/store the RunStore
-// port and commit evaluation. Outside model/sdkconv the protocol tier depends
+// port and commit evaluation. The protocol tier depends
 // only on agent/es, agent/jsonstable and itself.
 //
-// The execution tier uses the protocol tier and the sdk, and neither the core
+// The execution tier uses the protocol tier, and neither the core
 // nor the protocol tier imports it: agent/run/effect is the process-independent
 // port between the Loop and the Executor, agent/run/loop the in-process
 // execution interpreter with its model/tool ports, and agent/run/reconcile the

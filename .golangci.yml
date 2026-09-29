@@ -4,6 +4,7 @@ linters:
   default: standard
   enable:
     - bodyclose
+    - depguard
     - errcheck
     - errname
     - errorlint
@@ -26,6 +27,19 @@ linters:
     - err113
 
   settings:
+    depguard:
+      rules:
+        # agentcore is the protocol kernel: it depends on neither the SDK
+        # nor the agent built on it. Test code may use both.
+        agentcore:
+          files:
+            - "**/agentcore/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/felinics/twilight/sdk
+              desc: agentcore does not import the SDK; convert in agent/sdkconv
+            - pkg: github.com/felinics/twilight/agent/
+              desc: agentcore does not import the agent built on it
     errcheck:
       check-type-assertions: true
     goconst:

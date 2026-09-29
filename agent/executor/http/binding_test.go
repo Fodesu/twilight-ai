@@ -11,6 +11,7 @@ import (
 	"time"
 
 	executorhttp "github.com/felinics/twilight/agent/executor/http"
+	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
@@ -18,7 +19,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/sdk"
 )

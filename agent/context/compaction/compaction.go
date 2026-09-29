@@ -15,12 +15,12 @@ import (
 	"github.com/felinics/twilight/agent/input"
 	"strings"
 
+	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/sdk"

@@ -11,13 +11,13 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
@@ -26,8 +26,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
-	"github.com/felinics/twilight/sdk"
-	"github.com/google/jsonschema-go/jsonschema"
 	"sync"
 	"testing"
 	"time"
@@ -364,15 +362,11 @@ func toolEffect(runID run.RunID, step run.StepID, call run.CallID) run.EffectID 
 
 // --- run building blocks ---------------------------------------------------------
 
-var toolDef = sdk.ToolDefinition{Name: "echo", Parameters: &jsonschema.Schema{Type: "object"}}
+var toolDef = model.ToolDefinition{Name: "echo", Parameters: jsonstable.MustParse(`{"type":"object"}`)}
 
 func (h *harness) spec() run.ToolSpec {
 	h.t.Helper()
-	store, err := sdkconv.FreezeToolDefinition(toolDef)
-	if err != nil {
-		h.fatal(err)
-	}
-	d, err := schema.Canonical().DigestToolDefinition(store)
+	d, err := schema.Canonical().DigestToolDefinition(toolDef)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -382,15 +376,12 @@ func (h *harness) spec() run.ToolSpec {
 // preparedCommand builds PrepareModelRequest against snap with the derived ids.
 func (h *harness) preparedCommand(snap store.Snapshot, withTool bool) (run.PrepareModelRequest, run.CommandID) {
 	h.t.Helper()
-	req := sdk.Request{Model: "m-1", Messages: []sdk.Message{sdk.UserMessage("go")}}
+	store := model.ModelRequest{Model: "m-1", Messages: []model.Message{{Role: model.MessageRoleUser,
+		Content: []model.MessagePart{{Type: model.MessagePartTypeText, Text: "go"}}}}}
 	var specs []run.ToolSpec
 	if withTool {
-		req.Tools = []sdk.ToolDefinition{toolDef}
+		store.Tools = []model.ToolDefinition{toolDef}
 		specs = []run.ToolSpec{h.spec()}
-	}
-	store, err := sdkconv.FreezeModelRequest(req)
-	if err != nil {
-		h.fatal(err)
 	}
 	reqDigest, err := schema.Canonical().DigestRequest(store)
 	if err != nil {
@@ -434,31 +425,23 @@ func (h *harness) executingModel(runID run.RunID, withTool bool) (run.StepID, ru
 }
 
 func textResult(text string) model.ModelResult {
-	r, err := sdkconv.FreezeModelResult(sdk.ModelResult{Text: text, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})
-	if err != nil {
-		panic(err)
-	}
-	return r
+	return model.ModelResult{Text: text, FinishReason: model.FinishReasonStop, Usage: model.Usage{TotalTokens: 1}}
 }
 
 // toolCallResult is a model result issuing n calls of the harness tool.
 func (h *harness) toolCallResult(step run.StepID, n int) (model.ModelResult, []run.ToolCallBinding) {
 	h.t.Helper()
 	spec := h.spec()
-	calls := make([]sdk.ToolCall, n)
+	calls := make([]model.ModelToolCall, n)
 	bindings := make([]run.ToolCallBinding, n)
 	for i := range calls {
 		args := run.MustParseCanonicalJSON(fmt.Sprintf(`{"i":%d}`, i))
-		calls[i] = sdk.ToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: sdk.ParseToolArguments(args.String())}
+		calls[i] = model.ModelToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: model.ToolArguments{JSON: args}}
 		callID := schema.Identity().DeriveCallID(step, i)
 		bindings[i] = run.ToolCallBinding{CallID: callID, ProviderCallID: calls[i].ToolCallID, ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 			Arguments: args, Policy: spec.Policy, Replay: spec.Replay, Placement: spec.Placement}
 	}
-	r, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2}, ToolCalls: calls})
-	if err != nil {
-		h.fatal(err)
-	}
-	return r, bindings
+	return model.ModelResult{FinishReason: model.FinishReasonToolCalls, Usage: model.Usage{TotalTokens: 2}, ToolCalls: calls}, bindings
 }
 
 // openToolStep drives a fresh Run to a ToolStep with n Pending calls.

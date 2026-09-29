@@ -1,9 +1,9 @@
 // Package jsonstable provides immutable RFC 8785 (JCS) JSON values for agent
 // wire protocols, and the stable identity computed over them: Digest,
 // typed-payload digest preimages, and strict decoding. External bytes are
-// parsed and canonicalized once at the boundary, under the SDK's rule
-// (sdk.CanonicalJSON); after that Value is safe to store in commands, facts,
-// and MachineState, and its bytes are the digest preimage.
+// parsed and canonicalized once at the boundary, under the module's one
+// canonicalization rule; after that Value is safe to store in commands,
+// facts, and MachineState, and its bytes are the digest preimage.
 package jsonstable
 
 import (
@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/felinics/twilight/sdk"
+	"github.com/felinics/twilight/internal/canonicaljson"
 )
 
 // Value is an immutable canonical JSON value. The zero value represents an
@@ -111,17 +111,16 @@ func (v *Value) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// Canonicalize transforms JSON into RFC 8785 (JCS) bytes. The rule is the
-// SDK's (sdk.CanonicalJSON): the SDK is the layer that first carries raw
-// JSON, and there is one canonical form in the module, so bytes the SDK
-// produced re-canonicalize to themselves here and a PostgreSQL JSONB round
-// trip remains digest-stable after canonicalization.
+// Canonicalize transforms JSON into RFC 8785 (JCS) bytes under the module's
+// one rule, shared with the SDK that first carries raw JSON, so bytes the
+// SDK produced re-canonicalize to themselves here and a PostgreSQL JSONB
+// round trip remains digest-stable after canonicalization.
 func Canonicalize(raw []byte) ([]byte, error) {
-	canonical, err := sdk.CanonicalJSON(raw)
+	canonical, err := canonicaljson.Transform(raw)
 	if err != nil {
 		return nil, fmt.Errorf("agent: canonical: %w", err)
 	}
-	return []byte(canonical), nil
+	return canonical, nil
 }
 
 // MarshalCanonical marshals a Go value and canonicalizes its JSON wire form.

@@ -4,6 +4,6 @@
 //
 // Every type is a closed, JSON-stable value with no SDK interface inside, so
 // its canonical encoding is fixed for the life of the schema version that
-// digests it. The package does not depend on the SDK; agent/run/model/sdkconv
-// converts in both directions.
+// digests it. The package does not depend on the SDK; agent/sdkconv converts
+// in both directions.
 package model

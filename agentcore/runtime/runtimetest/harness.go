@@ -11,13 +11,13 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
@@ -26,8 +26,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
-	"github.com/felinics/twilight/sdk"
-	"github.com/google/jsonschema-go/jsonschema"
 	"testing"
 	"time"
 )
@@ -356,15 +354,11 @@ func (h *harness) mustRunCommit(runID run.RunID, id run.CommandID, base run.RunP
 	return res
 }
 
-var toolDef = sdk.ToolDefinition{Name: "ask", Parameters: &jsonschema.Schema{Type: "object"}}
+var toolDef = model.ToolDefinition{Name: "ask", Parameters: jsonstable.MustParse(`{"type":"object"}`)}
 
 func (h *harness) spec(policy run.ResponsePolicy) run.ToolSpec {
 	h.t.Helper()
-	def, err := sdkconv.FreezeToolDefinition(toolDef)
-	if err != nil {
-		h.fatal(err)
-	}
-	d, err := schema.Canonical().DigestToolDefinition(def)
+	d, err := schema.Canonical().DigestToolDefinition(toolDef)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -376,13 +370,9 @@ func (h *harness) spec(policy run.ResponsePolicy) run.ToolSpec {
 func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	h.t.Helper()
 	snap := h.load(runID)
-	req := sdk.Request{Model: "m-1", Messages: []sdk.Message{sdk.UserMessage("go")}}
+	modelReq := userRequest("m-1", "go")
 	if len(specs) > 0 {
-		req.Tools = []sdk.ToolDefinition{toolDef}
-	}
-	modelReq, err := sdkconv.FreezeModelRequest(req)
-	if err != nil {
-		h.fatal(err)
+		modelReq.Tools = []model.ToolDefinition{toolDef}
 	}
 	proto := schema.Canonical()
 	reqDigest, err := proto.DigestRequest(modelReq)
@@ -413,12 +403,14 @@ func (h *harness) executingModel(runID run.RunID) (run.StepID, run.EffectID) {
 	return step, eff
 }
 
+// userRequest is a request of one user message.
+func userRequest(modelID, text string) model.ModelRequest {
+	return model.ModelRequest{Model: modelID, Messages: []model.Message{{Role: model.MessageRoleUser,
+		Content: []model.MessagePart{{Type: model.MessagePartTypeText, Text: text}}}}}
+}
+
 func textResult(text string) model.ModelResult {
-	r, err := sdkconv.FreezeModelResult(sdk.ModelResult{Text: text, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})
-	if err != nil {
-		panic(err)
-	}
-	return r
+	return model.ModelResult{Text: text, FinishReason: model.FinishReasonStop, Usage: model.Usage{TotalTokens: 1}}
 }
 
 // complete finishes the Run with a text result; the surface folds the Turn to
@@ -440,11 +432,8 @@ func (h *harness) waitingTool(runID run.RunID) {
 	}
 	args := run.MustParseCanonicalJSON(`{"q":1}`)
 	callID := schema.Identity().DeriveCallID(step, 0)
-	result, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
-		ToolCalls: []sdk.ToolCall{{ToolCallID: "c0", ToolName: "ask", Input: sdk.ParseToolArguments(args.String())}}})
-	if err != nil {
-		h.fatal(err)
-	}
+	result := model.ModelResult{FinishReason: model.FinishReasonToolCalls, Usage: model.Usage{TotalTokens: 2},
+		ToolCalls: []model.ModelToolCall{{ToolCallID: "c0", ToolName: "ask", Input: model.ToolArguments{JSON: args}}}}
 	binding := run.ToolCallBinding{CallID: callID, ProviderCallID: "c0", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 		Arguments: args, Policy: spec.Policy, Replay: spec.Replay, Placement: spec.Placement}
 	h.mustRunCommit(runID, schema.Identity().DeriveSettlementCommandID(eff), 0,

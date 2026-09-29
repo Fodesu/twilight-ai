@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/environment/local"
 	"github.com/felinics/twilight/agent/executor/sandbox"
+	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agent/workspace/workspacetest"
@@ -19,7 +20,6 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 )
 

@@ -9,19 +9,16 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
+	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session/filestore"
-	"github.com/felinics/twilight/sdk"
 )
 
 // frozenBody freezes one request and renders the bytes the store keeps.
 func frozenBody(t *testing.T, text string) (run.Digest, []byte) {
 	t.Helper()
-	req, err := sdkconv.FreezeModelRequest(sdk.Request{Model: "m-1", Messages: []sdk.Message{sdk.UserMessage(text)}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := model.ModelRequest{Model: "m-1", Messages: []model.Message{{Role: model.MessageRoleUser,
+		Content: []model.MessagePart{{Type: model.MessagePartTypeText, Text: text}}}}}
 	digest, err := schema.Canonical().DigestRequest(req)
 	if err != nil {
 		t.Fatal(err)

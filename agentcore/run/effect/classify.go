@@ -6,19 +6,24 @@ import (
 	"io"
 	"net"
 	"net/http"
-
-	"github.com/felinics/twilight/sdk"
 )
+
+// HTTPStatusError is an error that carries the HTTP status of a provider
+// response; the classifier reads the class off the status.
+type HTTPStatusError interface {
+	error
+	HTTPStatus() int
+}
 
 // ClassifyModelError maps a model invocation error to a wire-stable
 // FailureCode (RUN-EXE-11). Provider errors that expose their HTTP status
-// (sdk.HTTPStatusError) classify by status; transport errors classify as
+// (HTTPStatusError) classify by status; transport errors classify as
 // connection failures; anything else is FailureExecutor, which is not
 // transient, so an unclassified error is never retried. Cancellation and the
 // effect's own deadline are not failures of this kind and are left to the
 // caller.
 func ClassifyModelError(err error) FailureCode {
-	var status sdk.HTTPStatusError
+	var status HTTPStatusError
 	if errors.As(err, &status) {
 		switch code := status.HTTPStatus(); {
 		case code == http.StatusTooManyRequests:

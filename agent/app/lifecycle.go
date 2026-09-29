@@ -6,6 +6,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/executor/sandbox"
 	"github.com/felinics/twilight/agent/prompt"
+	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/chatlog"
@@ -13,7 +14,6 @@ import (
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
 )
