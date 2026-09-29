@@ -8,19 +8,19 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/ledger"
-	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
 )
 
-// ProcessStore is process.Store over the processes and process_commits
+// RedispatchStore is redispatch.Store over the processes and process_commits
 // tables: one ledger per effect, the same commit rules as the execution
 // ledger, and an epoch column that fences a superseded owner's reconciler.
-type ProcessStore struct{ db *sql.DB }
+type RedispatchStore struct{ db *sql.DB }
 
-var _ process.Store = (*ProcessStore)(nil)
+var _ redispatch.Store = (*RedispatchStore)(nil)
 
-// Processes is the process.Store over this database.
-func (d *DB) Processes() *ProcessStore { return &ProcessStore{db: d.db} }
+// Redispatches is the redispatch.Store over this database.
+func (d *DB) Redispatches() *RedispatchStore { return &RedispatchStore{db: d.db} }
 
 func readProcessCommits(ctx context.Context, q querier, k string, from ledger.CommitSeq) (commits []ledger.Commit, head ledger.Head, err error) {
 	rows, err := q.QueryContext(ctx, `SELECT seq, body FROM process_commits WHERE key = ? AND seq >= ? ORDER BY seq`, k, uint64(from))
@@ -56,38 +56,38 @@ func readProcessCommits(ctx context.Context, q querier, k string, from ledger.Co
 	return commits, head, nil
 }
 
-func foldProcess(commits []ledger.Commit) (process.State, error) {
-	var state process.State
+func foldProcess(commits []ledger.Commit) (redispatch.State, error) {
+	var state redispatch.State
 	for i := range commits {
 		var err error
-		state, err = process.Fold(state, &commits[i])
+		state, err = redispatch.Fold(state, &commits[i])
 		if err != nil {
-			return process.State{}, err
+			return redispatch.State{}, err
 		}
 	}
 	return state, nil
 }
 
-// Load folds the key's process ledger (process.Store).
-func (s *ProcessStore) Load(ctx context.Context, key effect.AssignmentKey) (state process.State, head ledger.Head, ok bool, err error) {
+// Load folds the key's dispatch ledger (redispatch.Store).
+func (s *RedispatchStore) Load(ctx context.Context, key effect.AssignmentKey) (state redispatch.State, head ledger.Head, ok bool, err error) {
 	k, err := ledgerKey(key)
 	if err != nil {
-		return process.State{}, ledger.Head{}, false, err
+		return redispatch.State{}, ledger.Head{}, false, err
 	}
 	commits, head, err := readProcessCommits(ctx, s.db, k, 0)
 	if err != nil || len(commits) == 0 {
-		return process.State{}, ledger.Head{}, false, err
+		return redispatch.State{}, ledger.Head{}, false, err
 	}
 	state, err = foldProcess(commits)
 	if err != nil {
-		return process.State{}, ledger.Head{}, false, err
+		return redispatch.State{}, ledger.Head{}, false, err
 	}
 	state.Key = key
 	return state, head, true, nil
 }
 
-// Read returns the key's process commits from Seq from (process.Store).
-func (s *ProcessStore) Read(ctx context.Context, key effect.AssignmentKey, from ledger.CommitSeq) (commits []ledger.Commit, head ledger.Head, err error) {
+// Read returns the key's process commits from Seq from (redispatch.Store).
+func (s *RedispatchStore) Read(ctx context.Context, key effect.AssignmentKey, from ledger.CommitSeq) (commits []ledger.Commit, head ledger.Head, err error) {
 	k, err := ledgerKey(key)
 	if err != nil {
 		return nil, ledger.Head{}, err
@@ -96,8 +96,8 @@ func (s *ProcessStore) Read(ctx context.Context, key effect.AssignmentKey, from 
 }
 
 // Append commits c under the kernel's rules and the owner's epoch fence
-// (process.Store).
-func (s *ProcessStore) Append(ctx context.Context, epoch ledger.Epoch, key effect.AssignmentKey, c ledger.Commit) error { //nolint:gocritic // hugeParam: the Store contract takes the commit by value; it is persisted, never shared
+// (redispatch.Store).
+func (s *RedispatchStore) Append(ctx context.Context, epoch ledger.Epoch, key effect.AssignmentKey, c ledger.Commit) error { //nolint:gocritic // hugeParam: the Store contract takes the commit by value; it is persisted, never shared
 	k, err := ledgerKey(key)
 	if err != nil {
 		return err
@@ -129,7 +129,7 @@ func (s *ProcessStore) Append(ctx context.Context, epoch ledger.Epoch, key effec
 		if err != nil {
 			return err
 		}
-		if _, err := process.Fold(state, &c); err != nil {
+		if _, err := redispatch.Fold(state, &c); err != nil {
 			return err
 		}
 		body, err := json.Marshal(c)

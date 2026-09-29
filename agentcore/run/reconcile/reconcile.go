@@ -5,7 +5,7 @@
 // three sources: the machine says which effects are outstanding (an
 // Executing model step or tool call and the EffectID it requested), the
 // executor says whether it still holds an attempt for that effect, and the
-// dispatch ledger (agentcore/process) says which redispatch of this effect
+// dispatch ledger (agentcore/run/redispatch) says which redispatch of this effect
 // was decided and whether it reached the executor. Per effect the Reconciler decides whether
 // the Run keeps waiting for the attempt's Outcome, hands the effect to the
 // executor again, or disposes it. Neither the Loop nor the store adapter
@@ -20,10 +20,10 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/ledger"
-	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
 )
@@ -174,7 +174,7 @@ type Reconciler struct {
 	// Attempts is the dispatch ledger: which redispatch of each effect was
 	// planned, whether it reached the executor, and whether the reconciler
 	// gave up (RUN-EXE-15).
-	Attempts process.Store
+	Attempts redispatch.Store
 	// Epoch fences the dispatch ledger: the Session owner's.
 	Epoch ledger.Epoch
 	// MaxRedispatches bounds redispatches per effect; zero selects
@@ -334,26 +334,26 @@ func (r *Reconciler) missing(ctx context.Context, key effect.AssignmentKey) (Ver
 		budget = DefaultMaxRedispatches
 	}
 	if state.Pending() == 0 && state.Planned >= budget {
-		if err := process.GiveUp(ctx, r.Attempts, r.Epoch, key, fmt.Sprintf("redispatch budget of %d exhausted", budget), r.now()); err != nil {
+		if err := redispatch.GiveUp(ctx, r.Attempts, r.Epoch, key, fmt.Sprintf("redispatch budget of %d exhausted", budget), r.now()); err != nil {
 			return Dispose, err
 		}
 		return Dispose, nil
 	}
-	attempt, err := process.Plan(ctx, r.Attempts, r.Epoch, key, r.now())
+	attempt, err := redispatch.Plan(ctx, r.Attempts, r.Epoch, key, r.now())
 	if err != nil {
 		return Dispose, err
 	}
 	err = r.Redispatch(ctx, key)
 	switch {
 	case err == nil:
-		if err := process.MarkDispatched(ctx, r.Attempts, r.Epoch, key, attempt, r.now()); err != nil {
+		if err := redispatch.MarkDispatched(ctx, r.Attempts, r.Epoch, key, attempt, r.now()); err != nil {
 			return Dispose, err
 		}
 		return Redispatch, nil
 	case errors.Is(err, effect.ErrDispatchRetryable), errors.Is(err, effect.ErrDispatchUnknown):
 		return Defer, nil
 	default:
-		if gerr := process.GiveUp(ctx, r.Attempts, r.Epoch, key, err.Error(), r.now()); gerr != nil {
+		if gerr := redispatch.GiveUp(ctx, r.Attempts, r.Epoch, key, err.Error(), r.now()); gerr != nil {
 			return Dispose, gerr
 		}
 		return Dispose, nil

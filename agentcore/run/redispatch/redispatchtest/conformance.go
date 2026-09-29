@@ -1,4 +1,4 @@
-package processtest
+package redispatchtest
 
 import (
 	"context"
@@ -6,12 +6,12 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/ledger"
-	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
 )
 
 // Factory builds a fresh, empty Store for one subtest.
-type Factory func(t *testing.T) process.Store
+type Factory func(t *testing.T) redispatch.Store
 
 // Run executes the suite.
 func Run(t *testing.T, factory Factory) {
@@ -31,7 +31,7 @@ func commit(t *testing.T, seq ledger.CommitSeq, id ledger.CommitID, typ ledger.E
 // The dispatch ledger answers replays by identity, stale sequences and
 // illegal steps with the kernel's sentinels, and fences a writer whose epoch
 // is behind the highest that has written the key (RUN-EXE-15).
-func testLedger(t *testing.T, store process.Store) {
+func testLedger(t *testing.T, store redispatch.Store) {
 	ctx := context.Background()
 	k1 := effect.AssignmentKey{Session: "s1", RunID: "r1", Effect: "sha256:e1"}
 	if _, _, ok, err := store.Load(ctx, k1); err != nil || ok {
@@ -46,13 +46,13 @@ func testLedger(t *testing.T, store process.Store) {
 		commit  ledger.Commit
 		wantErr error
 	}{
-		{"first plan opens the ledger", 1, commit(t, 0, process.PlannedCommitID(k1, 1), process.EventDispatchPlanned, process.Planned{Attempt: 1}), nil},
-		{"replayed plan is already applied", 1, commit(t, 0, process.PlannedCommitID(k1, 1), process.EventDispatchPlanned, process.Planned{Attempt: 1}), ledger.ErrAlreadyApplied},
-		{"stale seq conflicts", 1, commit(t, 0, process.DispatchedCommitID(k1, 1), process.EventDispatched, process.Dispatched{Attempt: 1}), ledger.ErrConflict},
-		{"plan while owed is a state conflict", 1, commit(t, 1, process.PlannedCommitID(k1, 2), process.EventDispatchPlanned, process.Planned{Attempt: 2}), ledger.ErrStateConflict},
-		{"a later epoch commits", 2, commit(t, 1, process.DispatchedCommitID(k1, 1), process.EventDispatched, process.Dispatched{Attempt: 1}), nil},
-		{"an earlier epoch is fenced", 1, commit(t, 2, process.GivenUpCommitID(k1), process.EventGivenUp, process.GivenUp{Reason: "x"}), ledger.ErrFenced},
-		{"given up", 2, commit(t, 2, process.GivenUpCommitID(k1), process.EventGivenUp, process.GivenUp{Reason: "budget"}), nil},
+		{"first plan opens the ledger", 1, commit(t, 0, redispatch.PlannedCommitID(k1, 1), redispatch.EventDispatchPlanned, redispatch.Planned{Attempt: 1}), nil},
+		{"replayed plan is already applied", 1, commit(t, 0, redispatch.PlannedCommitID(k1, 1), redispatch.EventDispatchPlanned, redispatch.Planned{Attempt: 1}), ledger.ErrAlreadyApplied},
+		{"stale seq conflicts", 1, commit(t, 0, redispatch.DispatchedCommitID(k1, 1), redispatch.EventDispatched, redispatch.Dispatched{Attempt: 1}), ledger.ErrConflict},
+		{"plan while owed is a state conflict", 1, commit(t, 1, redispatch.PlannedCommitID(k1, 2), redispatch.EventDispatchPlanned, redispatch.Planned{Attempt: 2}), ledger.ErrStateConflict},
+		{"a later epoch commits", 2, commit(t, 1, redispatch.DispatchedCommitID(k1, 1), redispatch.EventDispatched, redispatch.Dispatched{Attempt: 1}), nil},
+		{"an earlier epoch is fenced", 1, commit(t, 2, redispatch.GivenUpCommitID(k1), redispatch.EventGivenUp, redispatch.GivenUp{Reason: "x"}), ledger.ErrFenced},
+		{"given up", 2, commit(t, 2, redispatch.GivenUpCommitID(k1), redispatch.EventGivenUp, redispatch.GivenUp{Reason: "budget"}), nil},
 	}
 	for _, s := range steps {
 		t.Run(s.name, func(t *testing.T) {
@@ -72,7 +72,7 @@ func testLedger(t *testing.T, store process.Store) {
 	// Keys are independent ledgers: the fence of one is not the fence of
 	// another.
 	k2 := effect.AssignmentKey{Session: "s1", RunID: "r1", Effect: "sha256:e2"}
-	if err := store.Append(ctx, 1, k2, commit(t, 0, process.PlannedCommitID(k2, 1), process.EventDispatchPlanned, process.Planned{Attempt: 1})); err != nil {
+	if err := store.Append(ctx, 1, k2, commit(t, 0, redispatch.PlannedCommitID(k2, 1), redispatch.EventDispatchPlanned, redispatch.Planned{Attempt: 1})); err != nil {
 		t.Fatalf("append to a second key under epoch 1 = %v", err)
 	}
 }

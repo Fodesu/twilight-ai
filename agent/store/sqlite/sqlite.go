@@ -1,7 +1,7 @@
 // Package sqlite is the reference agent's deployment adapter for the
 // small-row ports that sit next to the Session ledger and the cas content
 // files: the Worker's execution records (executor/store.Store), the dispatch
-// ledger (process.Store), the artifact BindingStore and RetentionLedger, and
+// ledger (redispatch.Store), the artifact BindingStore and RetentionLedger, and
 // the checkpoint.Store, the Session command inbox (inbox.Store) and the
 // workspace records (workspace.Store). One
 // SQLite file holds the tables, so one deployment
@@ -10,7 +10,7 @@
 //
 // It lives outside agentcore on purpose: the kernel's contracts are defined
 // and tested in agentcore against the reference stores of their xxxtest
-// packages (storetest, processtest, artifacttest, checkpointtest), and this
+// packages (storetest, redispatchtest, artifacttest, checkpointtest), and this
 // package proves itself by running those same conformance suites.
 //
 // The database runs in WAL mode with a busy timeout, and every

@@ -1,4 +1,4 @@
-// Package process is the dispatch ledger of one effect: the process
+// Package redispatch is the dispatch ledger of one effect: the process
 // manager's own decisions. Whether an effect is outstanding is the Run's
 // state; whether a destination holds an attempt is answered by attaching
 // there; neither is repeated here. What only the process manager knows, and
@@ -6,7 +6,7 @@
 // whether that dispatch reached the destination, and whether it gave up
 // (RUN-EXE-15). Each record is written before the act it decides, so a
 // decision made and a dispatch sent cannot drift apart.
-package process
+package redispatch
 
 import (
 	"context"

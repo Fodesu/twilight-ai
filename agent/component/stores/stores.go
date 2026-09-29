@@ -18,14 +18,14 @@ import (
 	"github.com/felinics/twilight/agentcore/checkpoint"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/inbox"
-	"github.com/felinics/twilight/agentcore/process"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
 	"github.com/felinics/twilight/agentcore/session"
 )
 
 // Handle is the set of small-row stores every durable database provides.
 type Handle interface {
 	Executions() executionstore.Store
-	Processes() process.Store
+	Redispatches() redispatch.Store
 	Checkpoints() checkpoint.Store
 	Inbox() inbox.Store
 	Bindings() artifact.BindingStore
@@ -84,7 +84,7 @@ func OpenShared(ctx context.Context, cfg config.Store) (Shared, error) {
 type sqliteHandle struct{ db *sqlite.DB }
 
 func (h sqliteHandle) Executions() executionstore.Store { return h.db.Executions() }
-func (h sqliteHandle) Processes() process.Store         { return h.db.Processes() }
+func (h sqliteHandle) Redispatches() redispatch.Store   { return h.db.Redispatches() }
 func (h sqliteHandle) Checkpoints() checkpoint.Store    { return h.db.Checkpoints() }
 func (h sqliteHandle) Inbox() inbox.Store               { return h.db.Inbox() }
 func (h sqliteHandle) Bindings() artifact.BindingStore  { return h.db.Bindings() }
@@ -97,7 +97,7 @@ func (h sqliteHandle) Close() error                { return h.db.Close() }
 type pgHandle struct{ db *postgres.DB }
 
 func (h pgHandle) Executions() executionstore.Store { return h.db.Executions() }
-func (h pgHandle) Processes() process.Store         { return h.db.Processes() }
+func (h pgHandle) Redispatches() redispatch.Store   { return h.db.Redispatches() }
 func (h pgHandle) Checkpoints() checkpoint.Store    { return h.db.Checkpoints() }
 func (h pgHandle) Inbox() inbox.Store               { return h.db.Inbox() }
 func (h pgHandle) Bindings() artifact.BindingStore  { return h.db.Bindings() }

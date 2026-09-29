@@ -30,11 +30,11 @@ import (
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
-	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	stdhttp "net/http"
@@ -98,12 +98,12 @@ type Config struct {
 	// MissingEffects is the takeover policy for an Executing effect the
 	// Executor holds nothing for (owner.Ports.MissingEffects): the zero
 	// value disposes, reconcile.RedispatchMissing redispatches within the
-	// budget and requires Processes.
+	// budget and requires Redispatches.
 	MissingEffects reconcile.MissingPolicy
-	// Processes is the dispatch ledger RedispatchMissing writes
-	// (RUN-EXE-15, owner.Ports.Processes).
-	Processes process.Store
-	Presets   []Preset
+	// Redispatches is the dispatch ledger RedispatchMissing writes
+	// (RUN-EXE-15, owner.Ports.Redispatches).
+	Redispatches redispatch.Store
+	Presets      []Preset
 	// Registry is the preset registry; nil selects an in-memory one.
 	Registry preset.Registry
 	// Decisions resolve each preset's PromptBuilderRef; nil selects this
@@ -361,7 +361,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	}
 	a, err := owner.New(owner.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,
-		MissingEffects: c.MissingEffects, Processes: c.Processes,
+		MissingEffects: c.MissingEffects, Redispatches: c.Redispatches,
 		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
 		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
 	})

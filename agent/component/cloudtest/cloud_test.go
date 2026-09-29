@@ -36,9 +36,9 @@ import (
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
 	"github.com/felinics/twilight/agentcore/owner"
-	"github.com/felinics/twilight/agentcore/process/processtest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/redispatch/redispatchtest"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -287,7 +287,7 @@ func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activ
 	}
 	a, err := app.Build(app.Config{
 		Store: store, Content: content, Artifacts: owner.Artifacts{Bindings: bindings, Ledger: ledger},
-		Processes: &processtest.Map{}, Inbox: c.inbox,
+		Redispatches: &redispatchtest.Map{}, Inbox: c.inbox,
 		Executor:    app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: c.proxyURL},
 		Workspaces:  &app.WorkspaceConfig{Store: c.wsStore, Snapshots: &wshttp.Client{BaseURL: c.backends.Tool}, SnapshotAfterTurn: true},
 		Ownership:   session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover},

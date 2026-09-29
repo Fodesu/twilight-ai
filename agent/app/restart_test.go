@@ -468,7 +468,7 @@ func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID r
 // silent fall-back to disposal.
 func TestBuildRejectsRedispatchWithoutDispatchLedger(t *testing.T) {
 	cfg := durablePorts(t, app.Config{})
-	cfg.Executions, cfg.Processes = sqlitetest.Open(t).Executions(), nil
+	cfg.Executions, cfg.Redispatches = sqlitetest.Open(t).Executions(), nil
 	cfg.MissingEffects = reconcile.RedispatchMissing
 	cfg.Executor = app.ExecutorConfig{Models: map[run.ModelRef]local.ModelInvoker{}}
 	if _, err := app.Build(cfg); err == nil {

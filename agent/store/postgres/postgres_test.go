@@ -17,8 +17,8 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
-	"github.com/felinics/twilight/agentcore/process"
-	"github.com/felinics/twilight/agentcore/process/processtest"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
+	"github.com/felinics/twilight/agentcore/run/redispatch/redispatchtest"
 	"github.com/felinics/twilight/agentcore/runtime/runtimetest"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	runstoretest "github.com/felinics/twilight/agentcore/session/run/storetest"
@@ -50,8 +50,8 @@ func TestExecutionStoreConformance(t *testing.T) {
 	})
 }
 
-func TestProcessStoreConformance(t *testing.T) {
-	processtest.Run(t, func(t *testing.T) process.Store { return postgrestest.Open(t).Processes() })
+func TestRedispatchStoreConformance(t *testing.T) {
+	redispatchtest.Run(t, func(t *testing.T) redispatch.Store { return postgrestest.Open(t).Redispatches() })
 }
 
 func TestCheckpointStoreConformance(t *testing.T) {

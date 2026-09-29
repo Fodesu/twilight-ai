@@ -16,11 +16,11 @@ import (
 
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/preset"
-	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -68,12 +68,12 @@ type Driver struct {
 	// MissingEffects is the takeover policy for an Executing effect the
 	// Executor holds nothing for (RUN-CMT-7): the zero value disposes,
 	// reconcile.RedispatchMissing redispatches within the budget and
-	// requires Processes (RUN-EXE-15).
+	// requires Redispatches (RUN-EXE-15).
 	MissingEffects reconcile.MissingPolicy
-	// Processes is the dispatch ledger the reconciler writes before and
+	// Redispatches is the dispatch ledger the reconciler writes before and
 	// after it hands an effect to the Executor again; required under
 	// RedispatchMissing, unused otherwise.
-	Processes process.Store
+	Redispatches redispatch.Store
 	// MaxRedispatches bounds redispatches per effect; zero selects the
 	// reconciler's default.
 	MaxRedispatches int
@@ -354,7 +354,7 @@ func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, 
 	if d.MissingEffects == reconcile.RedispatchMissing {
 		// Missing effects are handed to the Executor again within the
 		// budget; the dispatch ledger remembers the attempts (RUN-EXE-15).
-		rec.Attempts, rec.Epoch, rec.MaxRedispatches = d.Processes, w.Epoch(), d.MaxRedispatches
+		rec.Attempts, rec.Epoch, rec.MaxRedispatches = d.Redispatches, w.Epoch(), d.MaxRedispatches
 		rec.Redispatch = func(ctx context.Context, key effect.AssignmentKey) error { return d.redispatch(ctx, lt.w, key) }
 	}
 	return d.Runs.RecoverInterrupted(ctx, w, rec)

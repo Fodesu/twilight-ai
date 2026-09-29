@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/ledger"
-	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
 )
 
 // attempts is an in-memory dispatch ledger.
@@ -20,13 +20,13 @@ func newAttempts() *attempts {
 	return &attempts{commits: map[effect.AssignmentKey][]ledger.Commit{}, epoch: map[effect.AssignmentKey]ledger.Epoch{}}
 }
 
-func (a *attempts) Load(_ context.Context, k effect.AssignmentKey) (process.State, ledger.Head, bool, error) {
+func (a *attempts) Load(_ context.Context, k effect.AssignmentKey) (redispatch.State, ledger.Head, bool, error) {
 	cs := a.commits[k]
-	state := process.State{Key: k}
+	state := redispatch.State{Key: k}
 	for i := range cs {
 		var err error
-		if state, err = process.Fold(state, &cs[i]); err != nil {
-			return process.State{}, ledger.Head{}, false, err
+		if state, err = redispatch.Fold(state, &cs[i]); err != nil {
+			return redispatch.State{}, ledger.Head{}, false, err
 		}
 	}
 	return state, ledger.Head{Next: ledger.CommitSeq(len(cs))}, len(cs) > 0, nil
@@ -52,7 +52,7 @@ func (a *attempts) Append(ctx context.Context, epoch ledger.Epoch, k effect.Assi
 	if c.Seq != head.Next {
 		return ledger.ErrConflict
 	}
-	if _, err := process.Fold(state, &c); err != nil {
+	if _, err := redispatch.Fold(state, &c); err != nil {
 		return err
 	}
 	a.epoch[k] = epoch
@@ -94,21 +94,21 @@ func TestPlanRedispatchesMissingWithinBudget(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newAttempts()
 			for i := 1; i <= tc.prior; i++ {
-				n, err := process.Plan(ctx, store, 1, key, 1)
+				n, err := redispatch.Plan(ctx, store, 1, key, 1)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := process.MarkDispatched(ctx, store, 1, key, n, 1); err != nil {
+				if err := redispatch.MarkDispatched(ctx, store, 1, key, n, 1); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if tc.pending {
-				if _, err := process.Plan(ctx, store, 1, key, 1); err != nil {
+				if _, err := redispatch.Plan(ctx, store, 1, key, 1); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if tc.givenUp {
-				if err := process.GiveUp(ctx, store, 1, key, "before", 1); err != nil {
+				if err := redispatch.GiveUp(ctx, store, 1, key, "before", 1); err != nil {
 					t.Fatal(err)
 				}
 			}

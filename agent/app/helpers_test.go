@@ -59,8 +59,8 @@ func durablePorts(t testing.TB, cfg app.Config) app.Config {
 	if cfg.Executions == nil {
 		db := sqlitetest.Open(t)
 		cfg.Executions = db.Executions()
-		if cfg.Processes == nil {
-			cfg.Processes = db.Processes()
+		if cfg.Redispatches == nil {
+			cfg.Redispatches = db.Redispatches()
 		}
 	}
 	return cfg

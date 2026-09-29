@@ -18,11 +18,11 @@ import (
 	"github.com/felinics/twilight/agentcore/history"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
-	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -67,11 +67,11 @@ type Ports struct {
 	// MissingEffects is the takeover policy for an Executing effect the
 	// Executor holds nothing for (RUN-CMT-7): the zero value disposes it,
 	// reconcile.RedispatchMissing hands it to the Executor again within a
-	// budget (RUN-EXE-15) and requires Processes.
+	// budget (RUN-EXE-15) and requires Redispatches.
 	MissingEffects reconcile.MissingPolicy
-	// Processes is the dispatch ledger RedispatchMissing writes; durable
+	// Redispatches is the dispatch ledger RedispatchMissing writes; durable
 	// like every store (OWN-PRT-3). Unused under DisposeMissing.
-	Processes process.Store
+	Redispatches redispatch.Store
 	// Executor is the effect layer port (RUN-EXE-3): required.
 	Executor effect.ExecutionPort
 	// TargetResolver supplies the opaque resource target of each effect
@@ -142,8 +142,8 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	if p.Artifacts.Bindings == nil || p.Artifacts.Ledger == nil {
 		return nil, errors.New("owner: a binding store and a retention ledger are required (OWN-PRT-3)")
 	}
-	if p.MissingEffects == reconcile.RedispatchMissing && p.Processes == nil {
-		return nil, errors.New("owner: MissingEffects=redispatch requires a dispatch ledger (Ports.Processes, RUN-EXE-15)")
+	if p.MissingEffects == reconcile.RedispatchMissing && p.Redispatches == nil {
+		return nil, errors.New("owner: MissingEffects=redispatch requires a dispatch ledger (Ports.Redispatches, RUN-EXE-15)")
 	}
 	store := p.Store
 	// The first-party four are trusted core; Ports.Modules are extensions
@@ -210,7 +210,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
 	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
 	a.Driver.Fail = p.Fail
-	a.Driver.MissingEffects, a.Driver.Processes = p.MissingEffects, p.Processes
+	a.Driver.MissingEffects, a.Driver.Redispatches = p.MissingEffects, p.Redispatches
 	return a, nil
 }
 
