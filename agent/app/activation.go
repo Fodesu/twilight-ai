@@ -198,11 +198,11 @@ func (s *Session) startIdleRelease() {
 		defer ticker.Stop()
 		for {
 			select {
-			case <-s.bg.Done():
+			case <-s.loopsCtx.Done():
 				return
 			case <-ticker.C:
 			}
-			if s.idleFor(act.IdleRelease) && s.quiescent(s.bg) {
+			if s.rt.IdleFor(act.IdleRelease) && s.quiescent(s.loopsCtx) {
 				s.app.releaseIdle(s)
 				return
 			}
@@ -210,23 +210,8 @@ func (s *Session) startIdleRelease() {
 	}()
 }
 
-// touch records activity: the idle clock restarts.
-func (s *Session) touch() {
-	s.bgMu.Lock()
-	s.lastActive = time.Now()
-	s.bgMu.Unlock()
-}
-
-// idleFor reports no background drive for at least d since the last
-// activity.
-func (s *Session) idleFor(d time.Duration) bool {
-	s.bgMu.Lock()
-	defer s.bgMu.Unlock()
-	return s.bgN == 0 && time.Since(s.lastActive) >= d
-}
-
-// quiescent reports the Session has no active Turn and no pending command
-// (APP-ACT-2). A read failure is not quiescence.
+// quiescent reports the Session has no active Turn and no pending command.
+// A read failure is not quiescence.
 func (s *Session) quiescent(ctx context.Context) bool {
 	status, err := s.Status(ctx)
 	if err != nil || status.Active != "" {

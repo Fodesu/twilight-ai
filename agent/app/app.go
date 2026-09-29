@@ -1,9 +1,10 @@
 // Package app is the reference agent's application layer over agentcore: it composes an
 // Authority from deployment choices (Build), registers presets, and offers
 // the conversation policies a product needs on top of an owned Session --
-// Send and Submit, Deliver-or-Start routing, backlog draining, background
-// driving, automatic compaction, the event stream and the subagent effect.
-// The core packages remain independent of this package.
+// replies, workspace binding and snapshots, automatic compaction, the event
+// stream and the subagent effect. Input admission, routing, driving and
+// backlog draining are the runtime's; the core packages remain independent
+// of this package.
 package app
 
 import (

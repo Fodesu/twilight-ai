@@ -217,12 +217,12 @@ func (s *Session) startInbox(ctx context.Context) {
 		defer ticker.Stop()
 		for {
 			select {
-			case <-s.bg.Done():
+			case <-s.loopsCtx.Done():
 				return
 			case <-s.inboxWake:
 			case <-ticker.C:
 			}
-			if _, err := s.ApplyPending(s.bg); err != nil && s.bg.Err() == nil {
+			if _, err := s.ApplyPending(s.loopsCtx); err != nil && s.loopsCtx.Err() == nil {
 				s.app.warn(fmt.Errorf("app: applying the inbox of %s: %w", s.sid, err))
 			}
 		}
@@ -247,7 +247,7 @@ func (s *Session) ApplyPending(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	if len(pending) > 0 {
-		s.touch()
+		s.rt.Touch()
 	}
 	n := 0
 	for i := range pending {
