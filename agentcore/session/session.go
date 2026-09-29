@@ -1,15 +1,15 @@
-// Package session is the commit-ledger kernel of a Twilight Session. The
-// lineage is a tree of immutable commit
-// segments (SES-LIN-1). The package owns the header, the Commit as the
-// atomic unit of append, logical streams within commits, Session-level
-// writer ownership with epoch fencing, and ordered reads over an append-only
-// store. Payloads are opaque canonical JSON that Session modules encode and
-// interpret.
+// Package session is the Session kernel: the lineage tree of immutable
+// commit segments (SES-LIN-1) and the storage, ownership and read machinery
+// over them. The commit vocabulary — commits, their event batches, segment
+// records, module identity and extension slots, and the module framework of
+// codecs, stream declarations and projections — is the ledger's
+// (agentcore/ledger); this package owns what names a Session: roots and
+// their paths, writer ownership with epoch fencing, ordered reads over an
+// append-only store, and the projection read path over the Store.
 package session
 
 import (
 	"context"
-
 	"github.com/felinics/twilight/agentcore/ledger"
 )
 
@@ -40,10 +40,10 @@ func (s *Session) ID() SessionID { return s.root.ID }
 func (s *Session) Record() SessionRecord { return s.root }
 
 // Header is the tip segment's creation record.
-func (s *Session) Header() SegmentHeader { return s.path.Header() }
+func (s *Session) Header() ledger.SegmentHeader { return s.path.Header() }
 
 // Tip is the segment the Session appends to.
-func (s *Session) Tip() Segment { return s.path.Tip() }
+func (s *Session) Tip() ledger.Segment { return s.path.Tip() }
 
 // Loaded is the path from the root segment to the tip, with each segment read.
 func (s *Session) Loaded() *LoadedPath { return s.path }
@@ -102,17 +102,17 @@ func (l *Ledger) sessionPath(ctx context.Context, root SessionRecord) (Path, err
 
 // tipSegment reads the tip's creation record without walking its parents.
 // Header and Create's idempotency check need nothing else.
-func (l *Ledger) tipSegment(ctx context.Context, sid SessionID) (Segment, error) {
+func (l *Ledger) tipSegment(ctx context.Context, sid SessionID) (ledger.Segment, error) {
 	root, err := l.st.Record(ctx, sid)
 	if err != nil {
-		return Segment{}, err
+		return ledger.Segment{}, err
 	}
 	return l.st.Segment(ctx, root.Tip)
 }
 
 // ReadCommits returns the stitched commits of the Session from from,
 // inclusive, at most limit (0 = unlimited).
-func (s *Session) ReadCommits(ctx context.Context, from CommitSeq, limit uint32) (CommitPage, error) {
+func (s *Session) ReadCommits(ctx context.Context, from ledger.CommitSeq, limit uint32) (CommitPage, error) {
 	commits, head, more, err := s.path.Read(ctx, s.st, from, limit)
 	if err != nil {
 		return CommitPage{}, err
@@ -122,14 +122,14 @@ func (s *Session) ReadCommits(ctx context.Context, from CommitSeq, limit uint32)
 
 // ReadStream returns the events of one logical stream in the order the
 // requested lineage sees them.
-func (s *Session) ReadStream(ctx context.Context, stream Domain, lineage StreamLineage, from StreamSeq, limit uint32) (StreamPage, error) {
+func (s *Session) ReadStream(ctx context.Context, stream ledger.Domain, lineage ledger.StreamLineage, from ledger.StreamSeq, limit uint32) (StreamPage, error) {
 	if err := validateStreamRead(s.ID(), stream, lineage); err != nil {
 		return StreamPage{}, err
 	}
 	return s.collectStream(ctx, stream, lineage, from, limit)
 }
 
-func (s *Session) collectStream(ctx context.Context, stream Domain, lineage StreamLineage, from StreamSeq, limit uint32) (StreamPage, error) {
+func (s *Session) collectStream(ctx context.Context, stream ledger.Domain, lineage ledger.StreamLineage, from ledger.StreamSeq, limit uint32) (StreamPage, error) {
 	commits, err := s.path.ReadStream(ctx, s.st, stream, lineage)
 	if err != nil {
 		return StreamPage{}, err
@@ -143,11 +143,11 @@ func (s *Session) collectStream(ctx context.Context, stream Domain, lineage Stre
 	return page, nil
 }
 
-func validateStreamRead(sid SessionID, stream Domain, lineage StreamLineage) error {
-	if err := ValidateStreamRef(stream); err != nil {
+func validateStreamRead(sid SessionID, stream ledger.Domain, lineage ledger.StreamLineage) error {
+	if err := ledger.ValidateStreamRef(stream); err != nil {
 		return newError(ErrInvalid, "read_stream", sid, err.Error())
 	}
-	if err := ValidateStreamLineage(lineage); err != nil {
+	if err := ledger.ValidateStreamLineage(lineage); err != nil {
 		return newError(ErrInvalid, "read_stream", sid, err.Error())
 	}
 	return nil
@@ -157,39 +157,39 @@ func validateStreamRead(sid SessionID, stream Domain, lineage StreamLineage) err
 // the segment that contributes that commit, and the seq within it. ok is
 // false when the Session has no such commit. The segment must still hold it
 // (SES-FRK-1).
-func (s *Session) EdgeAt(ctx context.Context, seq CommitSeq) (CommitRef, bool, error) {
+func (s *Session) EdgeAt(ctx context.Context, seq ledger.CommitSeq) (ledger.CommitRef, bool, error) {
 	span, ok := s.path.At(seq)
 	if !ok {
-		return CommitRef{}, false, nil
+		return ledger.CommitRef{}, false, nil
 	}
 	commits, _, _, err := s.st.ReadSegment(ctx, span.Segment.ID(), seq, 1)
 	if err != nil {
-		return CommitRef{}, false, err
+		return ledger.CommitRef{}, false, err
 	}
 	if len(commits) != 1 || commits[0].Seq != seq {
-		return CommitRef{}, false, nil
+		return ledger.CommitRef{}, false, nil
 	}
-	return CommitRef{Segment: span.Segment.ID(), Seq: seq}, true, nil
+	return ledger.CommitRef{Segment: span.Segment.ID(), Seq: seq}, true, nil
 }
 
 // repairTip checks the tip segment's CommitIndex against its head and
 // rebuilds the index when it lags (SES-REP-5). Acquire has already repaired
 // a torn tail, so the head this returns is the head a new Handle starts from.
-func (s *Session) repairTip(ctx context.Context) (Head, error) {
+func (s *Session) repairTip(ctx context.Context) (ledger.Head, error) {
 	tip := s.Tip()
 	summary, head, err := s.st.Summarize(ctx, tip.ID())
 	if err != nil {
-		return Head{}, err
+		return ledger.Head{}, err
 	}
 	if summary.Valid(tip.Seed(), head) {
 		return head, nil
 	}
 	commits, head, _, err := s.st.ReadSegment(ctx, tip.ID(), tip.Seed().Next, 0)
 	if err != nil {
-		return Head{}, err
+		return ledger.Head{}, err
 	}
 	if err := s.st.PutIndex(ctx, tip.ID(), BuildCommitIndex(tip.Header, commits)); err != nil {
-		return Head{}, err
+		return ledger.Head{}, err
 	}
 	return head, nil
 }

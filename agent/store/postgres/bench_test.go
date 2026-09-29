@@ -3,15 +3,14 @@ package postgres_test
 import (
 	"context"
 	"fmt"
-	"testing"
-
 	"github.com/felinics/twilight/agent/store/postgres"
 	"github.com/felinics/twilight/agent/store/postgres/postgrestest"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"testing"
 )
 
 // The benchmarks measure the reopen path the activation model turns into a
@@ -25,7 +24,7 @@ var sizes = []int{1_000, 10_000, 100_000}
 
 // seedSession creates a Session whose tip holds n commits of one small
 // event each, loaded in bulk, and returns its tip segment.
-func seedSession(b *testing.B, store *postgres.SessionStore, dbh *postgres.DB, sid session.SessionID, n int) session.SegmentID {
+func seedSession(b *testing.B, store *postgres.SessionStore, dbh *postgres.DB, sid session.SessionID, n int) ledger.SegmentID {
 	b.Helper()
 	ctx := context.Background()
 	// Payloads carry the module's version envelope, as a Writer writes them,
@@ -38,10 +37,10 @@ func seedSession(b *testing.B, store *postgres.SessionStore, dbh *postgres.DB, s
 	const chunk = 10_000
 	for from := 0; from < n; from += chunk {
 		to := min(from+chunk, n)
-		commits := make([]session.Commit, 0, to-from)
+		commits := make([]ledger.Commit, 0, to-from)
 		for i := from; i < to; i++ {
-			commits = append(commits, session.Commit{Seq: session.CommitSeq(i), CommitID: session.CommitID(fmt.Sprintf("c%08d", i)), //nolint:gosec // G115: bounded by n
-				Batches: []session.EventBatch{{Domain: session.Domain{Name: "z"}, Events: []session.Event{{
+			commits = append(commits, ledger.Commit{Seq: ledger.CommitSeq(i), CommitID: ledger.CommitID(fmt.Sprintf("c%08d", i)), //nolint:gosec // G115: bounded by n
+				Batches: []ledger.EventBatch{{Domain: ledger.Domain{Name: "z"}, Events: []ledger.Event{{
 					Type: "twilight/z/row", RecordedAtUnixMilli: 1, Payload: encodeRow(b, registry, i)}}}}})
 		}
 		if err := dbh.SeedSegmentCommits(ctx, header.ID, commits); err != nil {
@@ -106,7 +105,7 @@ func BenchmarkWriterOpen(b *testing.B) {
 				ctx := context.Background()
 				counter := &foldCounter{}
 				registry := counterRegistry(b, counter)
-				var cache extension.ProjectionCache
+				var cache session.ProjectionCache
 				if warm {
 					cache = store.ProjectionCache()
 					// One Writer open under the default interval leaves the
@@ -118,7 +117,7 @@ func BenchmarkWriterOpen(b *testing.B) {
 					}
 					// Force one save at the current head: the state is what a
 					// clean Close under AtClose would have left.
-					if err := cache.Save(ctx, "s", rowsProjection, 1, mustEncodeRows(b, n-64), session.Head{Next: session.CommitSeq(n - 64)}); err != nil { //nolint:gosec // G115: bounded by n
+					if err := cache.Save(ctx, "s", rowsProjection, 1, mustEncodeRows(b, n-64), ledger.Head{Next: ledger.CommitSeq(n - 64)}); err != nil { //nolint:gosec // G115: bounded by n
 						b.Fatal(err)
 					}
 					if err := w.Close(ctx); err != nil {
@@ -144,7 +143,7 @@ func BenchmarkWriterOpen(b *testing.B) {
 	}
 }
 
-func encodeRow(b *testing.B, registry *extension.Registry, i int) jsonstable.Value {
+func encodeRow(b *testing.B, registry *ledger.Registry, i int) jsonstable.Value {
 	b.Helper()
 	v, err := registry.Encode("twilight/z/row", rowPayload{Text: fmt.Sprintf("row %d", i)})
 	if err != nil {
@@ -159,7 +158,7 @@ func mustEncodeRows(b *testing.B, n int) jsonstable.Value {
 	for i := range rows {
 		rows[i] = fmt.Sprintf("row %d", i)
 	}
-	v, err := extension.JSONStateCodec[rowState]{}.Encode(rowState{Rows: rows})
+	v, err := ledger.JSONStateCodec[rowState]{}.Encode(rowState{Rows: rows})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -178,7 +177,7 @@ func BenchmarkProjectionCacheSave(b *testing.B) {
 			b.SetBytes(int64(len(state.Bytes())))
 			b.ResetTimer()
 			for i := range b.N {
-				if err := cache.Save(ctx, "s", rowsProjection, 1, state, session.Head{Next: session.CommitSeq(i + 1)}); err != nil { //nolint:gosec // G115: bounded by b.N
+				if err := cache.Save(ctx, "s", rowsProjection, 1, state, ledger.Head{Next: ledger.CommitSeq(i + 1)}); err != nil { //nolint:gosec // G115: bounded by b.N
 					b.Fatal(err)
 				}
 			}

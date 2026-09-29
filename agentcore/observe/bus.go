@@ -11,12 +11,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
-
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
+	"sync"
 )
 
 // Event is one item of a Session's event stream. Every observation of a
@@ -31,10 +29,10 @@ type Event struct {
 	// Position is the event's place in the Session's ledger: the commit's
 	// Seq and the event's index within the commit. It is what a consumer
 	// checkpoints; zero on a failure or progress Event.
-	Position session.Position
-	Row      session.Event
-	Module   extension.ModuleKey
-	Version  extension.PayloadVersion
+	Position ledger.Position
+	Row      ledger.Event
+	Module   ledger.ModuleKey
+	Version  ledger.PayloadVersion
 	Value    any
 	Unknown  bool
 	Err      error
@@ -69,7 +67,7 @@ var ErrNoHistory = errors.New("observe: the bus has no history to catch up from"
 
 // Bus decodes applied commits and fans them out per Session.
 type Bus struct {
-	registry *extension.Registry
+	registry *ledger.Registry
 	history  History
 	mu       sync.Mutex
 	subs     map[session.SessionID]map[*subscriber]struct{}
@@ -78,23 +76,23 @@ type Bus struct {
 // NewBus returns a Bus decoding through registry. history, when not nil,
 // lets SubscribeFrom catch up from the ledger; a Bus without it serves live
 // subscriptions only.
-func NewBus(registry *extension.Registry, history History) *Bus {
+func NewBus(registry *ledger.Registry, history History) *Bus {
 	return &Bus{registry: registry, history: history, subs: make(map[session.SessionID]map[*subscriber]struct{})}
 }
 
 // Committed is writer.CommitObserver: one Event per committed event, in
 // commit order.
-func (b *Bus) Committed(_ context.Context, sid session.SessionID, commit session.Commit) {
+func (b *Bus) Committed(_ context.Context, sid session.SessionID, commit ledger.Commit) {
 	b.publish(sid, b.decode(sid, &commit)...)
 }
 
 // decode renders one commit as its Events, each at its Position.
-func (b *Bus) decode(sid session.SessionID, commit *session.Commit) []Event {
+func (b *Bus) decode(sid session.SessionID, commit *ledger.Commit) []Event {
 	var events []Event
 	index := uint32(0)
 	for _, batch := range commit.Batches {
 		for _, row := range batch.Events {
-			e := Event{Session: sid, Position: session.Position{Commit: commit.Seq, Index: index}, Row: row}
+			e := Event{Session: sid, Position: ledger.Position{Commit: commit.Seq, Index: index}, Row: row}
 			index++
 			decoded, err := b.registry.Decode(row)
 			if err != nil {
@@ -146,7 +144,7 @@ func (b *Bus) Subscribe(ctx context.Context, sid session.SessionID) <-chan Event
 // dropped, so none is delivered twice. Failure and progress Events, which
 // have no Position, are delivered as they come. The channel closes when ctx
 // is done; a read failure closes it after an Event with Err.
-func (b *Bus) SubscribeFrom(ctx context.Context, sid session.SessionID, from session.CommitSeq) (<-chan Event, error) {
+func (b *Bus) SubscribeFrom(ctx context.Context, sid session.SessionID, from ledger.CommitSeq) (<-chan Event, error) {
 	if b.history == nil {
 		return nil, ErrNoHistory
 	}
@@ -196,7 +194,7 @@ func (b *Bus) detach(sid session.SessionID, s *subscriber) {
 type subscriber struct {
 	mu        sync.Mutex
 	history   []Event
-	skipBelow session.CommitSeq
+	skipBelow ledger.CommitSeq
 	queue     []Event
 	out       chan Event
 	wake      chan struct{}

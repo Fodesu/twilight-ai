@@ -2,17 +2,16 @@ package turntest
 
 import (
 	"errors"
-	"testing"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
-	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
+	"testing"
 )
 
 // Run executes the Turn conformance suite (agent-turn.md section 8) against
@@ -81,7 +80,7 @@ func testStart(t *testing.T, factory Factory) {
 		t.Fatalf("start response = %+v", resp)
 	}
 	plan := turn.PlanDigest("t1", presetRef.Digest, []chatlog.InputID{"in-1", "in-2"})
-	group := h.group(session.CommitID(turn.StartOperationDigest(sid, "t1", plan)))
+	group := h.group(ledger.CommitID(turn.StartOperationDigest(sid, "t1", plan)))
 	if !sameTypes(group, turn.TypeStarted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("start group = %v", eventTypes(group))
 	}
@@ -156,7 +155,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if err != nil || dresp.Status != turn.TurnActive || dresp.RunID != runID {
 		t.Fatalf("deliver = %+v %v", dresp, err)
 	}
-	group := h.group(session.CommitID(schema.Identity().DeriveInputCommandID(runID, "in-2")))
+	group := h.group(ledger.CommitID(schema.Identity().DeriveInputCommandID(runID, "in-2")))
 	if !sameTypes(group, typeAccepted, chatlog.TypeInputDelivered) {
 		t.Fatalf("deliver group = %v, want input_accepted then input_delivered", eventTypes(group))
 	}
@@ -232,7 +231,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil {
 		t.Fatalf("batch deliver = %v", err)
 	}
-	group = h.group(session.CommitID(schema.Identity().DeriveInputCommandID(run2, "in-5", "in-6")))
+	group = h.group(ledger.CommitID(schema.Identity().DeriveInputCommandID(run2, "in-5", "in-6")))
 	if !sameTypes(group, typeAccepted, typeAccepted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered) {
 		t.Fatalf("batch group = %v", eventTypes(group))
 	}
@@ -266,7 +265,7 @@ func testStop(t *testing.T, factory Factory) {
 	if err != nil || sresp.Status != turn.TurnStopped || sresp.Disposition != turn.ResumeFinished || sresp.End == nil {
 		t.Fatalf("stop = %+v %v", sresp, err)
 	}
-	group := h.group(session.CommitID(turn.CancelCommandID(sid, "t1", resp.RunID)))
+	group := h.group(ledger.CommitID(turn.CancelCommandID(sid, "t1", resp.RunID)))
 	var failed *turn.FailedPayload
 	sawEnded := false
 	for i := range group {
@@ -424,7 +423,7 @@ func testProjection(t *testing.T, factory Factory) {
 		{"failed for an unknown turn", "ghost", failed("ghost", turn.SettlementFailed)},
 	}
 	for i, tc := range rejects {
-		res := h.commit(writer.SemanticGroup{CommitID: session.CommitID("reject-" + string(rune('a'+i))), Batches: []writer.TypedBatch{
+		res := h.commit(writer.SemanticGroup{CommitID: ledger.CommitID("reject-" + string(rune('a'+i))), Batches: []writer.TypedBatch{
 			{Domain: turn.Stream(tc.turnID), Events: []writer.TypedEvent{tc.event}},
 		}})
 		if res.Outcome != writer.CommitInvalid {

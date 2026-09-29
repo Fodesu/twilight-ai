@@ -3,11 +3,11 @@ package filestore
 import (
 	"context"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"math"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
 )
 
 // TestReadIndexedMatchesFullParse checks the byte-offset read path against a
@@ -39,7 +39,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for from := session.CommitSeq(0); from <= 4; from++ {
+	for from := ledger.CommitSeq(0); from <= 4; from++ {
 		for _, limit := range []uint32{0, 1, 2} {
 			req := session.CommitReadRequest{SessionID: sid, From: from, Limit: limit}
 			samePage(t, fmt.Sprintf("from=%d limit=%d", from, limit), indexed, fresh, req)
@@ -63,7 +63,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	if err != nil || page.Head.Next != 4 || len(page.Commits) != 4 {
 		t.Fatalf("stale index survived a foreign append: head=%+v commits=%d err=%v", page.Head, len(page.Commits), err)
 	}
-	for from := session.CommitSeq(0); from <= 5; from++ {
+	for from := ledger.CommitSeq(0); from <= 5; from++ {
 		samePage(t, fmt.Sprintf("after foreign append from=%d", from), indexed, fresh, session.CommitReadRequest{SessionID: sid, From: from})
 	}
 
@@ -71,7 +71,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	if err := indexed.CrashTail(sid, 3); err != nil {
 		t.Fatal(err)
 	}
-	for from := session.CommitSeq(0); from <= 4; from++ {
+	for from := ledger.CommitSeq(0); from <= 4; from++ {
 		samePage(t, fmt.Sprintf("crashed tail from=%d", from), indexed, fresh, session.CommitReadRequest{SessionID: sid, From: from})
 	}
 	page, err = indexed.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
@@ -83,12 +83,12 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 func appendCommits(t *testing.T, w session.Handle, firstCommit int, groups [][]string) {
 	t.Helper()
 	for i, g := range groups {
-		batch := session.EventBatch{Domain: session.Domain{Name: "chat"}}
+		batch := ledger.EventBatch{Domain: ledger.Domain{Name: "chat"}}
 		for j, kind := range g {
-			batch.Events = append(batch.Events, session.Event{Type: session.EventType("twilight/" + kind + "/e"), RecordedAtUnixMilli: 1,
+			batch.Events = append(batch.Events, ledger.Event{Type: ledger.EventType("twilight/" + kind + "/e"), RecordedAtUnixMilli: 1,
 				Payload: jsonstable.MustParse(fmt.Sprintf(`{"g":%d,"i":%d}`, firstCommit+i, j))})
 		}
-		if _, err := w.Append(context.Background(), session.Proposal{CommitID: session.CommitID(fmt.Sprintf("c%d", firstCommit+i)), Batches: []session.EventBatch{batch}}); err != nil {
+		if _, err := w.Append(context.Background(), ledger.Proposal{CommitID: ledger.CommitID(fmt.Sprintf("c%d", firstCommit+i)), Batches: []ledger.EventBatch{batch}}); err != nil {
 			t.Fatalf("append c%d: %v", firstCommit+i, err)
 		}
 	}

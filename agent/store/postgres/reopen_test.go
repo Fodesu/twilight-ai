@@ -2,18 +2,17 @@ package postgres_test
 
 import (
 	"context"
+	"github.com/felinics/twilight/agent/store/postgres"
+	"github.com/felinics/twilight/agent/store/postgres/postgrestest"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/writer"
 	"sync"
 	"testing"
 	"testing/fstest"
-
-	"github.com/felinics/twilight/agent/store/postgres"
-	"github.com/felinics/twilight/agent/store/postgres/postgrestest"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
-	"github.com/felinics/twilight/agentcore/session/writer"
 )
 
-const rowsProjection = extension.ProjectionID("twilight/z/rows")
+const rowsProjection = ledger.ProjectionID("twilight/z/rows")
 
 type rowPayload struct {
 	Text string `json:"text"`
@@ -31,17 +30,17 @@ type foldCounter struct {
 func (c *foldCounter) get() int { c.mu.Lock(); defer c.mu.Unlock(); return c.calls }
 func (c *foldCounter) reset()   { c.mu.Lock(); c.calls = 0; c.mu.Unlock() }
 
-func counterRegistry(t testing.TB, c *foldCounter) *extension.Registry {
+func counterRegistry(t testing.TB, c *foldCounter) *ledger.Registry {
 	t.Helper()
-	const typ session.EventType = "twilight/z/row"
-	r, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "z",
-		Streams: []extension.StreamDefinition{{Domain: "z", Lineage: session.LineageSession}},
-		Events: []extension.EventDefinition{{Type: typ, Domain: "z",
-			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[rowPayload]{}}}},
-		Projections: []extension.ProjectionDefinition{{
-			ID: rowsProjection, Version: 1, Consumes: []session.EventType{typ},
+	const typ ledger.EventType = "twilight/z/row"
+	r, err := ledger.BuildRegistry(ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "z",
+		Streams: []ledger.StreamDefinition{{Domain: "z", Lineage: ledger.LineageSession}},
+		Events: []ledger.EventDefinition{{Type: typ, Domain: "z",
+			Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[rowPayload]{}}}},
+		Projections: []ledger.ProjectionDefinition{{
+			ID: rowsProjection, Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return rowState{}, nil },
-			Apply: func(state any, e extension.DecodedEvent) (any, error) {
+			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
 				c.mu.Lock()
 				c.calls++
 				c.mu.Unlock()
@@ -51,7 +50,7 @@ func counterRegistry(t testing.TB, c *foldCounter) *extension.Registry {
 				s := state.(rowState)
 				return rowState{Rows: append(s.Rows, e.Value.(rowPayload).Text)}, nil
 			},
-			StateCodec: extension.JSONStateCodec[rowState]{},
+			StateCodec: ledger.JSONStateCodec[rowState]{},
 		}}})
 	if err != nil {
 		t.Fatal(err)
@@ -75,8 +74,8 @@ func TestReopenFoldsOnlyTheTail(t *testing.T) {
 	commit := func(w writer.Writer, id string, text string) {
 		t.Helper()
 		res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
-			return &writer.SemanticGroup{CommitID: session.CommitID(id),
-				Batches: []writer.TypedBatch{{Domain: session.Domain{Name: "z"},
+			return &writer.SemanticGroup{CommitID: ledger.CommitID(id),
+				Batches: []writer.TypedBatch{{Domain: ledger.Domain{Name: "z"},
 					Events: []writer.TypedEvent{{Type: "twilight/z/row", Value: rowPayload{Text: text}}}}}}, nil
 		})
 		if err != nil || res.Outcome != writer.CommitApplied {
@@ -84,7 +83,7 @@ func TestReopenFoldsOnlyTheTail(t *testing.T) {
 		}
 	}
 	writers := writer.NewWriters(first, counterRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: extension.CacheEvery(0).AtClose()})
+		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: ledger.CacheEvery(0).AtClose()})
 	w, err := writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +101,7 @@ func TestReopenFoldsOnlyTheTail(t *testing.T) {
 	second := postgrestest.OpenDSN(t, dsn).Sessions()
 	counter.reset()
 	writers2 := writer.NewWriters(second, counterRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: second.ProjectionCache(), CachePolicy: extension.CacheEvery(0).AtClose()})
+		writer.WritersConfig{Cache: second.ProjectionCache(), CachePolicy: ledger.CacheEvery(0).AtClose()})
 	w2, err := writers2.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)

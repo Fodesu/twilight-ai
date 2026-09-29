@@ -3,28 +3,27 @@ package observe_test
 import (
 	"context"
 	"errors"
-	"testing"
-	"time"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"testing"
+	"time"
 )
 
 type rowPayload struct {
 	Text string `json:"text"`
 }
 
-const rowType session.EventType = "twilight/z/row"
+const rowType ledger.EventType = "twilight/z/row"
 
-func registry(t *testing.T) *extension.Registry {
+func registry(t *testing.T) *ledger.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "z",
-		Streams: []extension.StreamDefinition{{Domain: "z", Lineage: session.LineageSession}},
-		Events: []extension.EventDefinition{{Type: rowType, Domain: "z",
-			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[rowPayload]{}}}}})
+	r, err := ledger.BuildRegistry(ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "z",
+		Streams: []ledger.StreamDefinition{{Domain: "z", Lineage: ledger.LineageSession}},
+		Events: []ledger.EventDefinition{{Type: rowType, Domain: "z",
+			Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[rowPayload]{}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +33,7 @@ func registry(t *testing.T) *extension.Registry {
 func commitRow(t *testing.T, w writer.Writer, id, text string) {
 	t.Helper()
 	res, err := w.Commit(context.Background(), func(writer.View) (*writer.SemanticGroup, error) {
-		return &writer.SemanticGroup{CommitID: session.CommitID(id), Batches: []writer.TypedBatch{{Domain: session.Domain{Name: "z"},
+		return &writer.SemanticGroup{CommitID: ledger.CommitID(id), Batches: []writer.TypedBatch{{Domain: ledger.Domain{Name: "z"},
 			Events: []writer.TypedEvent{{Type: rowType, Value: rowPayload{Text: text}}}}}}, nil
 	})
 	if err != nil || res.Outcome != writer.CommitApplied {
@@ -42,10 +41,10 @@ func commitRow(t *testing.T, w writer.Writer, id, text string) {
 	}
 }
 
-func texts(t *testing.T, ch <-chan observe.Event, n int) ([]string, []session.Position) {
+func texts(t *testing.T, ch <-chan observe.Event, n int) ([]string, []ledger.Position) {
 	t.Helper()
 	var got []string
-	var at []session.Position
+	var at []ledger.Position
 	deadline := time.After(5 * time.Second)
 	for len(got) < n {
 		select {
@@ -92,7 +91,7 @@ func TestSubscribeFromCatchesUpThenGoesLive(t *testing.T) {
 	// commit, nothing of the cases before or after.
 	cases := []struct {
 		name string
-		from session.CommitSeq
+		from ledger.CommitSeq
 		live string
 		want []string
 	}{

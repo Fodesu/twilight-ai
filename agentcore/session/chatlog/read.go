@@ -5,14 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // ReadSurface loads the chatlog surface of one Session through r.
-func ReadSurface(ctx context.Context, r extension.ProjectionReader, sid session.SessionID) (Surface, error) {
+func ReadSurface(ctx context.Context, r session.ProjectionReader, sid session.SessionID) (Surface, error) {
 	state, _, err := r.Load(ctx, sid, SurfaceProjectionID, SurfaceProjection.Version)
 	if err != nil {
 		return Surface{}, err
@@ -25,7 +23,7 @@ func ReadSurface(ctx context.Context, r extension.ProjectionReader, sid session.
 }
 
 // ReadContext loads the chatlog context of one Session through r.
-func ReadContext(ctx context.Context, r extension.ProjectionReader, sid session.SessionID) (Context, error) {
+func ReadContext(ctx context.Context, r session.ProjectionReader, sid session.SessionID) (Context, error) {
 	state, _, err := r.Load(ctx, sid, ContextProjectionID, ContextProjection.Version)
 	if err != nil {
 		return Context{}, err
@@ -40,7 +38,7 @@ func ReadContext(ctx context.Context, r extension.ProjectionReader, sid session.
 // LastAssistantText is the text of the Turn's last assistant entry: the
 // Surface names the frozen ModelResult by digest and content resolves it
 // (CHT-MAT-1). It is empty when the Turn has no assistant entry.
-func LastAssistantText(ctx context.Context, r extension.ProjectionReader, content ContentResolver, sid session.SessionID, turnID TurnID) (string, error) {
+func LastAssistantText(ctx context.Context, r session.ProjectionReader, content ContentResolver, sid session.SessionID, turnID TurnID) (string, error) {
 	surface, err := ReadSurface(ctx, r, sid)
 	if err != nil {
 		return "", err

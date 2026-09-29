@@ -8,11 +8,9 @@ package turntest
 import (
 	"context"
 	"fmt"
-	"testing"
-	"time"
-
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -23,13 +21,14 @@ import (
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
+	"testing"
+	"time"
 )
 
 // Fixture is one adapter under test.
@@ -49,7 +48,7 @@ type harness struct {
 	t        testing.TB
 	ctx      context.Context
 	store    session.Store
-	registry *extension.Registry
+	registry *ledger.Registry
 	frozen   frozen.Store
 	bindings artifact.BindingStore
 	ledger   artifact.RetentionLedger
@@ -62,7 +61,7 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
+	registry, err := ledger.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +85,7 @@ func (h *harness) open() {
 		h.t.Fatal(err)
 	}
 	h.rt = runs
-	h.c = &rt.Coordinator{Projections: extension.NewProjectionReader(h.store, h.registry, nil), Runs: runs, Now: clock}
+	h.c = &rt.Coordinator{Projections: session.NewProjectionReader(h.store, h.registry, nil), Runs: runs, Now: clock}
 }
 
 // takeover opens a new owner process and returns the superseded Coordinator
@@ -133,8 +132,8 @@ func (h *harness) mustApply(group writer.SemanticGroup) {
 }
 
 // flattenCommit returns the commit's events in batch order.
-func flattenCommit(c session.Commit) []session.Event {
-	var out []session.Event
+func flattenCommit(c ledger.Commit) []ledger.Event {
+	var out []ledger.Event
 	for _, b := range c.Batches {
 		out = append(out, b.Events...)
 	}
@@ -162,7 +161,7 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 	out := make([]run.AgentInput, len(ids))
 	for i, id := range ids {
 		in := input(id)
-		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID("submitted/" + id),
+		h.mustApply(writer.SemanticGroup{CommitID: ledger.CommitID("submitted/" + id),
 			Batches: []writer.TypedBatch{{Domain: chatlog.Stream, Events: []writer.TypedEvent{{
 				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: h.now,
 				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: inputContent(id), SubmittedAtUnixMilli: h.now}}}}}})
@@ -213,10 +212,10 @@ func (h *harness) chat() chatlog.Surface {
 }
 
 // commits reads the whole commit log in order.
-func (h *harness) commits() []session.Commit {
+func (h *harness) commits() []ledger.Commit {
 	h.t.Helper()
-	var out []session.Commit
-	from := session.CommitSeq(0)
+	var out []ledger.Commit
+	from := ledger.CommitSeq(0)
 	for {
 		page, err := h.store.ReadCommits(h.ctx, session.CommitReadRequest{SessionID: sid, From: from, Limit: 256})
 		if err != nil {
@@ -230,9 +229,9 @@ func (h *harness) commits() []session.Commit {
 	}
 }
 
-func (h *harness) head() session.Head {
+func (h *harness) head() ledger.Head {
 	h.t.Helper()
-	page, err := h.store.ReadCommits(h.ctx, session.CommitReadRequest{SessionID: sid, From: ^session.CommitSeq(0) >> 1})
+	page, err := h.store.ReadCommits(h.ctx, session.CommitReadRequest{SessionID: sid, From: ^ledger.CommitSeq(0) >> 1})
 	if err != nil {
 		h.fatal(err)
 	}
@@ -240,7 +239,7 @@ func (h *harness) head() session.Head {
 }
 
 // group returns the events of the commit commitID.
-func (h *harness) group(commitID session.CommitID) []session.Event {
+func (h *harness) group(commitID ledger.CommitID) []ledger.Event {
 	h.t.Helper()
 	for _, c := range h.commits() {
 		if c.CommitID == commitID {
@@ -250,15 +249,15 @@ func (h *harness) group(commitID session.CommitID) []session.Event {
 	return nil
 }
 
-func eventTypes(events []session.Event) []session.EventType {
-	out := make([]session.EventType, len(events))
+func eventTypes(events []ledger.Event) []ledger.EventType {
+	out := make([]ledger.EventType, len(events))
 	for i := range events {
 		out[i] = events[i].Type
 	}
 	return out
 }
 
-func sameTypes(got []session.Event, want ...session.EventType) bool {
+func sameTypes(got []ledger.Event, want ...ledger.EventType) bool {
 	if len(got) != len(want) {
 		return false
 	}
@@ -270,7 +269,7 @@ func sameTypes(got []session.Event, want ...session.EventType) bool {
 	return true
 }
 
-func decode[T any](t testing.TB, registry *extension.Registry, event *session.Event) T {
+func decode[T any](t testing.TB, registry *ledger.Registry, event *ledger.Event) T {
 	t.Helper()
 	d, err := registry.Decode(*event)
 	if err != nil {
@@ -309,7 +308,7 @@ func (h *harness) modelEffect(runID run.RunID, step run.StepID) run.EffectID {
 // landed in.
 type commitResult struct {
 	store.CommitResult
-	Events []session.Event
+	Events []ledger.Event
 }
 
 func (h *harness) runCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) (commitResult, error) {
@@ -324,7 +323,7 @@ func (h *harness) runCommit(runID run.RunID, id run.CommandID, base run.RunPosit
 	}
 	out := commitResult{CommitResult: res}
 	_, err = h.writer().Commit(h.ctx, func(v writer.View) (*writer.SemanticGroup, error) {
-		c, ok, err := v.LookupCommit(session.CommitID(env.ID))
+		c, ok, err := v.LookupCommit(ledger.CommitID(env.ID))
 		if err != nil || !ok {
 			return nil, fmt.Errorf("commit %s not found: %w", env.ID, err)
 		}

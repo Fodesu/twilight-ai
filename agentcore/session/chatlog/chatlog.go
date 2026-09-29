@@ -12,17 +12,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
-const ModuleID extension.ModuleID = "chatlog"
+const ModuleID ledger.ModuleID = "chatlog"
 
 type (
 	TurnID       string
@@ -39,14 +37,14 @@ type (
 // (CHT-EVT-3), tool_result_superseded by the Application after an
 // out-of-band verification (CHT-ENT-2).
 const (
-	TypeInputSubmitted        session.EventType = "twilight/chatlog/input_submitted"
-	TypeInputDelivered        session.EventType = "twilight/chatlog/input_delivered"
-	TypeInputWithdrawn        session.EventType = "twilight/chatlog/input_withdrawn"
-	TypeInputRejected         session.EventType = "twilight/chatlog/input_rejected"
-	TypeToolResultSuperseded  session.EventType = "twilight/chatlog/tool_result_superseded"
-	TypeSummary               session.EventType = "twilight/chatlog/summary"
-	TypeCompactionCreated     session.EventType = "twilight/chatlog/compaction_created"
-	TypeCompactionInvalidated session.EventType = "twilight/chatlog/compaction_invalidated"
+	TypeInputSubmitted        ledger.EventType = "twilight/chatlog/input_submitted"
+	TypeInputDelivered        ledger.EventType = "twilight/chatlog/input_delivered"
+	TypeInputWithdrawn        ledger.EventType = "twilight/chatlog/input_withdrawn"
+	TypeInputRejected         ledger.EventType = "twilight/chatlog/input_rejected"
+	TypeToolResultSuperseded  ledger.EventType = "twilight/chatlog/tool_result_superseded"
+	TypeSummary               ledger.EventType = "twilight/chatlog/summary"
+	TypeCompactionCreated     ledger.EventType = "twilight/chatlog/compaction_created"
+	TypeCompactionInvalidated ledger.EventType = "twilight/chatlog/compaction_invalidated"
 )
 
 // Digest domains of the projected entries (CHT-COD-3). They are not event
@@ -106,7 +104,7 @@ func (ps *Parts) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	var wires []partWire
-	if err := extension.StrictDecode(val, &wires); err != nil {
+	if err := ledger.StrictDecode(val, &wires); err != nil {
 		return err
 	}
 	out := make(Parts, 0, len(wires))
@@ -329,7 +327,7 @@ func DigestCompaction(p *CompactionCreatedPayload) (jsonstable.Digest, error) {
 	}
 	return digestDomain(string(TypeCompactionCreated), struct {
 		CompactionID      CompactionID      `json:"compactionId"`
-		CoveredThrough    session.Position  `json:"coveredThrough"`
+		CoveredThrough    ledger.Position   `json:"coveredThrough"`
 		BaseContextDigest jsonstable.Digest `json:"baseContextDigest"`
 		SummaryID         SummaryID         `json:"summaryId"`
 		SummaryDigest     jsonstable.Digest `json:"summaryDigest"`
@@ -391,7 +389,7 @@ type SummaryPayload struct {
 // are replaced by the summary plus the Retained subset.
 type CompactionCreatedPayload struct {
 	CompactionID      CompactionID      `json:"compactionId"`
-	CoveredThrough    session.Position  `json:"coveredThrough"`
+	CoveredThrough    ledger.Position   `json:"coveredThrough"`
 	BaseContextDigest jsonstable.Digest `json:"baseContextDigest"`
 	SummaryID         SummaryID         `json:"summaryId"`
 	SummaryDigest     jsonstable.Digest `json:"summaryDigest"`
@@ -470,7 +468,7 @@ func checkSummary(p *SummaryPayload) error {
 
 // PartsExtractor returns the BindingIDs of ReferenceParts in appearance
 // order (CHT-COD-2).
-var PartsExtractor extension.BindingExtractor = extension.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
+var PartsExtractor ledger.BindingExtractor = ledger.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
 	p, ok := val.(SummaryPayload)
 	if !ok {
 		return nil, fmt.Errorf("parts extractor: unexpected %T", val)
@@ -486,7 +484,7 @@ var PartsExtractor extension.BindingExtractor = extension.BindingExtractorFunc(f
 
 // supersededExtractor names the frozen output a success supersession
 // carries, under the run module's frozen Binding derivation.
-var supersededExtractor extension.BindingExtractor = extension.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
+var supersededExtractor ledger.BindingExtractor = ledger.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
 	p, ok := val.(ToolResultSupersededPayload)
 	if !ok {
 		return nil, fmt.Errorf("superseded extractor: unexpected %T", val)
@@ -497,15 +495,15 @@ var supersededExtractor extension.BindingExtractor = extension.BindingExtractorF
 	return []artifact.BindingID{runmod.FrozenBindingID(p.OutputDigest)}, nil
 })
 
-var partsBinding = extension.BindingReferenceDefinition{
+var partsBinding = ledger.BindingReferenceDefinition{
 	Extractor:          PartsExtractor,
-	Cardinality:        extension.Cardinality{Min: 0},
+	Cardinality:        ledger.Cardinality{Min: 0},
 	RequiredDurability: artifact.EventBound,
 }
 
-var supersededBinding = extension.BindingReferenceDefinition{
+var supersededBinding = ledger.BindingReferenceDefinition{
 	Extractor:          supersededExtractor,
-	Cardinality:        extension.Cardinality{Min: 0},
+	Cardinality:        ledger.Cardinality{Min: 0},
 	AllowedSchemes:     []artifact.Scheme{artifact.SchemeCAS},
 	RequiredDurability: artifact.EventBound,
 }
@@ -516,16 +514,16 @@ const StreamDomain = "chatlog"
 
 // Version is the payload version the chatlog writes every event with
 // (EXT-REG-2); older versions keep their codecs beside it.
-const Version extension.PayloadVersion = 1
+const Version ledger.PayloadVersion = 1
 
-var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Lineage: session.LineageSession}
+var streamDefinition = ledger.StreamDefinition{Domain: StreamDomain, Lineage: ledger.LineageSession}
 
 // Stream is the chatlog's logical stream.
 var Stream = streamDefinition.Ref("")
 
-func def[T any](typ session.EventType, check func(*T) error, bindings ...extension.BindingReferenceDefinition) extension.EventDefinition {
-	return extension.EventDefinition{Type: typ, Domain: StreamDomain,
-		Codecs:   map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[T]{Check: check}},
+func def[T any](typ ledger.EventType, check func(*T) error, bindings ...ledger.BindingReferenceDefinition) ledger.EventDefinition {
+	return ledger.EventDefinition{Type: typ, Domain: StreamDomain,
+		Codecs:   map[ledger.PayloadVersion]ledger.PayloadCodec{Version: ledger.JSONCodec[T]{Check: check}},
 		Bindings: bindings}
 }
 
@@ -535,21 +533,21 @@ func def[T any](typ session.EventType, check func(*T) error, bindings ...extensi
 // run_ended to forget the Run's Turn.
 var consumedRunFacts = []string{"model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed", "run_ended"}
 
-func runRequirement() extension.ModuleRequirement {
-	events := make([]session.EventType, 0, len(consumedRunFacts))
+func runRequirement() ledger.ModuleRequirement {
+	events := make([]ledger.EventType, 0, len(consumedRunFacts))
 	for _, name := range consumedRunFacts {
 		events = append(events, runmod.Type(name))
 	}
-	return extension.ModuleRequirement{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: events}
+	return ledger.ModuleRequirement{Source: ledger.SourceTwilight, Module: runmod.ModuleID, Events: events}
 }
 
 // Module is the chatlog ModuleDescriptor (CHT-SCP-1: Requires run facts).
-var Module = extension.ModuleDescriptor{
-	Source:   extension.SourceTwilight,
+var Module = ledger.ModuleDescriptor{
+	Source:   ledger.SourceTwilight,
 	ID:       ModuleID,
-	Streams:  []extension.StreamDefinition{streamDefinition},
-	Requires: []extension.ModuleRequirement{runRequirement()},
-	Events: []extension.EventDefinition{
+	Streams:  []ledger.StreamDefinition{streamDefinition},
+	Requires: []ledger.ModuleRequirement{runRequirement()},
+	Events: []ledger.EventDefinition{
 		def[InputSubmittedPayload](TypeInputSubmitted, func(p *InputSubmittedPayload) error {
 			if p.InputID == "" || p.Content.IsZero() {
 				return errors.New("input_submitted requires inputId and content")
@@ -569,5 +567,5 @@ var Module = extension.ModuleDescriptor{
 		def[CompactionCreatedPayload](TypeCompactionCreated, checkCompactionCreated),
 		def[CompactionInvalidatedPayload](TypeCompactionInvalidated, checkCompactionInvalidated),
 	},
-	Projections: []extension.ProjectionDefinition{SurfaceProjection, ContextProjection},
+	Projections: []ledger.ProjectionDefinition{SurfaceProjection, ContextProjection},
 }

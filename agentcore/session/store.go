@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-
 	"github.com/felinics/twilight/agentcore/ledger"
 )
 
@@ -24,7 +23,7 @@ type CreateRequest struct {
 	// Ext are the module extension slots stored as SegmentHeader.Ext
 	// (SES-WIR-5): a module records what it needs about the segment's
 	// creation under its own key.
-	Ext Extensions
+	Ext ledger.Extensions
 }
 
 // ForkOrigin names the point a fork inherits: a Session and a CommitSeq of
@@ -32,7 +31,7 @@ type CreateRequest struct {
 // contributes that commit and records the edge as SegmentHeader.Parent.
 type ForkOrigin struct {
 	Session SessionID
-	Seq     CommitSeq
+	Seq     ledger.CommitSeq
 }
 
 // CommitReadRequest reads whole commits from From (inclusive). Limit counts
@@ -41,7 +40,7 @@ type ForkOrigin struct {
 // (SES-FRK-2).
 type CommitReadRequest struct {
 	SessionID SessionID
-	From      CommitSeq
+	From      ledger.CommitSeq
 	Limit     uint32 // 0 = unlimited
 }
 
@@ -49,9 +48,9 @@ type CommitReadRequest struct {
 // Head is the ledger head at read time; HasMore reports whether commits
 // beyond the returned ones exist.
 type CommitPage struct {
-	Header  SegmentHeader
-	Commits []Commit
-	Head    Head
+	Header  ledger.SegmentHeader
+	Commits []ledger.Commit
+	Head    ledger.Head
 	HasMore bool
 }
 
@@ -62,19 +61,19 @@ type CommitPage struct {
 // stream as the chosen lineage sees it, starting at 0 for the first event.
 type StreamReadRequest struct {
 	SessionID SessionID
-	Domain    Domain
-	Lineage   StreamLineage
-	From      StreamSeq
+	Domain    ledger.Domain
+	Lineage   ledger.StreamLineage
+	From      ledger.StreamSeq
 	Limit     uint32 // 0 = unlimited
 }
 
 // StreamPage is the result of one ReadStream. Head is the ledger head at
 // read time; HasMore reports whether events beyond the returned ones exist.
 type StreamPage struct {
-	Header  SegmentHeader
-	Domain  Domain
-	Events  []Event
-	Head    Head
+	Header  ledger.SegmentHeader
+	Domain  ledger.Domain
+	Events  []ledger.Event
+	Head    ledger.Head
 	HasMore bool
 }
 
@@ -82,13 +81,13 @@ type StreamPage struct {
 // segments it removed entirely and, for segments some session still covers,
 // the new Head.Next after their unneeded suffix was dropped.
 type CollectReport struct {
-	Removed   []SegmentID
-	Truncated map[SegmentID]CommitSeq
+	Removed   []ledger.SegmentID
+	Truncated map[ledger.SegmentID]ledger.CommitSeq
 	// Dropped lists, per truncated segment, the CommitIDs of the commits the
 	// truncation removed, so the layer that owns their retention claims can
 	// release them (SES-GC-3); a removed segment's claims are released by
 	// segment.
-	Dropped map[SegmentID][]CommitID
+	Dropped map[ledger.SegmentID][]ledger.CommitID
 }
 
 // Store is the kernel port (SES 4 to 6, 8, 9). A Session is a root into the
@@ -99,9 +98,9 @@ type CollectReport struct {
 type Store interface {
 	// Create establishes a root and its tip segment and returns the tip's
 	// header.
-	Create(context.Context, CreateRequest) (SegmentHeader, error)
+	Create(context.Context, CreateRequest) (ledger.SegmentHeader, error)
 	// Header returns the header of the Session's tip segment.
-	Header(context.Context, SessionID) (SegmentHeader, error)
+	Header(context.Context, SessionID) (ledger.SegmentHeader, error)
 	// Record returns the Session's root.
 	Record(context.Context, SessionID) (SessionRecord, error)
 	Open(context.Context, SessionID, OpenOptions) (Handle, error)
@@ -157,30 +156,30 @@ type Stores interface {
 // ErrOwnershipLost and writes nothing (SES-OWN-2).
 type Handle interface {
 	SessionID() SessionID
-	Epoch() Epoch
+	Epoch() ledger.Epoch
 	// Lease is the ownership this handle holds: its Epoch, Owner and expiry.
 	Lease() Lease
 	// Renew extends the lease by LeaseDuration from now (SES-OWN-1); a
 	// superseded handle gets ErrOwnershipLost. A handle whose lease never
 	// expires renews to no effect.
 	Renew(context.Context) error
-	Head() Head
+	Head() ledger.Head
 	// Header is the tip segment's creation record. It does not change for
 	// the life of the handle: a Session's tip segment is fixed at Create.
-	Header() SegmentHeader
+	Header() ledger.SegmentHeader
 	// Append persists one commit atomically and returns it as stored (SES-APP-1).
 	// It rejects malformed CommitIDs, duplicate CommitIDs, malformed stream
 	// refs and events, and a stale Epoch (SES-APP-3).
-	Append(context.Context, Proposal) (Commit, error)
+	Append(context.Context, ledger.Proposal) (ledger.Commit, error)
 	// Committed reports whether CommitID is already in the ledger. Append must
 	// reject a duplicate CommitID (SES-APP-3), so the kernel answers this from
 	// the index it already keeps (SES-REP-3). A failed handle, and a failed
 	// index read, return the error instead of a false negative.
-	Committed(CommitID) (bool, error)
+	Committed(ledger.CommitID) (bool, error)
 	// LookupCommit returns a committed group. It reads it from storage when
 	// the handle does not already hold it, so a caller that needs the commit
 	// pays for it only on a hit (SES-REP-4).
-	LookupCommit(CommitID) (Commit, bool, error)
+	LookupCommit(ledger.CommitID) (ledger.Commit, bool, error)
 	// StreamHead reports whether the tip segment holds any event of a
 	// logical stream and, if so, the StreamSeq the next one takes. It is
 	// answered from the same index Committed uses: which streams this
@@ -189,6 +188,6 @@ type Handle interface {
 	// stream it ever closed in a projection. Inherited segments are not
 	// counted whatever lineage the stream's domain declared: the index is
 	// the tip segment's own (SES-FRK-5).
-	StreamHead(Domain) (StreamSeq, bool)
+	StreamHead(ledger.Domain) (ledger.StreamSeq, bool)
 	Close(context.Context) error
 }

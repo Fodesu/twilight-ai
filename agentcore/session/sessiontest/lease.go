@@ -2,10 +2,10 @@ package sessiontest
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"testing"
 	"time"
-
-	"github.com/felinics/twilight/agentcore/session"
 )
 
 // SES-OWN-1: a lease is live for LeaseDuration after Acquire and after each
@@ -102,7 +102,7 @@ func testLease(t *testing.T, f Fixture) {
 	if err := w1.Renew(ctx); !session.IsCode(err, session.ErrOwnershipLost) {
 		t.Fatalf("expired holder renew = %v, want ownership_lost", err)
 	}
-	if _, err := w1.Append(ctx, session.Proposal{CommitID: "late", Batches: []session.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
+	if _, err := w1.Append(ctx, ledger.Proposal{CommitID: "late", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
 		t.Fatalf("expired holder append = %v, want ownership_lost", err)
 	}
 	if err := w1.Close(ctx); err != nil {

@@ -1,13 +1,17 @@
-// Package ledger is the commit vocabulary of an append-only event ledger:
-// commits, events and the module extension slots a commit-carrying record
-// holds.
+// Package ledger is the commit vocabulary and module framework of an
+// append-only event ledger: commits and their event batches, the segment
+// records that carry them, module identity and extension slots, and the
+// module framework built on that vocabulary — typed event codecs with
+// payload versions, stream declarations, and pure projections. The package
+// fixes shapes, ordering and atomicity; it names no domain of its own and
+// interprets no payload.
 package ledger
 
 import (
 	"errors"
 	"fmt"
-
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"math"
 )
 
 var (
@@ -64,4 +68,13 @@ func (e *Event) Decode(dst any) error { return e.Payload.Decode(dst) }
 // Head is a ledger's tip: the next Seq to assign.
 type Head struct {
 	Next CommitSeq `json:"next"`
+}
+
+// Limit32 converts a count or sequence to the uint32 a page limit or an
+// event index takes, saturating instead of wrapping.
+func Limit32(n uint64) uint32 {
+	if n > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(n)
 }

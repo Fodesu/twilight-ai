@@ -3,11 +3,10 @@ package writer
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"testing"
 	"time"
-
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // EXT-WRT-11: a Writer opened with a lease keeps it renewed for as long as
@@ -39,7 +38,7 @@ func TestWriterHeartbeatRenewsAndReportsLoss(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		_, err := w.Commit(ctx, noteGroup("c2", "two"))
-		if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) {
+		if errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}) {
 			break
 		}
 		if time.Now().After(deadline) {

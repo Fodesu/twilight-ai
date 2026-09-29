@@ -10,14 +10,14 @@
 package decision
 
 import (
+	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // ProjectionSource is what a prompt builder reads state from: the owner
 // process serves it from the Session Writer (writer.Projections), an observer
 // from the Store.
-type ProjectionSource = extension.ProjectionReader
+type ProjectionSource = session.ProjectionReader
 
 // Sources are the two read ports of a prompt builder (DEC-PMT-1): the
 // structural projections and the content resolver that materializes the

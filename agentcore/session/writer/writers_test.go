@@ -3,10 +3,9 @@ package writer
 import (
 	"context"
 	"errors"
-	"testing"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
+	"testing"
 )
 
 // EXT-WRT-6: a Writers value confines a failed Writer to that instance. After
@@ -15,7 +14,7 @@ import (
 // forgets the Session with CloseWriter, because reopening would take the
 // Session back from its new owner.
 func TestWritersReopenAfterFailure(t *testing.T) {
-	ownershipLost := &extension.Error{Code: extension.ErrOwnershipLost}
+	ownershipLost := &ledger.Error{Code: ledger.CodeOwnershipLost}
 	cases := []struct {
 		name string
 		lose func(t *testing.T, f *fixture, fs *faultStore, w Writer)
@@ -25,7 +24,7 @@ func TestWritersReopenAfterFailure(t *testing.T) {
 	}{
 		{"unknown outcome", func(t *testing.T, _ *fixture, fs *faultStore, w Writer) {
 			fs.arm("after")
-			if _, err := w.Commit(context.Background(), noteGroup("c2", "two")); !errors.Is(err, &extension.Error{Code: extension.ErrUnknownOutcome}) {
+			if _, err := w.Commit(context.Background(), noteGroup("c2", "two")); !errors.Is(err, &ledger.Error{Code: ledger.CodeUnknownOutcome}) {
 				t.Fatalf("commit with a lost response = %v, want unknown_outcome", err)
 			}
 		}, nil},

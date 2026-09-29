@@ -4,20 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"os"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
 )
 
-func proposal(commit string, n int) session.Proposal {
-	batch := session.EventBatch{Domain: session.Domain{Name: "chat"}}
+func proposal(commit string, n int) ledger.Proposal {
+	batch := ledger.EventBatch{Domain: ledger.Domain{Name: "chat"}}
 	for i := 0; i < n; i++ {
-		batch.Events = append(batch.Events, session.Event{Type: "twilight/x/e", RecordedAtUnixMilli: 1,
+		batch.Events = append(batch.Events, ledger.Event{Type: "twilight/x/e", RecordedAtUnixMilli: 1,
 			Payload: jsonstable.MustParse(fmt.Sprintf(`{"c":%q,"i":%d}`, commit, i))})
 	}
-	return session.Proposal{CommitID: session.CommitID(commit), Batches: []session.EventBatch{batch}}
+	return ledger.Proposal{CommitID: ledger.CommitID(commit), Batches: []ledger.EventBatch{batch}}
 }
 
 // SES-APP-1: a commit whose bytes were written but whose fsync failed is

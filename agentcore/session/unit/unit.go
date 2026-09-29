@@ -10,8 +10,7 @@ package unit
 import (
 	"context"
 	"errors"
-
-	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session/writer"
 )
 
@@ -37,7 +36,7 @@ type Work struct {
 	// CommitID names the operation: the writer derives it so that one
 	// identity means one operation, and a second unit under it is the same
 	// operation replayed (EXT-WRT-2).
-	CommitID session.CommitID
+	CommitID ledger.CommitID
 	Parts    []Part
 }
 
@@ -54,7 +53,7 @@ func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.
 	if work.CommitID == "" {
 		return writer.CommitResult{}, errors.New("unit: empty CommitID")
 	}
-	var replay *session.Commit
+	var replay *ledger.Commit
 	res, err := w.Commit(ctx, func(view writer.View) (*writer.SemanticGroup, error) {
 		if existing, found, err := view.LookupCommit(work.CommitID); err != nil {
 			return nil, err
@@ -63,7 +62,7 @@ func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.
 			return nil, nil
 		}
 		group := &writer.SemanticGroup{CommitID: work.CommitID}
-		index := map[session.Domain]int{}
+		index := map[ledger.Domain]int{}
 		for _, p := range work.Parts {
 			batches, err := p.Prepare(ctx, view, now)
 			if err != nil {
@@ -96,8 +95,8 @@ func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.
 }
 
 // Events returns the events of a commit in batch order.
-func Events(c session.Commit) []session.Event {
-	var out []session.Event
+func Events(c ledger.Commit) []ledger.Event {
+	var out []ledger.Event
 	for _, b := range c.Batches {
 		out = append(out, b.Events...)
 	}

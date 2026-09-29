@@ -4,16 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/felinics/twilight/agent/store/postgres/internal/db"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/jackc/pgx/v5/pgtype"
 	"math"
 	"sort"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgtype"
-
-	"github.com/felinics/twilight/agent/store/postgres/internal/db"
-	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // SessionStore is the session.Store over this database: the kernel Ledger
@@ -22,7 +20,7 @@ import (
 // SessionStores over one database are two processes over one ledger, which
 // is what lets a Session's Turns run on different machines.
 //
-// It is also an extension.ProjectionCacheProvider: folded projection
+// It is also a session.ProjectionCacheProvider: folded projection
 // states live in the database, so a Session reopened on another replica
 // starts from the last saved state and folds only the tail (EXT-PRJ-3),
 // instead of the whole history on every activation.
@@ -31,11 +29,11 @@ type SessionStore struct {
 	backend *sessionStorage
 }
 
-var _ extension.ProjectionCacheProvider = (*SessionStore)(nil)
+var _ session.ProjectionCacheProvider = (*SessionStore)(nil)
 
 // ProjectionCache is the durable projection cache over the projection_cache
 // table.
-func (s *SessionStore) ProjectionCache() extension.ProjectionCache {
+func (s *SessionStore) ProjectionCache() session.ProjectionCache {
 	return projectionCache{d: s.backend.d}
 }
 
@@ -43,22 +41,22 @@ type projectionCache struct{ d *DB }
 
 // Load returns the saved state; a missing or undecodable entry is a miss,
 // never an error, since the cache is derived data the log rebuilds.
-func (c projectionCache) Load(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (jsonstable.Value, session.Head, bool, error) {
+func (c projectionCache) Load(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion) (jsonstable.Value, ledger.Head, bool, error) {
 	row, err := c.d.q.ProjectionEntry(ctx, db.ProjectionEntryParams{Session: string(sid), Projection: string(id), Version: int64(v)})
 	if noRows(err) {
-		return jsonstable.Value{}, session.Head{}, false, nil
+		return jsonstable.Value{}, ledger.Head{}, false, nil
 	}
 	if err != nil {
-		return jsonstable.Value{}, session.Head{}, false, err
+		return jsonstable.Value{}, ledger.Head{}, false, err
 	}
 	state, err := jsonstable.Parse([]byte(row.State))
 	if err != nil || row.Through < 0 {
-		return jsonstable.Value{}, session.Head{}, false, nil
+		return jsonstable.Value{}, ledger.Head{}, false, nil
 	}
-	return state, session.Head{Next: session.CommitSeq(row.Through)}, true, nil //nolint:gosec // G115: checked non-negative
+	return state, ledger.Head{Next: ledger.CommitSeq(row.Through)}, true, nil //nolint:gosec // G115: checked non-negative
 }
 
-func (c projectionCache) Save(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion, state jsonstable.Value, through session.Head) error {
+func (c projectionCache) Save(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion, state jsonstable.Value, through ledger.Head) error {
 	return c.d.q.UpsertProjectionEntry(ctx, db.UpsertProjectionEntryParams{Session: string(sid), Projection: string(id), Version: int64(v),
 		State: string(state.Bytes()), Through: int64(through.Next)}) //nolint:gosec // G115: seq values fit int64
 }
@@ -84,41 +82,41 @@ func kerr(code session.ErrorCode, op string, sid session.SessionID, detail strin
 	return &session.Error{Code: code, Operation: op, SessionID: sid, Detail: detail}
 }
 
-func segmentNotFound(op string, id session.SegmentID) error {
+func segmentNotFound(op string, id ledger.SegmentID) error {
 	return &session.Error{Code: session.ErrNotFound, Operation: op, Detail: fmt.Sprintf("segment %s not found", id)}
 }
 
-func (b *sessionStorage) header(ctx context.Context, q *db.Queries, op string, id session.SegmentID) (session.SegmentHeader, error) {
+func (b *sessionStorage) header(ctx context.Context, q *db.Queries, op string, id ledger.SegmentID) (ledger.SegmentHeader, error) {
 	raw, err := q.Segment(ctx, string(id))
 	if noRows(err) {
-		return session.SegmentHeader{}, segmentNotFound(op, id)
+		return ledger.SegmentHeader{}, segmentNotFound(op, id)
 	}
 	if err != nil {
-		return session.SegmentHeader{}, err
+		return ledger.SegmentHeader{}, err
 	}
-	var h session.SegmentHeader
+	var h ledger.SegmentHeader
 	if err := json.Unmarshal([]byte(raw), &h); err != nil {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrCorrupt, Operation: op, Detail: fmt.Sprintf("segment %s: %v", id, err)}
+		return ledger.SegmentHeader{}, &session.Error{Code: session.ErrCorrupt, Operation: op, Detail: fmt.Sprintf("segment %s: %v", id, err)}
 	}
 	return h, nil
 }
 
 // head is the segment's Head: past its last commit, or its seed when empty.
-func (b *sessionStorage) head(ctx context.Context, q *db.Queries, header *session.SegmentHeader) (session.Head, error) {
+func (b *sessionStorage) head(ctx context.Context, q *db.Queries, header *ledger.SegmentHeader) (ledger.Head, error) {
 	last, err := q.SegmentHead(ctx, string(header.ID))
 	if err != nil {
-		return session.Head{}, err
+		return ledger.Head{}, err
 	}
 	if last < 0 {
 		return header.Seed(), nil
 	}
-	return session.Head{Next: session.CommitSeq(last) + 1}, nil //nolint:gosec // G115: checked non-negative
+	return ledger.Head{Next: ledger.CommitSeq(last) + 1}, nil //nolint:gosec // G115: checked non-negative
 }
 
-func decodeCommits(op string, id session.SegmentID, seqs []int64, bodies []string) ([]session.Commit, error) {
-	out := make([]session.Commit, 0, len(bodies))
+func decodeCommits(op string, id ledger.SegmentID, seqs []int64, bodies []string) ([]ledger.Commit, error) {
+	out := make([]ledger.Commit, 0, len(bodies))
 	for i, body := range bodies {
-		var c session.Commit
+		var c ledger.Commit
 		if err := json.Unmarshal([]byte(body), &c); err != nil {
 			return nil, &session.Error{Code: session.ErrCorrupt, Operation: op, Detail: fmt.Sprintf("segment %s commit %d: %v", id, seqs[i], err)}
 		}
@@ -127,38 +125,38 @@ func decodeCommits(op string, id session.SegmentID, seqs []int64, bodies []strin
 	return out, nil
 }
 
-func (b *sessionStorage) Segment(ctx context.Context, id session.SegmentID) (session.Segment, error) {
+func (b *sessionStorage) Segment(ctx context.Context, id ledger.SegmentID) (ledger.Segment, error) {
 	h, err := b.header(ctx, b.d.q, "segment", id)
 	if err != nil {
-		return session.Segment{}, err
+		return ledger.Segment{}, err
 	}
-	return session.Segment{Header: h}, nil
+	return ledger.Segment{Header: h}, nil
 }
 
-func (b *sessionStorage) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
+func (b *sessionStorage) ListSegments(ctx context.Context) ([]ledger.SegmentID, error) {
 	ids, err := b.d.q.SegmentIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]session.SegmentID, 0, len(ids))
+	out := make([]ledger.SegmentID, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, session.SegmentID(id))
+		out = append(out, ledger.SegmentID(id))
 	}
 	return out, nil
 }
 
-func (b *sessionStorage) ReadSegment(ctx context.Context, id session.SegmentID, from session.CommitSeq, limit uint32) ([]session.Commit, session.Head, bool, error) {
+func (b *sessionStorage) ReadSegment(ctx context.Context, id ledger.SegmentID, from ledger.CommitSeq, limit uint32) ([]ledger.Commit, ledger.Head, bool, error) {
 	q := b.d.q
 	header, err := b.header(ctx, q, "read", id)
 	if err != nil {
-		return nil, session.Head{}, false, err
+		return nil, ledger.Head{}, false, err
 	}
 	if seed := header.Seed(); from < seed.Next {
 		from = seed.Next
 	}
 	head, err := b.head(ctx, q, &header)
 	if err != nil {
-		return nil, session.Head{}, false, err
+		return nil, ledger.Head{}, false, err
 	}
 	if from >= head.Next {
 		return nil, head, false, nil
@@ -169,7 +167,7 @@ func (b *sessionStorage) ReadSegment(ctx context.Context, id session.SegmentID, 
 	}
 	rows, err := q.SegmentCommitsFrom(ctx, db.SegmentCommitsFromParams{Segment: string(id), Seq: int64(from), Limit: want}) //nolint:gosec // G115: seq values fit int64
 	if err != nil {
-		return nil, session.Head{}, false, err
+		return nil, ledger.Head{}, false, err
 	}
 	seqs := make([]int64, len(rows))
 	bodies := make([]string, len(rows))
@@ -178,7 +176,7 @@ func (b *sessionStorage) ReadSegment(ctx context.Context, id session.SegmentID, 
 	}
 	commits, err := decodeCommits("read", id, seqs, bodies)
 	if err != nil {
-		return nil, session.Head{}, false, err
+		return nil, ledger.Head{}, false, err
 	}
 	more := false
 	if limit > 0 && len(commits) > int(limit) {
@@ -190,7 +188,7 @@ func (b *sessionStorage) ReadSegment(ctx context.Context, id session.SegmentID, 
 
 // ReadSegmentStream joins the stream index to the commits (SES-REP-2/5):
 // only the commits that carry the stream are read.
-func (b *sessionStorage) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.Domain, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
+func (b *sessionStorage) ReadSegmentStream(ctx context.Context, id ledger.SegmentID, stream ledger.Domain, from ledger.CommitSeq, limit uint32) ([]ledger.Commit, bool, error) {
 	if _, err := b.header(ctx, b.d.q, "read", id); err != nil {
 		return nil, false, err
 	}
@@ -219,7 +217,7 @@ func (b *sessionStorage) ReadSegmentStream(ctx context.Context, id session.Segme
 	return commits, more, nil
 }
 
-func (b *sessionStorage) Locate(ctx context.Context, id session.SegmentID, cid session.CommitID) (session.CommitSeq, bool, error) {
+func (b *sessionStorage) Locate(ctx context.Context, id ledger.SegmentID, cid ledger.CommitID) (ledger.CommitSeq, bool, error) {
 	if _, err := b.header(ctx, b.d.q, "locate", id); err != nil {
 		return 0, false, err
 	}
@@ -230,23 +228,23 @@ func (b *sessionStorage) Locate(ctx context.Context, id session.SegmentID, cid s
 	if err != nil {
 		return 0, false, err
 	}
-	return session.CommitSeq(seq), true, nil //nolint:gosec // G115: seq stored from a uint64
+	return ledger.CommitSeq(seq), true, nil //nolint:gosec // G115: seq stored from a uint64
 }
 
-func (b *sessionStorage) LookupCommit(ctx context.Context, id session.SegmentID, cid session.CommitID) (session.Commit, bool, error) {
+func (b *sessionStorage) LookupCommit(ctx context.Context, id ledger.SegmentID, cid ledger.CommitID) (ledger.Commit, bool, error) {
 	if _, err := b.header(ctx, b.d.q, "lookup", id); err != nil {
-		return session.Commit{}, false, err
+		return ledger.Commit{}, false, err
 	}
 	body, err := b.d.q.SegmentCommitByID(ctx, db.SegmentCommitByIDParams{Segment: string(id), CommitID: string(cid)})
 	if noRows(err) {
-		return session.Commit{}, false, nil
+		return ledger.Commit{}, false, nil
 	}
 	if err != nil {
-		return session.Commit{}, false, err
+		return ledger.Commit{}, false, err
 	}
 	commits, err := decodeCommits("lookup", id, []int64{0}, []string{body})
 	if err != nil {
-		return session.Commit{}, false, err
+		return ledger.Commit{}, false, err
 	}
 	return commits[0], true, nil
 }
@@ -254,33 +252,33 @@ func (b *sessionStorage) LookupCommit(ctx context.Context, id session.SegmentID,
 // Index derives the segment's CommitIndex from its commits (SES-REP-5): the
 // rows are the index, so it is always current and PutIndex has nothing to
 // persist.
-func (b *sessionStorage) Index(ctx context.Context, id session.SegmentID) (session.CommitIndex, session.Head, error) {
+func (b *sessionStorage) Index(ctx context.Context, id ledger.SegmentID) (session.CommitIndex, ledger.Head, error) {
 	q := b.d.q
 	header, err := b.header(ctx, q, "index", id)
 	if err != nil {
-		return session.CommitIndex{}, session.Head{}, err
+		return session.CommitIndex{}, ledger.Head{}, err
 	}
 	rows, err := q.SegmentIndex(ctx, string(id))
 	if err != nil {
-		return session.CommitIndex{}, session.Head{}, err
+		return session.CommitIndex{}, ledger.Head{}, err
 	}
 	counts, err := q.SegmentStreamCounts(ctx, string(id))
 	if err != nil {
-		return session.CommitIndex{}, session.Head{}, err
+		return session.CommitIndex{}, ledger.Head{}, err
 	}
 	head := header.Seed()
 	idx := session.CommitIndex{Through: head, Entries: make([]session.IndexEntry, 0, len(rows))}
 	next := 0
 	for i := range rows {
 		r := &rows[i]
-		e := session.IndexEntry{CommitID: session.CommitID(r.CommitID), Seq: session.CommitSeq(r.Seq)} //nolint:gosec // G115: seq stored from a uint64
+		e := session.IndexEntry{CommitID: ledger.CommitID(r.CommitID), Seq: ledger.CommitSeq(r.Seq)} //nolint:gosec // G115: seq stored from a uint64
 		for next < len(counts) && counts[next].Seq == r.Seq {
 			c := &counts[next]
-			e.Streams = append(e.Streams, session.StreamCount{Domain: session.Domain{Name: c.Domain, Id: c.StreamID}, Events: uint32(c.Events)}) //nolint:gosec // G115: a batch holds far fewer than MaxUint32 events
+			e.Streams = append(e.Streams, session.StreamCount{Domain: ledger.Domain{Name: c.Domain, Id: c.StreamID}, Events: uint32(c.Events)}) //nolint:gosec // G115: a batch holds far fewer than MaxUint32 events
 			next++
 		}
 		idx.Entries = append(idx.Entries, e)
-		head = session.Head{Next: e.Seq + 1}
+		head = ledger.Head{Next: e.Seq + 1}
 	}
 	idx.Through = head
 	return idx, head, nil
@@ -288,29 +286,29 @@ func (b *sessionStorage) Index(ctx context.Context, id session.SegmentID) (sessi
 
 // Summarize is one aggregate over the segment's primary key (SES-REP-5):
 // the commits are the index, so the summary is always current.
-func (b *sessionStorage) Summarize(ctx context.Context, id session.SegmentID) (session.IndexSummary, session.Head, error) {
+func (b *sessionStorage) Summarize(ctx context.Context, id ledger.SegmentID) (session.IndexSummary, ledger.Head, error) {
 	header, err := b.header(ctx, b.d.q, "index", id)
 	if err != nil {
-		return session.IndexSummary{}, session.Head{}, err
+		return session.IndexSummary{}, ledger.Head{}, err
 	}
 	row, err := b.d.q.SegmentIndexSummary(ctx, string(id))
 	if err != nil {
-		return session.IndexSummary{}, session.Head{}, err
+		return session.IndexSummary{}, ledger.Head{}, err
 	}
 	head := header.Seed()
 	if row.LastSeq >= 0 {
-		head = session.Head{Next: session.CommitSeq(row.LastSeq) + 1} //nolint:gosec // G115: checked non-negative
+		head = ledger.Head{Next: ledger.CommitSeq(row.LastSeq) + 1} //nolint:gosec // G115: checked non-negative
 	}
 	s := session.IndexSummary{Entries: uint64(row.Entries), Through: head} //nolint:gosec // G115: a count
 	if row.Entries > 0 {
-		s.First, s.Last = session.CommitSeq(row.FirstSeq), session.CommitSeq(row.LastSeq) //nolint:gosec // G115: checked non-negative
+		s.First, s.Last = ledger.CommitSeq(row.FirstSeq), ledger.CommitSeq(row.LastSeq) //nolint:gosec // G115: checked non-negative
 	}
 	return s, head, nil
 }
 
 // StreamHead sums the stream's rows of the segment (SES-REP-3): one index
 // range, whatever the segment's length.
-func (b *sessionStorage) StreamHead(ctx context.Context, id session.SegmentID, stream session.Domain, before session.CommitSeq) (session.StreamSeq, error) {
+func (b *sessionStorage) StreamHead(ctx context.Context, id ledger.SegmentID, stream ledger.Domain, before ledger.CommitSeq) (ledger.StreamSeq, error) {
 	if _, err := b.header(ctx, b.d.q, "stream_head", id); err != nil {
 		return 0, err
 	}
@@ -318,27 +316,27 @@ func (b *sessionStorage) StreamHead(ctx context.Context, id session.SegmentID, s
 	if err != nil {
 		return 0, err
 	}
-	return session.StreamSeq(n), nil //nolint:gosec // G115: a sum of batch sizes
+	return ledger.StreamSeq(n), nil //nolint:gosec // G115: a sum of batch sizes
 }
 
-func (b *sessionStorage) PutIndex(ctx context.Context, id session.SegmentID, _ session.CommitIndex) error {
+func (b *sessionStorage) PutIndex(ctx context.Context, id ledger.SegmentID, _ session.CommitIndex) error {
 	_, err := b.header(ctx, b.d.q, "index", id)
 	return err
 }
 
-func (b *sessionStorage) Append(ctx context.Context, lease session.Lease, id session.SegmentID, c session.Commit) error {
+func (b *sessionStorage) Append(ctx context.Context, lease session.Lease, id ledger.SegmentID, c ledger.Commit) error {
 	return b.d.tx(ctx, "session:"+string(lease.Session), func(q *db.Queries) error {
 		root, err := b.root(ctx, q, "append", lease.Session)
 		if err != nil {
 			return err
 		}
-		if !root.Owned || session.Epoch(root.Epoch) != lease.Epoch { //nolint:gosec // G115: epochs stored from a uint64
+		if !root.Owned || ledger.Epoch(root.Epoch) != lease.Epoch { //nolint:gosec // G115: epochs stored from a uint64
 			return kerr(session.ErrOwnershipLost, "append", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, root.Epoch))
 		}
 		if root.Failed != "" {
 			return kerr(session.ErrHandleFailed, "append", lease.Session, root.Failed)
 		}
-		if session.SegmentID(root.Tip) != id {
+		if ledger.SegmentID(root.Tip) != id {
 			return kerr(session.ErrInvalid, "append", lease.Session, "lease does not cover the segment")
 		}
 		header, err := b.header(ctx, q, "append", id)
@@ -374,9 +372,9 @@ func (b *sessionStorage) Append(ctx context.Context, lease session.Lease, id ses
 	})
 }
 
-func (b *sessionStorage) TruncateSegment(ctx context.Context, id session.SegmentID, through session.CommitSeq) (session.Head, []session.CommitID, error) {
-	var head session.Head
-	var dropped []session.CommitID
+func (b *sessionStorage) TruncateSegment(ctx context.Context, id ledger.SegmentID, through ledger.CommitSeq) (ledger.Head, []ledger.CommitID, error) {
+	var head ledger.Head
+	var dropped []ledger.CommitID
 	err := b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
 		header, err := b.header(ctx, q, "collect", id)
 		if err != nil {
@@ -395,7 +393,7 @@ func (b *sessionStorage) TruncateSegment(ctx context.Context, id session.Segment
 			}
 			for i := range rows {
 				if rows[i].Seq > int64(cut) { //nolint:gosec // G115: seq values fit int64
-					dropped = append(dropped, session.CommitID(rows[i].CommitID))
+					dropped = append(dropped, ledger.CommitID(rows[i].CommitID))
 				}
 			}
 		}
@@ -413,7 +411,7 @@ func (b *sessionStorage) TruncateSegment(ctx context.Context, id session.Segment
 		return err
 	})
 	if err != nil {
-		return session.Head{}, nil, err
+		return ledger.Head{}, nil, err
 	}
 	return head, dropped, nil
 }
@@ -421,7 +419,7 @@ func (b *sessionStorage) TruncateSegment(ctx context.Context, id session.Segment
 // spanCut is the last seq truncation may keep. truncate is false when an
 // open span still names the segment: that span retains every commit. A
 // closed span raises the caller's through when it covers further.
-func spanCut(ctx context.Context, q *db.Queries, id session.SegmentID, through session.CommitSeq) (session.CommitSeq, bool, error) {
+func spanCut(ctx context.Context, q *db.Queries, id ledger.SegmentID, through ledger.CommitSeq) (ledger.CommitSeq, bool, error) {
 	v, err := q.SegmentSpanBound(ctx, string(id))
 	if noRows(err) {
 		return through, true, nil
@@ -444,7 +442,7 @@ func spanCut(ctx context.Context, q *db.Queries, id session.SegmentID, through s
 // transaction; the parent edge is also a foreign key, so a child inserted
 // by another replica between the check and the delete makes the delete
 // fail rather than orphan the child.
-func (b *sessionStorage) RemoveSegment(ctx context.Context, id session.SegmentID) error {
+func (b *sessionStorage) RemoveSegment(ctx context.Context, id ledger.SegmentID) error {
 	return b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
 		referenced, err := q.SegmentReferenced(ctx, string(id))
 		if err != nil {
@@ -488,7 +486,7 @@ func boundOf(v pgtype.Int8) session.Bound {
 	if !v.Valid {
 		return session.OpenBound()
 	}
-	return session.ThroughBound(session.CommitSeq(v.Int64)) //nolint:gosec // G115: seq values fit int64
+	return session.ThroughBound(ledger.CommitSeq(v.Int64)) //nolint:gosec // G115: seq values fit int64
 }
 
 func throughValue(end session.Bound) pgtype.Int8 {
@@ -500,8 +498,8 @@ func throughValue(end session.Bound) pgtype.Int8 {
 
 func spanOf(segment string, from int64, through pgtype.Int8) session.Span {
 	return session.Span{
-		Segment: session.SegmentID(segment),
-		From:    session.CommitSeq(from), //nolint:gosec // G115: seq values fit int64
+		Segment: ledger.SegmentID(segment),
+		From:    ledger.CommitSeq(from), //nolint:gosec // G115: seq values fit int64
 		End:     boundOf(through),
 	}
 }
@@ -518,14 +516,14 @@ func (b *sessionStorage) recordOf(ctx context.Context, q *db.Queries, r *db.Sess
 			path[i] = spanOf(rows[i].Segment, rows[i].FromSeq, rows[i].ThroughSeq)
 		}
 	}
-	return session.SessionRecord{ID: session.SessionID(r.ID), Tip: session.SegmentID(r.Tip), CreatedAtUnixMilli: r.CreatedAt, Path: path}, nil
+	return session.SessionRecord{ID: session.SessionID(r.ID), Tip: ledger.SegmentID(r.Tip), CreatedAtUnixMilli: r.CreatedAt, Path: path}, nil
 }
 
 func leaseOf(r *db.SessionRoot) session.Lease {
-	return session.Lease{Session: session.SessionID(r.ID), Epoch: session.Epoch(r.Epoch), Owner: r.Owner, UntilUnixMilli: r.LeaseUntil} //nolint:gosec // G115: epochs stored from a uint64
+	return session.Lease{Session: session.SessionID(r.ID), Epoch: ledger.Epoch(r.Epoch), Owner: r.Owner, UntilUnixMilli: r.LeaseUntil} //nolint:gosec // G115: epochs stored from a uint64
 }
 
-func (b *sessionStorage) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
+func (b *sessionStorage) CreateSession(ctx context.Context, seg ledger.Segment, rec session.SessionRecord) error {
 	err := b.d.tx(ctx, "session:"+string(rec.ID), func(q *db.Queries) error {
 		if existing, err := q.SessionRoot(ctx, string(rec.ID)); err == nil {
 			if existing.Deleted {
@@ -606,9 +604,9 @@ func (b *sessionStorage) CreateSession(ctx context.Context, seg session.Segment,
 // retainedSegmentIDs lists the segments a new path keeps, except the new
 // tip. Parent is included even when the path omits it. Order is the lock
 // order.
-func retainedSegmentIDs(tip session.SegmentID, parent *session.CommitRef, path session.Path) []string {
+func retainedSegmentIDs(tip ledger.SegmentID, parent *ledger.CommitRef, path session.Path) []string {
 	seen := map[string]struct{}{}
-	add := func(id session.SegmentID) {
+	add := func(id ledger.SegmentID) {
 		if id == "" || id == tip {
 			return
 		}
@@ -631,8 +629,8 @@ func retainedSegmentIDs(tip session.SegmentID, parent *session.CommitRef, path s
 // requireRetainedCommits reports ErrNotFound when a closed span's Through,
 // or the parent edge's commit, is no longer in the segment. The caller
 // holds those segments' locks.
-func requireRetainedCommits(ctx context.Context, q *db.Queries, sid session.SessionID, seg session.Segment, path session.Path) error {
-	check := func(id session.SegmentID, seq session.CommitSeq) error {
+func requireRetainedCommits(ctx context.Context, q *db.Queries, sid session.SessionID, seg ledger.Segment, path session.Path) error {
+	check := func(id ledger.SegmentID, seq ledger.CommitSeq) error {
 		_, err := q.SegmentCommitAt(ctx, db.SegmentCommitAtParams{Segment: string(id), Seq: int64(seq)}) //nolint:gosec // G115: seq values fit int64
 		if noRows(err) {
 			return kerr(session.ErrNotFound, "create", sid, fmt.Sprintf("segment %s commit %d is gone", id, seq))
@@ -653,7 +651,7 @@ func requireRetainedCommits(ctx context.Context, q *db.Queries, sid session.Sess
 	return nil
 }
 
-func (b *sessionStorage) SpanBound(ctx context.Context, id session.SegmentID) (session.Bound, bool, error) {
+func (b *sessionStorage) SpanBound(ctx context.Context, id ledger.SegmentID) (session.Bound, bool, error) {
 	v, err := b.d.q.SegmentSpanBound(ctx, string(id))
 	if noRows(err) {
 		return session.Bound{}, false, nil
@@ -695,7 +693,7 @@ func (b *sessionStorage) ListRecords(ctx context.Context) ([]session.SessionReco
 	for i := range rows {
 		out = append(out, session.SessionRecord{
 			ID:                 session.SessionID(rows[i].ID),
-			Tip:                session.SegmentID(rows[i].Tip),
+			Tip:                ledger.SegmentID(rows[i].Tip),
 			CreatedAtUnixMilli: rows[i].CreatedAt,
 			Path:               paths[rows[i].ID],
 		})
@@ -751,7 +749,7 @@ func (b *sessionStorage) Acquire(ctx context.Context, sid session.SessionID, opt
 		if r.Owned && (r.LeaseUntil == 0 || r.LeaseUntil > now.UnixMilli()) && !opts.Takeover {
 			return kerr(session.ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d (%s) until %d", r.Epoch, r.Owner, r.LeaseUntil))
 		}
-		if _, err := b.header(ctx, q, "open", session.SegmentID(r.Tip)); err != nil {
+		if _, err := b.header(ctx, q, "open", ledger.SegmentID(r.Tip)); err != nil {
 			return err
 		}
 		epoch := r.Epoch + 1
@@ -759,7 +757,7 @@ func (b *sessionStorage) Acquire(ctx context.Context, sid session.SessionID, opt
 		if err := q.UpdateSessionOwnership(ctx, db.UpdateSessionOwnershipParams{Epoch: epoch, Owned: true, Owner: opts.Owner, LeaseUntil: until, Failed: "", ID: string(sid)}); err != nil {
 			return err
 		}
-		out = session.Lease{Session: sid, Epoch: session.Epoch(epoch), Owner: opts.Owner, UntilUnixMilli: until} //nolint:gosec // G115: epochs fit uint64
+		out = session.Lease{Session: sid, Epoch: ledger.Epoch(epoch), Owner: opts.Owner, UntilUnixMilli: until} //nolint:gosec // G115: epochs fit uint64
 		return nil
 	})
 	if err != nil {
@@ -775,7 +773,7 @@ func (b *sessionStorage) Renew(ctx context.Context, lease session.Lease, duratio
 		if err != nil {
 			return err
 		}
-		if !r.Owned || session.Epoch(r.Epoch) != lease.Epoch { //nolint:gosec // G115: epochs stored from a uint64
+		if !r.Owned || ledger.Epoch(r.Epoch) != lease.Epoch { //nolint:gosec // G115: epochs stored from a uint64
 			return kerr(session.ErrOwnershipLost, "renew", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, r.Epoch))
 		}
 		until = leaseUntil(b.d.now(), duration)
@@ -802,7 +800,7 @@ func (b *sessionStorage) Release(ctx context.Context, lease session.Lease) error
 			}
 			return err
 		}
-		if r.Owned && session.Epoch(r.Epoch) == lease.Epoch { //nolint:gosec // G115: epochs stored from a uint64
+		if r.Owned && ledger.Epoch(r.Epoch) == lease.Epoch { //nolint:gosec // G115: epochs stored from a uint64
 			return q.UpdateSessionOwnership(ctx, db.UpdateSessionOwnershipParams{Epoch: r.Epoch, Owned: false, Owner: r.Owner, LeaseUntil: r.LeaseUntil, Failed: "", ID: r.ID})
 		}
 		return nil // releasing a superseded lease is a no-op
@@ -848,6 +846,6 @@ func (b *sessionStorage) DeleteRecord(ctx context.Context, sid session.SessionID
 
 // RemoveSegment exposes the backend's conditional node removal (SES-GC-4)
 // to the conformance suite; Collect is the only production caller.
-func (s *SessionStore) RemoveSegment(ctx context.Context, id session.SegmentID) error {
+func (s *SessionStore) RemoveSegment(ctx context.Context, id ledger.SegmentID) error {
 	return s.backend.RemoveSegment(ctx, id)
 }

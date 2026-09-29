@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
-
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"slices"
 )
 
 // Admission supplies Binding admission and the claim ledger. Both may be nil
@@ -31,7 +29,7 @@ const claimDerivationVersion uint16 = 1
 // named by the segment that holds the commit. No Session and no protocol
 // version enter it: the segment is the canonical owner of the commit, and a
 // Session that forks or advances keeps reading the same claim.
-func DeriveClaimID(segment session.SegmentID, commitID session.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
+func DeriveClaimID(segment ledger.SegmentID, commitID ledger.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
 	raw, _ := jsonstable.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/claim", []string{string(segment), string(commitID), string(refSet)})
 	return artifact.ClaimID(jsonstable.DigestBytes(raw))
 }
@@ -43,7 +41,7 @@ func nextClaimID(released artifact.ClaimID) artifact.ClaimID {
 
 // CommitOwner is the ClaimOwner of a commit: the segment that holds it and
 // the CommitID within it.
-func CommitOwner(segment session.SegmentID, id session.CommitID) artifact.ClaimOwner {
+func CommitOwner(segment ledger.SegmentID, id ledger.CommitID) artifact.ClaimOwner {
 	return artifact.ClaimOwner{Kind: ClaimOwnerKind, Authority: string(segment), Identity: string(id)}
 }
 
@@ -56,7 +54,7 @@ type admitter struct {
 	Admission
 	// segment is the tip segment this Writer appends to: the owner authority
 	// of every claim it activates.
-	segment session.SegmentID
+	segment ledger.SegmentID
 }
 
 // reconcile settles the tip segment's claims against the log at open; w
@@ -71,7 +69,7 @@ func (a *admitter) reconcile(ctx context.Context, w artifact.OwnerVerifier) erro
 	return err
 }
 
-func (a *admitter) admit(ctx context.Context, id artifact.BindingID, decl *extension.BindingReferenceDefinition) (string, error) {
+func (a *admitter) admit(ctx context.Context, id artifact.BindingID, decl *ledger.BindingReferenceDefinition) (string, error) {
 	if a.Bindings == nil {
 		// A configuration error, not a verdict on the commit: returning it as an
 		// error keeps it from reading like a data rejection.
@@ -104,7 +102,7 @@ func (a *admitter) admit(ctx context.Context, id artifact.BindingID, decl *exten
 
 // claim activates the retention claim before Append (EXT-WRT-3); a commit
 // without references claims nothing.
-func (a *admitter) claim(ctx context.Context, commitID session.CommitID, refs []artifact.BindingID) (*artifact.RetentionClaim, string, error) {
+func (a *admitter) claim(ctx context.Context, commitID ledger.CommitID, refs []artifact.BindingID) (*artifact.RetentionClaim, string, error) {
 	if len(refs) == 0 {
 		return nil, "", nil
 	}

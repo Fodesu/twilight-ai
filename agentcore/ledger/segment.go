@@ -1,32 +1,51 @@
-package session
+package ledger
 
 import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-
-	"github.com/felinics/twilight/agentcore/ledger"
 )
 
-// SegmentID identifies one commit segment independently of any Session
+// SegmentID identifies one commit segment independently of any host
 // (SES-WIR-4).
 type SegmentID string
 
+// CommitRef names one commit in a lineage tree: the commit at Seq of a
+// segment, by its place in the stitched sequence. As SegmentHeader.Parent it
+// is the edge from a child segment to the last commit it inherits: the
+// child's own commits are numbered from Seq+1 and readers see the prefix
+// [0, Seq] followed by them. History is append-only, so (Segment, Seq)
+// names one commit for good and the edge is a stable reference (SES-FRK-1).
+type CommitRef struct {
+	Segment SegmentID `json:"segment"`
+	Seq     CommitSeq `json:"seq"`
+}
+
+// Validate checks the shape of a parent edge. A nil edge is a root segment;
+// otherwise it names a parent segment. Whether the parent still holds the
+// commit is the store's check.
+func (edge *CommitRef) Validate() error {
+	if edge == nil {
+		return nil
+	}
+	return validIdentity("Parent.Segment", string(edge.Segment))
+}
+
 // SegmentHeader is the immutable creation record of a commit segment. It
-// names no Session: which roots append to or include the segment is the
-// roots' business (SessionRecord).
+// names no host: which roots append to or include the segment is the
+// roots' business.
 type SegmentHeader struct {
 	// ID is the segment's identity, drawn at random: two segments with
 	// equal records are still two nodes (SES-WIR-4).
-	ID          SegmentID          `json:"id"`
-	Parent      *CommitRef         `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
-	CausationID ledger.CausationID `json:"causationId,omitempty"`
+	ID          SegmentID   `json:"id"`
+	Parent      *CommitRef  `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
+	CausationID CausationID `json:"causationId,omitempty"`
 	// Ext are the module extension slots of the creation record, opaque to
 	// readers that know no module (SES-WIR-5).
 	Ext Extensions `json:"ext,omitempty"`
 }
 
-// Segment is one node of the lineage forest: a creation record. Its
+// Segment is one node of a lineage forest: a creation record. Its
 // commits live in the store, numbered from Header.Seed().
 type Segment struct {
 	Header SegmentHeader
@@ -39,7 +58,7 @@ func (s Segment) ID() SegmentID { return s.Header.ID }
 func NewSegmentID() (SegmentID, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("session: segment id: %w", err)
+		return "", fmt.Errorf("ledger: segment id: %w", err)
 	}
 	return SegmentID(hex.EncodeToString(b[:])), nil
 }
@@ -70,13 +89,10 @@ func (h SegmentHeader) Seed() Head {
 // a well-formed edge and a well-formed Ext.
 func (h SegmentHeader) Validate() error {
 	if err := validIdentity("segment ID", string(h.ID)); err != nil {
-		return newError(ErrInvalid, "header", "", err.Error())
+		return fmt.Errorf("segment header: %w", err)
 	}
 	if err := h.Parent.Validate(); err != nil {
-		return newError(ErrInvalid, "header", "", err.Error())
+		return fmt.Errorf("segment header: %w", err)
 	}
-	if err := ValidateExtensions(h.Ext); err != nil {
-		return newError(ErrInvalid, "header", "", err.Error())
-	}
-	return nil
+	return ValidateExtensions(h.Ext)
 }

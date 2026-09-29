@@ -10,11 +10,11 @@ import (
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
@@ -38,7 +38,7 @@ func inputDigest(raw string) Digest { return jsonstable.DigestBytes([]byte(raw))
 // Store, the run module, one owner process (Writers) and a Runtime.
 type testStack struct {
 	store    session.Stores
-	registry *extension.Registry
+	registry *ledger.Registry
 	bindings artifact.BindingStore
 	ledger   artifact.RetentionLedger
 	writers  writer.Writers
@@ -52,7 +52,7 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 		now = time.Now
 	}
 	store := filestoretest.Store(t)
-	registry, err := extension.BuildRegistry(runmod.Module)
+	registry, err := ledger.BuildRegistry(runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	for _, f := range facts {
 		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: runID, Fact: f}})
 	}
-	group := &writer.SemanticGroup{CommitID: session.CommitID("create/" + string(runID)),
+	group := &writer.SemanticGroup{CommitID: ledger.CommitID("create/" + string(runID)),
 		Batches: []writer.TypedBatch{{Domain: runmod.Stream(runID), Events: runEvents}}}
 	w, err := s.writers.Writer(context.Background(), testSession)
 	if err != nil {

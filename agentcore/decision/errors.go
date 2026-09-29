@@ -1,6 +1,8 @@
 package decision
 
-import "errors"
+import (
+	"errors"
+)
 
 // ErrUnknownPromptBuilder reports a PromptBuilderRef the registry does not
 // hold: the Owner cannot rebuild the Turn's decision function

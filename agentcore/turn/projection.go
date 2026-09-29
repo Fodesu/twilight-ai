@@ -2,16 +2,14 @@ package turn
 
 import (
 	"fmt"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
-const SurfaceProjectionID extension.ProjectionID = "twilight/turn/surface"
+const SurfaceProjectionID ledger.ProjectionID = "twilight/turn/surface"
 
 type TurnStatus string
 
@@ -85,25 +83,25 @@ func (s *TurnSurface) Active() (TurnView, bool) {
 	return TurnView{}, false
 }
 
-var SurfaceProjection = extension.ProjectionDefinition{
+var SurfaceProjection = ledger.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
-	Consumes: []session.EventType{TypeStarted, TypeFailed, TypeSuperseded,
+	Consumes: []ledger.EventType{TypeStarted, TypeFailed, TypeSuperseded,
 		chatlog.TypeInputDelivered, runmod.Prefix + "run_ended"},
 	// Attempt settlement is folded from run_ended, so inherited Turns settle
 	// from the parent's run streams, whose domain is of segment lineage and
 	// would otherwise be skipped (EXT-PRJ-8); a fork point inside a Turn is
 	// refused by the Owner (OWN-FRK-1).
-	Inherits:      extension.InheritAll,
+	Inherits:      ledger.InheritAll,
 	Authoritative: true,
 	Initial: func() (any, error) {
 		return TurnSurface{Turns: map[TurnID]TurnView{}, RunOwner: map[run.RunID]TurnID{}}, nil
 	},
 	Apply:      applySurface,
-	StateCodec: extension.JSONStateCodec[TurnSurface]{},
+	StateCodec: ledger.JSONStateCodec[TurnSurface]{},
 }
 
 //nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
-func applySurface(state any, e extension.DecodedEvent) (any, error) {
+func applySurface(state any, e ledger.DecodedEvent) (any, error) {
 	prev, ok := state.(TurnSurface)
 	if !ok {
 		return nil, fmt.Errorf("turn surface: state is %T", state)

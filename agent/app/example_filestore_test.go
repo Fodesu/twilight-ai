@@ -3,14 +3,10 @@ package app_test
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
-	"sync"
-	"time"
-
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -18,6 +14,10 @@ import (
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
+	"os"
+	"strings"
+	"sync"
+	"time"
 )
 
 // Example_jsonlPrototype is the full prototype on the JSONL file store: one
@@ -157,7 +157,7 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	var events []session.Event
+	var events []ledger.Event
 	for _, c := range page.Commits {
 		for _, b := range c.Batches {
 			events = append(events, b.Events...)

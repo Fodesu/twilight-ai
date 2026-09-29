@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"time"
 )
 
@@ -10,43 +11,43 @@ import (
 // reachability.
 type SegmentStore interface {
 	// Segment returns a node; ErrNotFound when absent.
-	Segment(context.Context, SegmentID) (Segment, error)
+	Segment(context.Context, ledger.SegmentID) (ledger.Segment, error)
 	// ReadSegment returns the segment's own commits from CommitSeq from
 	// (absolute), at most limit (0 = unlimited), its head, and whether more
 	// own commits follow. A torn tail is never returned.
-	ReadSegment(ctx context.Context, id SegmentID, from CommitSeq, limit uint32) ([]Commit, Head, bool, error)
+	ReadSegment(ctx context.Context, id ledger.SegmentID, from ledger.CommitSeq, limit uint32) ([]ledger.Commit, ledger.Head, bool, error)
 	// ReadSegmentStream returns, from the segment's own commits with Seq at
 	// or past from, those that carry a batch of stream, in Seq order, at
 	// most limit of them (0 = unlimited), and whether more follow
 	// (SES-REP-2). The adapter narrows by the CommitIndex's stream counts
 	// (SES-REP-5).
-	ReadSegmentStream(ctx context.Context, id SegmentID, stream Domain, from CommitSeq, limit uint32) ([]Commit, bool, error)
+	ReadSegmentStream(ctx context.Context, id ledger.SegmentID, stream ledger.Domain, from ledger.CommitSeq, limit uint32) ([]ledger.Commit, bool, error)
 	// Locate reports whether the segment holds CommitID as its own commit,
 	// and at which Seq, from the CommitIndex alone (SES-REP-3/5);
 	// LookupCommit reads the commit (SES-REP-4).
-	Locate(context.Context, SegmentID, CommitID) (CommitSeq, bool, error)
-	LookupCommit(context.Context, SegmentID, CommitID) (Commit, bool, error)
+	Locate(context.Context, ledger.SegmentID, ledger.CommitID) (ledger.CommitSeq, bool, error)
+	LookupCommit(context.Context, ledger.SegmentID, ledger.CommitID) (ledger.Commit, bool, error)
 	// StreamHead returns the number of events the segment's own commits
 	// with Seq below before wrote to stream, from the CommitIndex alone
 	// (SES-REP-3).
-	StreamHead(ctx context.Context, id SegmentID, stream Domain, before CommitSeq) (StreamSeq, error)
+	StreamHead(ctx context.Context, id ledger.SegmentID, stream ledger.Domain, before ledger.CommitSeq) (ledger.StreamSeq, error)
 	// Summarize returns the summary of the segment's CommitIndex as the
 	// adapter keeps it, and the segment's head (SES-REP-5): what Open
 	// checks the index by, without the entries.
-	Summarize(context.Context, SegmentID) (IndexSummary, Head, error)
+	Summarize(context.Context, ledger.SegmentID) (IndexSummary, ledger.Head, error)
 	// Index returns the segment's whole CommitIndex and its head
 	// (SES-REP-5).
-	Index(context.Context, SegmentID) (CommitIndex, Head, error)
+	Index(context.Context, ledger.SegmentID) (CommitIndex, ledger.Head, error)
 	// PutIndex replaces the segment's CommitIndex with one the kernel
 	// rebuilt from the commits.
-	PutIndex(context.Context, SegmentID, CommitIndex) error
+	PutIndex(context.Context, ledger.SegmentID, CommitIndex) error
 	// Append persists a commit whose Seq is the segment head, checking the
 	// Lease atomically with the write: the Lease must be current for its
 	// Session and that Session's Tip must be the segment (SES-OWN-2). A
 	// superseded Lease gets ErrOwnershipLost and writes nothing. The port
 	// only inserts: nothing here rewrites or removes a commit a root still
 	// reaches (SES-APP-5).
-	Append(context.Context, Lease, SegmentID, Commit) error
+	Append(context.Context, Lease, ledger.SegmentID, ledger.Commit) error
 }
 
 // RootStore is the adapter port for roots: a Session's record and its
@@ -87,7 +88,7 @@ type RootStore interface {
 // two ports.
 type MaintenanceStore interface {
 	// ListSegments returns every node.
-	ListSegments(context.Context) ([]SegmentID, error)
+	ListSegments(context.Context) ([]ledger.SegmentID, error)
 	// ListRecords returns every root.
 	ListRecords(context.Context) ([]SessionRecord, error)
 	// CreateSession persists a new segment, the root's path spans and the
@@ -101,12 +102,12 @@ type MaintenanceStore interface {
 	// commit must also still exist; a missing one is ErrNotFound and
 	// nothing is written. The span insert holds the same per-segment lock
 	// as TruncateSegment.
-	CreateSession(context.Context, Segment, SessionRecord) error
+	CreateSession(context.Context, ledger.Segment, SessionRecord) error
 	// SpanBound is the greatest end among the path spans that still name
 	// the segment; ok is false when none do. An open end retains every
 	// commit the segment has. DropOrphanSpans deletes path spans whose
 	// session is not a live root.
-	SpanBound(ctx context.Context, id SegmentID) (Bound, bool, error)
+	SpanBound(ctx context.Context, id ledger.SegmentID) (Bound, bool, error)
 	DropOrphanSpans(context.Context) error
 	// TruncateSegment drops the segment's own commits after through and
 	// returns the head afterwards plus the CommitIDs it actually removed.
@@ -114,14 +115,14 @@ type MaintenanceStore interface {
 	// greatest span still naming the segment: an open span deletes nothing
 	// and a greater Through raises the cut. Nothing removed yields the
 	// unchanged head and an empty list.
-	TruncateSegment(ctx context.Context, id SegmentID, through CommitSeq) (Head, []CommitID, error)
+	TruncateSegment(ctx context.Context, id ledger.SegmentID, through ledger.CommitSeq) (ledger.Head, []ledger.CommitID, error)
 	// RemoveSegment deletes the node when nothing references it, atomically
 	// with the check (SES-GC-4): a root whose Tip is the segment, a segment
 	// whose Parent edge names it, or a path span still naming it makes the
 	// removal ErrReferenced and nothing is removed. The adapter enforces
 	// the check with its own consistency (a foreign key, a check under the
 	// store lock).
-	RemoveSegment(context.Context, SegmentID) error
+	RemoveSegment(context.Context, ledger.SegmentID) error
 	// DeleteRecord marks a root deleted and drops its path spans in the
 	// same write (SES-GC-1), returning the record as it was, including the
 	// path. ErrOwned while a Lease is live, and then nothing is written. A

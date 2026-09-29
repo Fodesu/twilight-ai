@@ -2,11 +2,11 @@ package filestore
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"os"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
 )
 
 // A truncation asked to cut below a live span keeps that span's commits.
@@ -27,11 +27,11 @@ func TestTruncateObeysLiveSpan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	appendOne := func(id string) session.Commit {
+	appendOne := func(id string) ledger.Commit {
 		t.Helper()
-		c, err := w.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.EventBatch{{
-			Domain: session.Domain{Name: "chat"},
-			Events: []session.Event{{Type: "twilight/x/n", Payload: jsonstable.MustParse(`{"n":1}`)}},
+		c, err := w.Append(ctx, ledger.Proposal{CommitID: ledger.CommitID(id), Batches: []ledger.EventBatch{{
+			Domain: ledger.Domain{Name: "chat"},
+			Events: []ledger.Event{{Type: "twilight/x/n", Payload: jsonstable.MustParse(`{"n":1}`)}},
 		}}})
 		if err != nil {
 			t.Fatal(err)
@@ -69,9 +69,9 @@ func TestTruncateObeysLiveSpan(t *testing.T) {
 		t.Fatalf("segment after stale truncate = %+v %v", commits, err)
 	}
 
-	err = store.CreateSession(ctx, session.Segment{Header: session.SegmentHeader{
+	err = store.CreateSession(ctx, ledger.Segment{Header: ledger.SegmentHeader{
 		ID:     "child",
-		Parent: &session.CommitRef{Segment: header.ID, Seq: c2.Seq},
+		Parent: &ledger.CommitRef{Segment: header.ID, Seq: c2.Seq},
 	}}, session.SessionRecord{
 		ID: "ghost", Tip: "child", CreatedAtUnixMilli: 3,
 		Path: session.Path{

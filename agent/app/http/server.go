@@ -5,16 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	stdhttp "net/http"
-	"strconv"
-	"time"
-
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/inbox"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
+	stdhttp "net/http"
+	"strconv"
+	"time"
 )
 
 // DefaultMaxBodyBytes bounds a request body when Server gives no cap.
@@ -310,7 +310,7 @@ func (s *Server) events(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			writeError(w, &Error{Status: stdhttp.StatusBadRequest, Code: CodeInvalid, Message: "from must be a commit sequence"})
 			return
 		}
-		events, err = s.App.EventsFrom(r.Context(), id, session.CommitSeq(n))
+		events, err = s.App.EventsFrom(r.Context(), id, ledger.CommitSeq(n))
 		if err != nil {
 			fail(w, err)
 			return
@@ -371,7 +371,7 @@ func (s *Server) fork(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	parent := sid(r)
-	var header session.SegmentHeader
+	var header ledger.SegmentHeader
 	var err error
 	if req.BeforeTurn != "" {
 		header, err = s.App.ForkBeforeTurn(r.Context(), parent, req.BeforeTurn, req.Child)

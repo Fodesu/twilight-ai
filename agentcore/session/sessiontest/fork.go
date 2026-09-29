@@ -2,13 +2,13 @@ package sessiontest
 
 import (
 	"context"
-	"testing"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
+	"testing"
 )
 
 // forkAt creates child from the history of parent at commit seq.
-func forkAt(t *testing.T, store session.Store, child, parent session.SessionID, seq session.CommitSeq) (session.SegmentHeader, error) {
+func forkAt(t *testing.T, store session.Store, child, parent session.SessionID, seq ledger.CommitSeq) (ledger.SegmentHeader, error) {
 	t.Helper()
 	return store.Create(context.Background(), session.CreateRequest{SessionID: child, CreatedAtUnixMilli: 2,
 		Fork: &session.ForkOrigin{Session: parent, Seq: seq}})
@@ -34,7 +34,7 @@ func testFork(t *testing.T, f Fixture) {
 		name   string
 		sid    session.SessionID
 		parent session.SessionID
-		seq    session.CommitSeq
+		seq    ledger.CommitSeq
 		code   session.ErrorCode
 	}{
 		{"unknown parent", "child", "ghost", 0, session.ErrNotFound},
@@ -56,7 +56,7 @@ func testFork(t *testing.T, f Fixture) {
 	}
 	// The edge names the parent's segment, not the parent Session, and the
 	// anchor commit's position.
-	wantEdge := session.CommitRef{Segment: parent.ID, Seq: c1.Seq}
+	wantEdge := ledger.CommitRef{Segment: parent.ID, Seq: c1.Seq}
 	if child.Parent == nil || *child.Parent != wantEdge || child.ID == parent.ID {
 		t.Fatalf("child header = %+v, want edge %+v", child, wantEdge)
 	}
@@ -70,7 +70,7 @@ func testFork(t *testing.T, f Fixture) {
 
 	// The empty child seeds at the edge and reads the inherited prefix.
 	seed := child.Seed()
-	if seed != (session.Head{Next: c1.Seq + 1}) {
+	if seed != (ledger.Head{Next: c1.Seq + 1}) {
 		t.Fatalf("seed = %+v", seed)
 	}
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "child"})
@@ -96,7 +96,7 @@ func testFork(t *testing.T, f Fixture) {
 	if err != nil || !ok || got.CommitID != c1.CommitID || got.Seq != c1.Seq {
 		t.Fatalf("lookup inherited = %+v %v %v", got, ok, err)
 	}
-	if _, err := cw.Append(ctx, session.Proposal{CommitID: "c0", Batches: []session.EventBatch{batch(chatStream(), "twilight/x/a", `{"dup":true}`)}}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := cw.Append(ctx, ledger.Proposal{CommitID: "c0", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{"dup":true}`)}}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("append of an inherited CommitID = %v, want conflict", err)
 	}
 	c3 := appendCommit(t, cw, "c3", batch(chatStream(), "twilight/x/a", `{"n":3}`), batch(runStream("r1"), "twilight/x/r", `{"n":3}`))
@@ -106,7 +106,7 @@ func testFork(t *testing.T, f Fixture) {
 	// The parent keeps appending; neither side sees the other.
 	c4 := appendCommit(t, pw, "c4", batch(chatStream(), "twilight/x/a", `{"n":4}`))
 	childPage, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "child"})
-	if ids(childPage.Commits) != "c0,c1,c3" || childPage.Head != (session.Head{Next: c3.Seq + 1}) {
+	if ids(childPage.Commits) != "c0,c1,c3" || childPage.Head != (ledger.Head{Next: c3.Seq + 1}) {
 		t.Fatalf("child commits = %s head %+v", ids(childPage.Commits), childPage.Head)
 	}
 	parentPage, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "parent"})
@@ -122,7 +122,7 @@ func testFork(t *testing.T, f Fixture) {
 	// Paging crosses the prefix boundary: From and Limit count the stitched
 	// sequence.
 	for _, tc := range []struct {
-		from    session.CommitSeq
+		from    ledger.CommitSeq
 		limit   uint32
 		want    string
 		hasMore bool
@@ -139,23 +139,23 @@ func testFork(t *testing.T, f Fixture) {
 	// (c3). Read with LineageSegment, the child's r1 holds only c3: the
 	// parent's c1 event is not the child segment's. The same r1 read with
 	// LineageSession stitches c1 before c3.
-	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Lineage: session.LineageSession})
+	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Lineage: ledger.LineageSession})
 	if err != nil || len(sp.Events) != 3 || sp.Events[0].Payload.String() != `{"n":0}` || sp.Events[2].Payload.String() != `{"n":3}` {
 		t.Fatalf("child chat stream = %+v %v", sp.Events, err)
 	}
-	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Lineage: session.LineageSession, From: 2})
+	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Lineage: ledger.LineageSession, From: 2})
 	if len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
 		t.Fatalf("child chat stream from 2 = %+v", sp.Events)
 	}
-	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Lineage: session.LineageSegment})
+	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Lineage: ledger.LineageSegment})
 	if err != nil || len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
 		t.Fatalf("child run stream = %+v %v, want the child's own event only", sp.Events, err)
 	}
-	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Lineage: session.LineageSession})
+	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Lineage: ledger.LineageSession})
 	if err != nil || len(sp.Events) != 2 || sp.Events[1].Payload.String() != `{"n":3}` {
 		t.Fatalf("child run stream stitched = %+v %v, want c1 then c3", sp.Events, err)
 	}
-	if sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "parent", Domain: runStream("r1"), Lineage: session.LineageSegment}); len(sp.Events) != 2 {
+	if sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "parent", Domain: runStream("r1"), Lineage: ledger.LineageSegment}); len(sp.Events) != 2 {
 		t.Fatalf("parent run stream = %+v, want c1 and c2", sp.Events)
 	}
 
@@ -202,7 +202,7 @@ func testFork(t *testing.T, f Fixture) {
 	_ = pw.Close(ctx)
 }
 
-func ids(commits []session.Commit) string {
+func ids(commits []ledger.Commit) string {
 	out := ""
 	for i, c := range commits {
 		if i > 0 {

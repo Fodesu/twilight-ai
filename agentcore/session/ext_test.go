@@ -2,46 +2,12 @@ package session_test
 
 import (
 	"context"
-	"testing"
-
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
+	"testing"
 )
-
-// TestKernelExtSlots covers SES-WIR-5: header extension slots are keyed by
-// module and hold JSON the kernel does not interpret; a malformed key or
-// value is ErrInvalid.
-func TestKernelExtSlots(t *testing.T) {
-	run := session.ModuleKey{Source: "twilight", ID: "run"}
-	cases := []struct {
-		name    string
-		ext     session.Extensions
-		invalid bool
-	}{
-		{name: "absent"},
-		{name: "object", ext: session.Extensions{run: session.RawValue(`{"k":1}`)}},
-		{name: "scalar", ext: session.Extensions{run: session.RawValue(`1`)}},
-		{name: "two modules", ext: session.Extensions{run: session.RawValue(`{}`), {Source: "acme", ID: "audit"}: session.RawValue(`[1]`)}},
-		{name: "empty value", ext: session.Extensions{run: nil}, invalid: true},
-		{name: "not JSON", ext: session.Extensions{run: session.RawValue(`{`)}, invalid: true},
-		{name: "source with separator", ext: session.Extensions{{Source: "a/b", ID: "x"}: session.RawValue(`1`)}, invalid: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			herr := (session.SegmentHeader{ID: "seg", Ext: tc.ext}).Validate()
-			if tc.invalid {
-				if !session.IsCode(herr, session.ErrInvalid) {
-					t.Fatalf("invalid ext accepted: %v", herr)
-				}
-				return
-			}
-			if herr != nil {
-				t.Fatalf("valid ext rejected: %v", herr)
-			}
-		})
-	}
-}
 
 // TestKernelExtRoundTrip creates a segment carrying Ext through a Store,
 // reads the header back byte for byte under its module key and reopens the
@@ -49,9 +15,9 @@ func TestKernelExtSlots(t *testing.T) {
 func TestKernelExtRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := filestoretest.Store(t)
-	key := session.ModuleKey{Source: "acme", ID: "audit"}
-	ext := session.Extensions{key: session.RawValue(`{"by":"later"}`)}
-	same := func(got session.Extensions) bool { return len(got) == 1 && string(got[key]) == string(ext[key]) }
+	key := ledger.ModuleKey{Source: "acme", ID: "audit"}
+	ext := ledger.Extensions{key: ledger.RawValue(`{"by":"later"}`)}
+	same := func(got ledger.Extensions) bool { return len(got) == 1 && string(got[key]) == string(ext[key]) }
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "s", Ext: ext}); err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +25,8 @@ func TestKernelExtRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.EventBatch{{Domain: session.Domain{Name: "chat"},
-		Events: []session.Event{{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)}}}}}); err != nil {
+	if _, err := h.Append(ctx, ledger.Proposal{CommitID: "c1", Batches: []ledger.EventBatch{{Domain: ledger.Domain{Name: "chat"},
+		Events: []ledger.Event{{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Close(ctx); err != nil {

@@ -2,40 +2,39 @@ package writer
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"sync"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
-	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 )
 
 // This file covers EXT-PRJ-3: a projection's folded state living in the
-// extension.ProjectionCache, and a reopening Writer resuming from it instead of folding
+// session.ProjectionCache, and a reopening Writer resuming from it instead of folding
 // the log again.
 
 const (
-	alphaID = extension.ProjectionID("twilight/k/alpha")
-	betaID  = extension.ProjectionID("twilight/k/beta")
+	alphaID = ledger.ProjectionID("twilight/k/alpha")
+	betaID  = ledger.ProjectionID("twilight/k/beta")
 )
 
 // applyCounter records how many events each projection folded, which is how a
 // test tells a fold that started from a cache entry from a full one.
 type applyCounter struct {
 	mu    sync.Mutex
-	calls map[extension.ProjectionID]int
+	calls map[ledger.ProjectionID]int
 }
 
-func newApplyCounter() *applyCounter { return &applyCounter{calls: map[extension.ProjectionID]int{}} }
+func newApplyCounter() *applyCounter { return &applyCounter{calls: map[ledger.ProjectionID]int{}} }
 
-func (c *applyCounter) inc(id extension.ProjectionID) {
+func (c *applyCounter) inc(id ledger.ProjectionID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls[id]++
 }
 
-func (c *applyCounter) get(id extension.ProjectionID) int {
+func (c *applyCounter) get(id ledger.ProjectionID) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls[id]
@@ -44,42 +43,42 @@ func (c *applyCounter) get(id extension.ProjectionID) int {
 func (c *applyCounter) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.calls = map[extension.ProjectionID]int{}
+	c.calls = map[ledger.ProjectionID]int{}
 }
 
 // cacheModule declares two projections over one event type. alpha stands for a
 // projection the Writer refreshes; beta for one whose owning component does.
-func cacheModule(c *applyCounter) extension.ModuleDescriptor {
+func cacheModule(c *applyCounter) ledger.ModuleDescriptor {
 	typ := tpfx("k") + "row"
-	mk := func(id extension.ProjectionID) extension.ProjectionDefinition {
-		return extension.ProjectionDefinition{
-			ID: id, Version: 1, Consumes: []session.EventType{typ},
+	mk := func(id ledger.ProjectionID) ledger.ProjectionDefinition {
+		return ledger.ProjectionDefinition{
+			ID: id, Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return noteState{}, nil },
-			Apply: func(state any, e extension.DecodedEvent) (any, error) {
+			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
 				c.inc(id)
 				s := state.(noteState)
 				s.Notes = append(append([]string(nil), s.Notes...), e.Value.(notePayload).Text)
 				return s, nil
 			},
-			StateCodec: extension.JSONStateCodec[noteState]{},
+			StateCodec: ledger.JSONStateCodec[noteState]{},
 		}
 	}
-	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k", Streams: noteStreams(),
-		Events:      []extension.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
-		Projections: []extension.ProjectionDefinition{mk(alphaID), mk(betaID)}}
+	return ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "k", Streams: noteStreams(),
+		Events:      []ledger.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[notePayload]{}}}},
+		Projections: []ledger.ProjectionDefinition{mk(alphaID), mk(betaID)}}
 }
 
 type cacheFixture struct {
 	store    session.Stores
-	registry *extension.Registry
-	cache    *extension.MemoryProjectionCache
+	registry *ledger.Registry
+	cache    *session.MemoryProjectionCache
 	counter  *applyCounter
 }
 
 func newCacheFixture(t testing.TB) *cacheFixture {
 	t.Helper()
-	f := &cacheFixture{store: filestoretest.Store(t), cache: extension.NewMemoryProjectionCache(), counter: newApplyCounter()}
-	registry, err := extension.BuildRegistry(cacheModule(f.counter))
+	f := &cacheFixture{store: filestoretest.Store(t), cache: session.NewMemoryProjectionCache(), counter: newApplyCounter()}
+	registry, err := ledger.BuildRegistry(cacheModule(f.counter))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +102,7 @@ func (f *cacheFixture) open(t testing.TB, cfg WritersConfig) Writer {
 func (f *cacheFixture) commit(t testing.TB, w Writer, id string, texts ...string) {
 	t.Helper()
 	res, err := w.Commit(context.Background(), func(View) (*SemanticGroup, error) {
-		g := &SemanticGroup{CommitID: session.CommitID(id)}
+		g := &SemanticGroup{CommitID: ledger.CommitID(id)}
 		var events []TypedEvent
 		for _, tx := range texts {
 			events = append(events, TypedEvent{Type: tpfx("k") + "row", Value: notePayload{Text: tx}})
@@ -119,7 +118,7 @@ func (f *cacheFixture) commit(t testing.TB, w Writer, id string, texts ...string
 	}
 }
 
-func (f *cacheFixture) notes(t testing.TB, w Writer, id extension.ProjectionID) []string {
+func (f *cacheFixture) notes(t testing.TB, w Writer, id ledger.ProjectionID) []string {
 	t.Helper()
 	state, _, err := w.Projections().Load(context.Background(), "s", id, 1)
 	if err != nil {
@@ -130,7 +129,7 @@ func (f *cacheFixture) notes(t testing.TB, w Writer, id extension.ProjectionID) 
 
 // commits reads the committed log, which is where the digests a cache entry
 // must record come from.
-func (f *cacheFixture) commits(t *testing.T) []session.Commit {
+func (f *cacheFixture) commits(t *testing.T) []ledger.Commit {
 	t.Helper()
 	page, err := f.store.ReadCommits(context.Background(), session.CommitReadRequest{SessionID: "s"})
 	if err != nil {
@@ -142,7 +141,7 @@ func (f *cacheFixture) commits(t *testing.T) []session.Commit {
 // encodeState builds the cached form of a projection state.
 func (f *cacheFixture) encodeState(t *testing.T, notes ...string) jsonstable.Value {
 	t.Helper()
-	v, err := extension.JSONStateCodec[noteState]{}.Encode(noteState{Notes: notes})
+	v, err := ledger.JSONStateCodec[noteState]{}.Encode(noteState{Notes: notes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,14 +165,14 @@ func sameNotes(got, want []string) bool {
 func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
-	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(0).AtClose()})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(0).AtClose()})
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
 	f.commit(t, w, "c3", "n3")
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []extension.ProjectionID{alphaID, betaID} {
+	for _, id := range []ledger.ProjectionID{alphaID, betaID} {
 		_, through, ok, err := f.cache.Load(ctx, "s", id, 1)
 		if err != nil || !ok {
 			t.Fatalf("%s: entry after Close: ok=%v err=%v", id, ok, err)
@@ -184,8 +183,8 @@ func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 	}
 
 	f.counter.reset()
-	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(0).AtClose()})
-	for _, id := range []extension.ProjectionID{alphaID, betaID} {
+	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(0).AtClose()})
+	for _, id := range []ledger.ProjectionID{alphaID, betaID} {
 		if n := f.counter.get(id); n != 0 {
 			t.Errorf("%s folded %d events, want 0 when the entry covers the whole log", id, n)
 		}
@@ -200,7 +199,7 @@ func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 func TestWriterResumesOnlyTheUncoveredTail(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
-	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(0).AtClose()})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(0).AtClose()})
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
 	f.commit(t, w, "c3", "n3")
@@ -215,7 +214,7 @@ func TestWriterResumesOnlyTheUncoveredTail(t *testing.T) {
 	// A stale entry stands in for a process that ended before its last
 	// refresh; Save is monotonic, so the current entry is dropped first.
 	f.cache.Delete("s", alphaID, 1)
-	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2}); err != nil {
+	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), ledger.Head{Next: 2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,12 +252,12 @@ func TestWriterRejectsUnusableCacheEntries(t *testing.T) {
 	}
 
 	cases := map[string]struct {
-		through session.Head
+		through ledger.Head
 		state   jsonstable.Value
 	}{
-		"ahead of the log":  {through: session.Head{Next: 9}},
-		"empty head":        {through: session.Head{}},
-		"undecodable state": {through: session.Head{Next: 2}, state: garbage},
+		"ahead of the log":  {through: ledger.Head{Next: 9}},
+		"empty head":        {through: ledger.Head{}},
+		"undecodable state": {through: ledger.Head{Next: 2}, state: garbage},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -295,7 +294,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
 	// A policy that declines alpha and defers for beta.
-	policy := extension.CacheEvery(1).AtClose().Exclude(alphaID)
+	policy := ledger.CacheEvery(1).AtClose().Exclude(alphaID)
 
 	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: policy})
 	f.commit(t, w, "c1", "n1")
@@ -315,7 +314,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 	}
 
 	// An entry alpha's owner wrote is still used, policy or not.
-	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2}); err != nil {
+	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), ledger.Head{Next: 2}); err != nil {
 		t.Fatal(err)
 	}
 	f.counter.reset()
@@ -333,7 +332,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
-	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(3)})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(3)})
 	// The first two commits are inside the interval: nothing is written yet.
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
@@ -358,7 +357,7 @@ func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 		t.Fatalf("entry after Close: through=%d err=%v, want 3 (the interval governs Close too)", through.Next, err)
 	}
 	f.counter.reset()
-	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(3)})
+	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(3)})
 	if n := f.counter.get(alphaID); n != 1 {
 		t.Errorf("alpha folded %d events on reopen, want 1 (the commit past the entry)", n)
 	}
@@ -400,30 +399,30 @@ func TestAuthoritativeEntryMustVerify(t *testing.T) {
 	ctx := context.Background()
 	counter := newApplyCounter()
 	typ := tpfx("k") + "row"
-	mk := func(id extension.ProjectionID, authoritative bool) extension.ProjectionDefinition {
-		return extension.ProjectionDefinition{
-			ID: id, Version: 1, Consumes: []session.EventType{typ}, Authoritative: authoritative,
+	mk := func(id ledger.ProjectionID, authoritative bool) ledger.ProjectionDefinition {
+		return ledger.ProjectionDefinition{
+			ID: id, Version: 1, Consumes: []ledger.EventType{typ}, Authoritative: authoritative,
 			Initial: func() (any, error) { return noteState{}, nil },
-			Apply: func(state any, e extension.DecodedEvent) (any, error) {
+			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
 				counter.inc(id)
 				s := state.(noteState)
 				s.Notes = append(append([]string(nil), s.Notes...), e.Value.(notePayload).Text)
 				return s, nil
 			},
-			StateCodec: extension.JSONStateCodec[noteState]{},
+			StateCodec: ledger.JSONStateCodec[noteState]{},
 		}
 	}
-	registry, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k", Streams: noteStreams(),
-		Events:      []extension.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
-		Projections: []extension.ProjectionDefinition{mk(alphaID, true), mk(betaID, false)}})
+	registry, err := ledger.BuildRegistry(ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "k", Streams: noteStreams(),
+		Events:      []ledger.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[notePayload]{}}}},
+		Projections: []ledger.ProjectionDefinition{mk(alphaID, true), mk(betaID, false)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &cacheFixture{store: filestoretest.Store(t), cache: extension.NewMemoryProjectionCache(), counter: counter, registry: registry}
+	f := &cacheFixture{store: filestoretest.Store(t), cache: session.NewMemoryProjectionCache(), counter: counter, registry: registry}
 	if _, err := f.store.Create(ctx, session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
-	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(1)})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(1)})
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
 	if err := w.Close(ctx); err != nil {
@@ -434,14 +433,14 @@ func TestAuthoritativeEntryMustVerify(t *testing.T) {
 	if err != nil || !ok || through.Next != 2 {
 		t.Fatalf("alpha entry = ok:%v through:%d %v", ok, through.Next, err)
 	}
-	if _, verified := extension.OpenCheckpoint(alphaID, 1, through, sealed); !verified {
+	if _, verified := ledger.OpenCheckpoint(alphaID, 1, through, sealed); !verified {
 		t.Fatal("alpha entry does not verify as a checkpoint of alpha at 2")
 	}
-	if _, verified := extension.OpenCheckpoint(betaID, 1, through, sealed); verified {
+	if _, verified := ledger.OpenCheckpoint(betaID, 1, through, sealed); verified {
 		t.Fatal("alpha's checkpoint verified under beta's identity")
 	}
 	plain, _, _, _ := f.cache.Load(ctx, "s", betaID, 1)
-	if _, verified := extension.OpenCheckpoint(betaID, 1, through, plain); verified {
+	if _, verified := ledger.OpenCheckpoint(betaID, 1, through, plain); verified {
 		t.Fatal("beta's plain entry passed as a checkpoint")
 	}
 	// A forged entry: valid state JSON, right position, no seal. The Writer
@@ -452,7 +451,7 @@ func TestAuthoritativeEntryMustVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	counter.reset()
-	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(1)})
+	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(1)})
 	if n := counter.get(alphaID); n != 2 {
 		t.Fatalf("alpha folded %d events on reopen, want 2 (forged checkpoint refused)", n)
 	}

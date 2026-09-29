@@ -12,17 +12,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-	"time"
-
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
+	"sync"
+	"time"
 )
 
 // Turns is the Turn protocol the runtime routes inputs into and reads status
@@ -40,7 +38,7 @@ type Config struct {
 	Driver      *driver.Driver
 	Turns       Turns
 	Chatlog     *chatlog.Commands
-	Projections extension.ProjectionReader
+	Projections session.ProjectionReader
 	// Preset is the decision identity every Turn the runtime starts runs
 	// under; required.
 	Preset preset.PresetRef
@@ -93,7 +91,7 @@ type SessionRuntime struct {
 	driver *driver.Driver
 	turns  Turns
 	chat   *chatlog.Commands
-	proj   extension.ProjectionReader
+	proj   session.ProjectionReader
 	sid    session.SessionID
 	preset preset.PresetRef
 	newID  func() turn.TurnID

@@ -11,10 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	stdhttp "net/http"
-	"sync"
-	"time"
-
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/executor/http"
@@ -30,6 +26,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/inbox"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -39,8 +36,10 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	stdhttp "net/http"
+	"sync"
+	"time"
 )
 
 // ExecutorMode selects the effect implementation built by Build.
@@ -118,13 +117,13 @@ type Config struct {
 	TargetResolver loop.TargetResolver
 	// Modules are application modules registered after the first-party four
 	// (EXT-APP).
-	Modules []extension.ModuleDescriptor
+	Modules []ledger.ModuleDescriptor
 	// Observers are notified of every applied group besides the event stream.
 	Observers []writer.CommitObserver
 	Clock     func() time.Time
 	// Cache and CacheEvery configure the projection cache (APP-MEM-2).
-	Cache      extension.ProjectionCache
-	CacheEvery session.CommitSeq
+	Cache      session.ProjectionCache
+	CacheEvery ledger.CommitSeq
 	// Warn receives failures of background work; nil discards them.
 	Warn func(error)
 	// Spawn enables the subagent tool (SPN); nil leaves it unavailable.
@@ -321,7 +320,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		if c.Workspaces.Store == nil {
 			return nil, errors.New("app: Workspaces requires a workspace Store")
 		}
-		c.Modules = append([]extension.ModuleDescriptor{workspace.Module}, c.Modules...)
+		c.Modules = append([]ledger.ModuleDescriptor{workspace.Module}, c.Modules...)
 		if c.TargetResolver == nil {
 			resolver = &workspace.Resolver{}
 			c.TargetResolver = resolver
@@ -422,7 +421,7 @@ func (s busSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic
 // are dropped.
 type forwardingObserver struct{ bus **observe.Bus }
 
-func (o forwardingObserver) Committed(ctx context.Context, sid session.SessionID, c session.Commit) {
+func (o forwardingObserver) Committed(ctx context.Context, sid session.SessionID, c ledger.Commit) {
 	if b := *o.bus; b != nil {
 		b.Committed(ctx, sid, c)
 	}
@@ -468,7 +467,7 @@ func (app *Application) Events(ctx context.Context, sid session.SessionID) <-cha
 // EventsFrom is the catch-up form of Events: the Session's committed events
 // from CommitSeq from, then the live stream. A client that keeps the last
 // Position it handled resumes here after a disconnect without a gap.
-func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, from session.CommitSeq) (<-chan Event, error) {
+func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, from ledger.CommitSeq) (<-chan Event, error) {
 	return app.bus.SubscribeFrom(ctx, sid, from)
 }
 

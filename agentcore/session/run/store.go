@@ -4,8 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -13,9 +12,9 @@ import (
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/run/wire"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"time"
 )
 
 // SnapshotPolicy decides whether the machine projection is written to the
@@ -33,7 +32,7 @@ func DefaultSnapshotPolicy(_, after *run.MachineState) bool {
 
 // Config assembles a SessionRunStore (agent-store.md 10).
 type Config struct {
-	Registry *extension.Registry
+	Registry *ledger.Registry
 	// Store is the read side: Record folds from it (through Cache) without
 	// taking ownership; commands write through the Writer a port is bound
 	// to (OWN-HDL-2).
@@ -46,7 +45,7 @@ type Config struct {
 	// DefaultSnapshotPolicy.
 	Snapshot SnapshotPolicy
 	// Cache receives the machine projection per SnapshotPolicy; nil disables.
-	Cache extension.ProjectionCache
+	Cache session.ProjectionCache
 	Now   func() time.Time
 }
 
@@ -57,7 +56,7 @@ type Config struct {
 // facts as twilight/run/ events.
 type SessionRunStore struct {
 	cfg    Config
-	reader extension.ProjectionReader
+	reader session.ProjectionReader
 }
 
 func NewSessionRunStore(cfg Config) (*SessionRunStore, error) {
@@ -73,14 +72,14 @@ func NewSessionRunStore(cfg Config) (*SessionRunStore, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &SessionRunStore{cfg: cfg, reader: extension.NewProjectionReader(cfg.Store, cfg.Registry, cfg.Cache)}, nil
+	return &SessionRunStore{cfg: cfg, reader: session.NewProjectionReader(cfg.Store, cfg.Registry, cfg.Cache)}, nil
 }
 
 func (s *SessionRunStore) nowMilli() int64 { return s.cfg.Now().UnixMilli() }
 
 // ownershipError maps the Writer's ownership loss onto the Run sentinel.
 func ownershipError(err error) error {
-	if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost) {
+	if errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost) {
 		return fmt.Errorf("%w: %w", store.ErrOwnershipLost, err)
 	}
 	return err
@@ -134,7 +133,7 @@ func (b *bound) Load(ctx context.Context, runID run.RunID) (store.Snapshot, erro
 	if snap, ok := m.snapshot(runID); ok {
 		return snap, nil
 	}
-	record, err := b.s.record(ctx, sid, runID, nil, session.Head{})
+	record, err := b.s.record(ctx, sid, runID, nil, ledger.Head{})
 	if err != nil {
 		return store.Snapshot{}, err
 	}
@@ -151,7 +150,7 @@ func (b *bound) Commit(ctx context.Context, req store.CommitRequest) (store.Comm
 	if err != nil {
 		return store.CommitResult{}, err
 	}
-	res, err := unit.Commit(ctx, b.w, b.s.nowMilli(), unit.Work{CommitID: session.CommitID(req.Command.ID), Parts: []unit.Part{cmd}})
+	res, err := unit.Commit(ctx, b.w, b.s.nowMilli(), unit.Work{CommitID: ledger.CommitID(req.Command.ID), Parts: []unit.Part{cmd}})
 	if err != nil {
 		return store.CommitResult{}, ownershipError(err)
 	}
@@ -287,7 +286,7 @@ func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.Commi
 }
 
 // factsOf decodes the Run facts of runID a stored commit holds.
-func (s *SessionRunStore) factsOf(c session.Commit, runID run.RunID) ([]run.Fact, error) {
+func (s *SessionRunStore) factsOf(c ledger.Commit, runID run.RunID) ([]run.Fact, error) {
 	var out []run.Fact
 	for _, b := range c.Batches {
 		if b.Domain != Stream(runID) {
@@ -351,7 +350,7 @@ func (s *SessionRunStore) afterCommit(ctx context.Context, w writer.Writer, befo
 	if err != nil {
 		return
 	}
-	_ = extension.SaveProjection(ctx, s.cfg.Cache, s.cfg.Registry, sid, MachineProjectionID, MachineProjection.Version, state, head)
+	_ = session.SaveProjection(ctx, s.cfg.Cache, s.cfg.Registry, sid, MachineProjectionID, MachineProjection.Version, state, head)
 }
 
 // --- CreateRun part ------------------------------------------------------------------
@@ -392,9 +391,9 @@ func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]wr
 // Record is one verified read of a Run: every twilight/run/ event of the
 // RunID in stream order, folded and compared with the projection.
 type Record struct {
-	Created  session.StreamSeq
+	Created  ledger.StreamSeq
 	Snapshot store.Snapshot
-	Events   []session.Event
+	Events   []ledger.Event
 	Facts    []run.Fact
 }
 
@@ -424,7 +423,7 @@ func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, run
 // is compared with the projection state, but only if both were read at the
 // same head: the two reads are separate round trips, and a commit landing
 // between them makes both correct at different points, not divergent.
-func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, runID run.RunID, expect *run.MachineState, expectHead session.Head) (Record, error) {
+func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, runID run.RunID, expect *run.MachineState, expectHead ledger.Head) (Record, error) {
 	page, err := s.cfg.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: sid, Domain: Stream(runID), Lineage: streamDefinition.Lineage})
 	if err != nil {
 		return Record{}, err
@@ -448,7 +447,7 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 			continue
 		}
 		if len(record.Events) == 0 {
-			record.Created = session.StreamSeq(i)
+			record.Created = ledger.StreamSeq(i)
 		}
 		record.Events = append(record.Events, *e)
 		record.Facts = append(record.Facts, ev.Fact)

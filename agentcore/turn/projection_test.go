@@ -1,12 +1,11 @@
 package turn
 
 import (
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/run"
+	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"strings"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/session/extension"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
 // TRN-PRJ-1: run_ended settles the Turn whose started named the Run. A
@@ -39,7 +38,7 @@ func TestSurfaceSettlesFromRunEnded(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i, ev := range tc.events {
-				if state, err = applySurface(state, extension.DecodedEvent{Value: ev}); err != nil {
+				if state, err = applySurface(state, ledger.DecodedEvent{Value: ev}); err != nil {
 					if i != len(tc.events)-1 {
 						t.Fatalf("event %d: %v", i, err)
 					}

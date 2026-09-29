@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -22,7 +23,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
@@ -43,7 +43,7 @@ const (
 func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore, writer.Writer) {
 	t.Helper()
 	store := filestoretest.Store(t)
-	registry, err := extension.BuildRegistry(runmod.Module)
+	registry, err := ledger.BuildRegistry(runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

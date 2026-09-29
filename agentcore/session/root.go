@@ -1,6 +1,7 @@
 package session
 
 import (
+	"github.com/felinics/twilight/agentcore/ledger"
 	"time"
 )
 
@@ -12,10 +13,10 @@ import (
 // (SES-FRK-4): a fork gets a new child segment, so writers of different
 // Sessions never append to one node.
 type SessionRecord struct {
-	ID                 SessionID `json:"sessionId"`
-	Tip                SegmentID `json:"tip"`
-	CreatedAtUnixMilli int64     `json:"createdAtUnixMilli"`
-	Path               Path      `json:"path,omitempty"`
+	ID                 SessionID        `json:"sessionId"`
+	Tip                ledger.SegmentID `json:"tip"`
+	CreatedAtUnixMilli int64            `json:"createdAtUnixMilli"`
+	Path               Path             `json:"path,omitempty"`
 }
 
 // Lease is writer ownership of one Session root (SES-OWN-1/2): the adapter
@@ -24,7 +25,7 @@ type SessionRecord struct {
 // Open may supersede it without Takeover.
 type Lease struct {
 	Session        SessionID
-	Epoch          Epoch
+	Epoch          ledger.Epoch
 	Owner          string
 	UntilUnixMilli int64
 }

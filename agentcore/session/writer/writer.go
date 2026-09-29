@@ -11,17 +11,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
+	"sync"
 )
 
 // TypedEvent is a module value plus its event metadata. The payload is
 // encoded and validated against the Registry at commit time.
 type TypedEvent struct {
-	Type                session.EventType
+	Type                ledger.EventType
 	RecordedAtUnixMilli int64
 	Value               any
 }
@@ -30,36 +29,36 @@ type TypedEvent struct {
 // logical stream inside one commit. A commit carries at most one batch per
 // stream and may span several streams.
 type TypedBatch struct {
-	Domain session.Domain
+	Domain ledger.Domain
 	Events []TypedEvent
 }
 
 // SemanticGroup is what a CommitFn decides: the commit identity and the
 // per-stream batches it carries.
 type SemanticGroup struct {
-	CommitID session.CommitID
+	CommitID ledger.CommitID
 	Batches  []TypedBatch
 }
 
 // View is what a CommitFn may read: head, idempotency index and projections
 // folded to the current head (EXT-WRT-1).
 type View interface {
-	Head() session.Head
-	Epoch() session.Epoch
+	Head() ledger.Head
+	Epoch() ledger.Epoch
 	// Header is the tip segment's header: the segment this Writer appends to.
-	Header() session.SegmentHeader
+	Header() ledger.SegmentHeader
 	// Committed reports whether a commit is already in the ledger, from an
 	// index the kernel keeps. An index read failure returns the error; it is
 	// not reported as "not committed".
-	Committed(session.CommitID) (bool, error)
+	Committed(ledger.CommitID) (bool, error)
 	// LookupCommit returns the stored commit, reading it when the kernel
 	// handle does not hold it.
-	LookupCommit(session.CommitID) (session.Commit, bool, error)
+	LookupCommit(ledger.CommitID) (ledger.Commit, bool, error)
 	// StreamHead reports whether this Session has written to a logical
 	// stream and the StreamSeq its next event takes (SES-REP-3).
-	StreamHead(session.Domain) (session.StreamSeq, bool)
+	StreamHead(ledger.Domain) (ledger.StreamSeq, bool)
 	// Projection returns a detached state that the caller owns.
-	Projection(extension.ProjectionID, extension.ProjectionVersion) (any, error)
+	Projection(ledger.ProjectionID, ledger.ProjectionVersion) (any, error)
 }
 
 // CommitFn decides the commit to write; nil means write nothing.
@@ -81,7 +80,7 @@ const (
 // stored commit for applied and already_applied, zero otherwise.
 type CommitResult struct {
 	Outcome CommitOutcome
-	Commit  session.Commit
+	Commit  ledger.Commit
 	Claim   *artifact.RetentionClaim
 	Detail  string
 }
@@ -89,10 +88,10 @@ type CommitResult struct {
 // Writer is the single in-process write entry of one Session (EXT-SCP-1).
 type Writer interface {
 	SessionID() session.SessionID
-	Epoch() session.Epoch
-	Header() session.SegmentHeader
+	Epoch() ledger.Epoch
+	Header() ledger.SegmentHeader
 	Commit(context.Context, CommitFn) (CommitResult, error)
-	Projections() extension.ProjectionReader
+	Projections() session.ProjectionReader
 	// OwnerExists reports whether the owner names a commit of this ledger.
 	OwnerExists(context.Context, artifact.ClaimOwner) (bool, error)
 	Close(context.Context) error
@@ -110,11 +109,11 @@ type Writers interface {
 type WritersConfig struct {
 	// Cache holds folded projection states, so a reopening Writer starts from
 	// one instead of refolding the whole log (EXT-PRJ-3).
-	Cache extension.ProjectionCache
+	Cache session.ProjectionCache
 	// CachePolicy decides which projections the Writer refreshes and when; nil
-	// means extension.CacheEvery(extension.DefaultCacheEvery). It never affects reading: an entry
+	// means ledger.CacheEvery(ledger.DefaultCacheEvery). It never affects reading: an entry
 	// the cache already holds is used whoever wrote it.
-	CachePolicy extension.CachePolicy
+	CachePolicy ledger.CachePolicy
 	// Observers are notified of every applied commit (EXT-WRT-7).
 	Observers []CommitObserver
 }
@@ -125,7 +124,7 @@ type sessionWriter struct {
 	mu       sync.Mutex
 	kernel   session.Handle
 	store    session.Store
-	registry *extension.Registry
+	registry *ledger.Registry
 	lost     error
 
 	projections *projector
@@ -140,11 +139,11 @@ type sessionWriter struct {
 // every registered projection from the whole log (EXT-WRT-1). When a ledger
 // is configured it reconciles this Session's claims before returning
 // (ART-RET-3): no Commit can be in flight yet.
-func OpenWriter(ctx context.Context, store session.Store, registry *extension.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error) {
+func OpenWriter(ctx context.Context, store session.Store, registry *ledger.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error) {
 	return openWriter(ctx, store, registry, admission, sid, opts, WritersConfig{})
 }
 
-func openWriter(ctx context.Context, store session.Store, registry *extension.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions, cfg WritersConfig) (Writer, error) {
+func openWriter(ctx context.Context, store session.Store, registry *ledger.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions, cfg WritersConfig) (Writer, error) {
 	if store == nil || registry == nil {
 		return nil, errors.New("writer: nil store or registry")
 	}
@@ -163,10 +162,10 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	// The log is read from the earliest cache entry any projection resumes
 	// from (EXT-PRJ-5): judging an entry costs one commit read, and a clean
 	// Close leaves every entry at the head.
-	at := func(seq session.CommitSeq) (session.Commit, bool) {
+	at := func(seq ledger.CommitSeq) (ledger.Commit, bool) {
 		one, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: seq, Limit: 1})
 		if err != nil || len(one.Commits) != 1 {
-			return session.Commit{}, false
+			return ledger.Commit{}, false
 		}
 		return one.Commits[0], true
 	}
@@ -198,11 +197,11 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 }
 
 func (w *sessionWriter) SessionID() session.SessionID { return w.kernel.SessionID() }
-func (w *sessionWriter) Epoch() session.Epoch         { return w.kernel.Epoch() }
+func (w *sessionWriter) Epoch() ledger.Epoch          { return w.kernel.Epoch() }
 
 // Header is the tip segment's creation record, read from the kernel handle.
 // Inside a CommitFn the View answers the same value.
-func (w *sessionWriter) Header() session.SegmentHeader { return w.kernel.Header() }
+func (w *sessionWriter) Header() ledger.SegmentHeader { return w.kernel.Header() }
 
 func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner) (bool, error) {
 	if owner.Kind != ClaimOwnerKind || owner.Authority != string(w.kernel.Header().ID) {
@@ -213,12 +212,12 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 	if w.lost != nil {
 		return false, w.lost
 	}
-	return w.kernel.Committed(session.CommitID(owner.Identity))
+	return w.kernel.Committed(ledger.CommitID(owner.Identity))
 }
 
 // errWriterClosed is the failure a closed Writer keeps returning; Writers
 // recognizes it so a forgotten Writer is not closed a second time.
-var errWriterClosed = &extension.Error{Code: extension.ErrInvalid, Detail: "writer closed"}
+var errWriterClosed = &ledger.Error{Code: ledger.CodeInvalid, Detail: "writer closed"}
 
 // onLeaseLost is the heartbeat's report that Renew was fenced: the Writer
 // is lost exactly as it would be by a fenced Append (EXT-WRT-4).
@@ -226,7 +225,7 @@ func (w *sessionWriter) onLeaseLost(err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.lost == nil {
-		w.lost = &extension.Error{Code: extension.ErrOwnershipLost, Detail: err.Error()}
+		w.lost = &ledger.Error{Code: ledger.CodeOwnershipLost, Detail: err.Error()}
 	}
 }
 
@@ -238,7 +237,7 @@ func (w *sessionWriter) Close(ctx context.Context) error {
 	var writes []cacheWrite
 	// An entry at an inherited boundary is never started from (EXT-PRJ-3).
 	head := w.kernel.Head()
-	if extension.OwnBoundary(w.kernel.Header(), head) {
+	if ledger.OwnBoundary(w.kernel.Header(), head) {
 		writes = w.projections.planRefresh(head, true)
 	}
 	w.lost = errWriterClosed
@@ -254,27 +253,27 @@ type view struct{ w *sessionWriter }
 
 // Head and Header come from the kernel handle. The view does not lock the
 // Writer: Commit already holds that lock, and locking it again would deadlock.
-func (v view) Head() session.Head            { return v.w.kernel.Head() }
-func (v view) Epoch() session.Epoch          { return v.w.kernel.Epoch() }
-func (v view) Header() session.SegmentHeader { return v.w.kernel.Header() }
+func (v view) Head() ledger.Head            { return v.w.kernel.Head() }
+func (v view) Epoch() ledger.Epoch          { return v.w.kernel.Epoch() }
+func (v view) Header() ledger.SegmentHeader { return v.w.kernel.Header() }
 
 // Committed and LookupCommit are answered by the kernel, which holds the
 // CommitID index Append needs (SES-REP-3/4).
-func (v view) Committed(id session.CommitID) (bool, error) { return v.w.kernel.Committed(id) }
+func (v view) Committed(id ledger.CommitID) (bool, error) { return v.w.kernel.Committed(id) }
 
-func (v view) LookupCommit(id session.CommitID) (session.Commit, bool, error) {
+func (v view) LookupCommit(id ledger.CommitID) (ledger.Commit, bool, error) {
 	return v.w.kernel.LookupCommit(id)
 }
 
-func (v view) StreamHead(stream session.Domain) (session.StreamSeq, bool) {
+func (v view) StreamHead(stream ledger.Domain) (ledger.StreamSeq, bool) {
 	return v.w.kernel.StreamHead(stream)
 }
 
-func (v view) Projection(id extension.ProjectionID, ver extension.ProjectionVersion) (any, error) {
+func (v view) Projection(id ledger.ProjectionID, ver ledger.ProjectionVersion) (any, error) {
 	return v.w.projections.detached(id, ver)
 }
 
-func (w *sessionWriter) Projections() extension.ProjectionReader { return memoryReader{w} }
+func (w *sessionWriter) Projections() session.ProjectionReader { return memoryReader{w} }
 
 // --- commit --------------------------------------------------------------------------
 
@@ -289,7 +288,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	}
 	w.mu.Lock()
 	var writes []cacheWrite
-	var applied *session.Commit
+	var applied *ledger.Commit
 	defer func() {
 		// notifyMu is taken before mu is released, so notifications keep the
 		// commit order while a later Commit already runs.
@@ -321,7 +320,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if invalid != "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: invalid}, nil
 	}
-	if err := (session.Proposal{CommitID: group.CommitID, Batches: batches}).Validate(); err != nil {
+	if err := (ledger.Proposal{CommitID: group.CommitID, Batches: batches}).Validate(); err != nil {
 		return CommitResult{Outcome: CommitInvalid, Detail: err.Error()}, nil
 	}
 	for _, ref := range refs {
@@ -341,7 +340,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	// Projections must accept the commit before anything is persisted. The
 	// provisional commit is what a reader folds: the kernel assigns only Seq
 	// inside Append.
-	provisional := session.Proposal{CommitID: group.CommitID, Batches: batches}.At(w.kernel.Head().Next)
+	provisional := ledger.Proposal{CommitID: group.CommitID, Batches: batches}.At(w.kernel.Head().Next)
 	// Only an authoritative projection's fold refuses the commit; a derived
 	// one that cannot fold is marked unhealthy once the commit lands.
 	next, err := w.projections.fold(provisional)
@@ -355,13 +354,13 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if invalid != "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: invalid}, nil
 	}
-	stored, err := w.kernel.Append(ctx, session.Proposal{CommitID: group.CommitID, Batches: batches})
+	stored, err := w.kernel.Append(ctx, ledger.Proposal{CommitID: group.CommitID, Batches: batches})
 	if err != nil {
 		if claim != nil && appendOutcomeKnown(err) {
 			w.admission.release(ctx, claim) // best effort; OpenWriter reconciles any orphan
 		}
 		if session.IsCode(err, session.ErrOwnershipLost) {
-			w.lost = &extension.Error{Code: extension.ErrOwnershipLost, Detail: err.Error()}
+			w.lost = &ledger.Error{Code: ledger.CodeOwnershipLost, Detail: err.Error()}
 			return CommitResult{}, w.lost
 		}
 		if session.IsCode(err, session.ErrConflict) {
@@ -374,7 +373,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		// commit. Anything else leaves the log's content unknown to this
 		// Writer: fail closed; a replay of the same commit is answered by
 		// the kernel's index (EXT-WRT-4).
-		w.lost = &extension.Error{Code: extension.ErrUnknownOutcome, Detail: err.Error()}
+		w.lost = &ledger.Error{Code: ledger.CodeUnknownOutcome, Detail: err.Error()}
 		return CommitResult{}, w.lost
 	}
 	w.projections.advance(next)

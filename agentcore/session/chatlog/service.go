@@ -4,14 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
-
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"strings"
+	"time"
 )
 
 // Commands are the chatlog's canonical commands -- submitting and
@@ -46,7 +46,7 @@ func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, 
 		return run.AgentInput{}, err
 	}
 	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
-		return &writer.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)),
+		return &writer.SemanticGroup{CommitID: ledger.CommitID("input-submitted/" + string(id)),
 			Batches: []writer.TypedBatch{{Domain: Stream, Events: []writer.TypedEvent{{
 				Type: TypeInputSubmitted, RecordedAtUnixMilli: s.Now().UnixMilli(),
 				Value: InputSubmittedPayload{InputID: InputID(id), Content: content, SubmittedAtUnixMilli: s.Now().UnixMilli()},
@@ -80,7 +80,7 @@ func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID
 		if !ok || view.Status != InputSubmitted {
 			return nil, fmt.Errorf("%w: input %s is not a submitted input", ErrNotSubmitted, id)
 		}
-		return &writer.SemanticGroup{CommitID: session.CommitID("input-withdrawn/" + string(id)),
+		return &writer.SemanticGroup{CommitID: ledger.CommitID("input-withdrawn/" + string(id)),
 			Batches: []writer.TypedBatch{{Domain: Stream, Events: []writer.TypedEvent{{
 				Type: TypeInputWithdrawn, RecordedAtUnixMilli: s.Now().UnixMilli(),
 				Value: InputWithdrawnPayload{InputID: InputID(id), Reason: reason},
@@ -154,7 +154,7 @@ func (s *Commands) Compact(ctx context.Context, w writer.Writer, summaryText str
 			return nil, err
 		}
 		now := s.Now().UnixMilli()
-		return &writer.SemanticGroup{CommitID: session.CommitID("compaction/" + string(compactionID)),
+		return &writer.SemanticGroup{CommitID: ledger.CommitID("compaction/" + string(compactionID)),
 			Batches: []writer.TypedBatch{{Domain: Stream, Events: []writer.TypedEvent{
 				{Type: TypeSummary, RecordedAtUnixMilli: now, Value: SummaryPayload{Summary: summary}},
 				{Type: TypeCompactionCreated, RecordedAtUnixMilli: now, Value: payload},

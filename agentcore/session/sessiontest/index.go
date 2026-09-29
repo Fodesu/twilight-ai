@@ -2,9 +2,9 @@ package sessiontest
 
 import (
 	"context"
-	"testing"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
+	"testing"
 )
 
 // IndexCutter is the optional adapter capability that cuts the tip segment's
@@ -55,7 +55,7 @@ func testIndex(t *testing.T, f Fixture) {
 			if got := w.Head(); got != want {
 				t.Fatalf("head = %+v, want %+v", got, want)
 			}
-			for _, id := range []session.CommitID{"c1", "c2", "c3"} {
+			for _, id := range []ledger.CommitID{"c1", "c2", "c3"} {
 				if !committed(t, w, id) {
 					t.Fatalf("%s not committed after index cut", id)
 				}
@@ -72,7 +72,7 @@ func testIndex(t *testing.T, f Fixture) {
 			if c, ok, err := w.LookupCommit("c3"); err != nil || !ok || c.Seq != c3.Seq {
 				t.Fatalf("lookup c3 = %+v, %v, %v", c, ok, err)
 			}
-			if _, err := w.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.EventBatch{batch(chatStream(), "twilight/x/z", `{}`)}}); !session.IsCode(err, session.ErrConflict) {
+			if _, err := w.Append(ctx, ledger.Proposal{CommitID: "c2", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/z", `{}`)}}); !session.IsCode(err, session.ErrConflict) {
 				t.Fatalf("duplicate CommitID after index cut = %v, want conflict", err)
 			}
 			page, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})

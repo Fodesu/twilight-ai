@@ -1,13 +1,11 @@
 package chatlog_test
 
 import (
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session/chatlog"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 func freezeChatlog(t *testing.T, name, got, want string) {
@@ -50,7 +48,7 @@ func TestChatlogWireGolden(t *testing.T) {
 
 	cp := chatlog.CompactionCreatedPayload{
 		CompactionID:      "ckpt-1",
-		CoveredThrough:    session.Position{Commit: 7},
+		CoveredThrough:    ledger.Position{Commit: 7},
 		BaseContextDigest: base,
 		SummaryID:         "sum-1",
 		SummaryDigest:     "sha256:cc",
@@ -62,7 +60,7 @@ func TestChatlogWireGolden(t *testing.T) {
 	}
 	freezeChatlog(t, "compaction digest", string(cpd), "sha256:bbfcad9e58bc7a287bd5519b5ecde07dc2926ba9f88363bf15bc3b6ec10b630f")
 
-	reg, err := extension.BuildRegistry(runmod.Module, chatlog.Module)
+	reg, err := ledger.BuildRegistry(runmod.Module, chatlog.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

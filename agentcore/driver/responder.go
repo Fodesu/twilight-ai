@@ -4,16 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
+	"sync"
 )
 
 // Responder answers an ExternalResponse wait on the system's behalf (DRV-4):
@@ -189,7 +188,7 @@ func (d *Driver) respond(ctx context.Context, w writer.Writer, a *answer) (bool,
 // lostOwnership reports a commit fenced by a new owner, as the Writer
 // (EXT-WRT-4) or the kernel (SES-OWN-2) reports it.
 func lostOwnership(err error) bool {
-	return errors.Is(err, store.ErrOwnershipLost) || errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost)
+	return errors.Is(err, store.ErrOwnershipLost) || errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost)
 }
 
 // settleResponse commits the answer: SubmitToolResponse with the payload,

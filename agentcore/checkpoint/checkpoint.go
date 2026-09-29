@@ -8,7 +8,9 @@
 // rule gives it for free.
 package checkpoint
 
-import "context"
+import (
+	"context"
+)
 
 // Store persists checkpoints by consumer and ledger. consumer names the
 // reader (a projection, a relay, an observer); ledger names what it reads

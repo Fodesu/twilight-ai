@@ -2,11 +2,9 @@ package workspace
 
 import (
 	"context"
-
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // Resolver is the application's loop.TargetResolver (APP-TGT-1, RUN-LOP-9):
@@ -15,7 +13,7 @@ import (
 // binding yields no target, and the workspace backend then refuses the call
 // as a Known failure.
 type Resolver struct {
-	Projections extension.ProjectionReader
+	Projections session.ProjectionReader
 }
 
 func (r *Resolver) ResolveTarget(ctx context.Context, ec loop.EffectContext) (*run.TargetRef, error) {

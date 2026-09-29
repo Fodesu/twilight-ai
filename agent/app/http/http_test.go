@@ -2,13 +2,6 @@ package http_test
 
 import (
 	"context"
-	"net/http/httptest"
-	"path/filepath"
-	"strings"
-	"sync"
-	"testing"
-	"time"
-
 	"github.com/felinics/twilight/agent/app"
 	ownerhttp "github.com/felinics/twilight/agent/app/http"
 	"github.com/felinics/twilight/agent/environment/local"
@@ -18,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
@@ -25,6 +19,12 @@ import (
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
 )
 
 // echoModel answers every request with the text of its last user message.
@@ -112,7 +112,7 @@ func TestCommandFaceDrivesASession(t *testing.T) {
 	// Events from the start, collected in the background.
 	var (
 		mu    sync.Mutex
-		types []session.EventType
+		types []ledger.EventType
 	)
 	streamCtx, stopStream := context.WithCancel(ctx)
 	defer stopStream()

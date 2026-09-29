@@ -2,33 +2,32 @@ package app_test
 
 import (
 	"context"
-	"sync"
-	"testing"
-
 	"github.com/felinics/twilight/agent/app"
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
+	"sync"
+	"testing"
 )
 
 // countingCache wraps the in-memory cache to count writes, so a test can see
 // whether the Host's interval reached the Writer (APP-MEM-2, EXT-PRJ-7).
 type countingCache struct {
-	inner *extension.MemoryProjectionCache
+	inner *session.MemoryProjectionCache
 	mu    sync.Mutex
 	saves int
 }
 
 func newCountingCache() *countingCache {
-	return &countingCache{inner: extension.NewMemoryProjectionCache()}
+	return &countingCache{inner: session.NewMemoryProjectionCache()}
 }
 
-func (c *countingCache) Load(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (jsonstable.Value, session.Head, bool, error) {
+func (c *countingCache) Load(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion) (jsonstable.Value, ledger.Head, bool, error) {
 	return c.inner.Load(ctx, sid, id, v)
 }
 
-func (c *countingCache) Save(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion, state jsonstable.Value, through session.Head) error {
+func (c *countingCache) Save(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion, state jsonstable.Value, through ledger.Head) error {
 	c.mu.Lock()
 	c.saves++
 	c.mu.Unlock()
@@ -47,7 +46,7 @@ func (c *countingCache) count() int {
 func TestHostCacheEveryIsConfigurable(t *testing.T) {
 	ctx := context.Background()
 	for name, tc := range map[string]struct {
-		every      session.CommitSeq
+		every      ledger.CommitSeq
 		wantBefore bool
 	}{
 		"an interval of one commit writes after the first commit": {every: 1, wantBefore: true},
@@ -107,7 +106,7 @@ func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	if cache.count() == 0 {
 		t.Fatal("no projection was cached at all, so the check below proves nothing")
 	}
-	machine := extension.ProjectionID("twilight/run/machine")
+	machine := ledger.ProjectionID("twilight/run/machine")
 	if _, _, ok, err := cache.Load(ctx, sid, machine, 1); err != nil || ok {
 		t.Errorf("machine projection entry: ok=%v err=%v, want absent", ok, err)
 	}

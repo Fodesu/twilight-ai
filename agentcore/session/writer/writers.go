@@ -3,15 +3,14 @@ package writer
 import (
 	"context"
 	"errors"
-	"sync"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
+	"sync"
 )
 
 type writerSet struct {
 	store     session.Store
-	registry  *extension.Registry
+	registry  *ledger.Registry
 	admission Admission
 	opts      session.OpenOptions
 	cfg       WritersConfig
@@ -21,7 +20,7 @@ type writerSet struct {
 
 // NewWriters returns a Writers that opens each Session once and hands out the
 // same Writer afterwards (EXT-WRT-6).
-func NewWriters(store session.Store, registry *extension.Registry, admission Admission, opts session.OpenOptions, cfg WritersConfig) Writers {
+func NewWriters(store session.Store, registry *ledger.Registry, admission Admission, opts session.OpenOptions, cfg WritersConfig) Writers {
 	return &writerSet{store: store, registry: registry, admission: admission, opts: opts, cfg: cfg, open: make(map[session.SessionID]Writer)}
 }
 
@@ -38,7 +37,7 @@ func (ws *writerSet) Writer(ctx context.Context, sid session.SessionID) (Writer,
 		// host's decision (CloseWriter forgets the failed Writer first). Every
 		// other failure is: a fresh Writer rebuilds from the log and a replay
 		// of the same CommitID is answered by the kernel's index (EXT-WRT-4).
-		if errors.Is(lost, &extension.Error{Code: extension.ErrOwnershipLost}) {
+		if errors.Is(lost, &ledger.Error{Code: ledger.CodeOwnershipLost}) {
 			return nil, lost
 		}
 		if !errors.Is(lost, errWriterClosed) {

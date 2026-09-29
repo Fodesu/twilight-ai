@@ -2,9 +2,9 @@ package writer
 
 import (
 	"context"
-	"sync"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
+	"sync"
 )
 
 // CommitObserver sees every commit a Writer applies, in commit order, after
@@ -14,7 +14,7 @@ import (
 // section and are best effort: a panic is contained and never reaches the
 // committer.
 type CommitObserver interface {
-	Committed(ctx context.Context, sid session.SessionID, commit session.Commit)
+	Committed(ctx context.Context, sid session.SessionID, commit ledger.Commit)
 }
 
 // observers is the notification stage of the commit pipeline. notifyMu keeps
@@ -31,7 +31,7 @@ func (o *observers) release()  { o.notifyMu.Unlock() }
 
 // notify hands an applied commit to every observer. A panicking observer is
 // contained: observation is derived work and never fails a Commit.
-func (o *observers) notify(ctx context.Context, sid session.SessionID, commit session.Commit) {
+func (o *observers) notify(ctx context.Context, sid session.SessionID, commit ledger.Commit) {
 	for _, ob := range o.list {
 		func() {
 			defer func() { _ = recover() }()

@@ -1,4 +1,4 @@
-package session
+package ledger
 
 import (
 	"strings"
@@ -141,9 +141,6 @@ func TestValidateHeader(t *testing.T) {
 			err := tc.h.Validate()
 			if (err == nil) != tc.ok {
 				t.Fatalf("ValidateHeader = %v, want ok=%v", err, tc.ok)
-			}
-			if err != nil && !IsCode(err, ErrInvalid) {
-				t.Fatalf("ValidateHeader = %v, want code invalid", err)
 			}
 		})
 	}

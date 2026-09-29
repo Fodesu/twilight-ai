@@ -2,19 +2,19 @@ package writer
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"sync"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/session"
 )
 
 // recordingObserver keeps every notification in the order it arrived.
 type recordingObserver struct {
 	mu      sync.Mutex
-	commits []session.Commit
+	commits []ledger.Commit
 }
 
-func (o *recordingObserver) Committed(_ context.Context, _ session.SessionID, commit session.Commit) {
+func (o *recordingObserver) Committed(_ context.Context, _ session.SessionID, commit ledger.Commit) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.commits = append(o.commits, commit)
@@ -22,7 +22,7 @@ func (o *recordingObserver) Committed(_ context.Context, _ session.SessionID, co
 
 type panickingObserver struct{}
 
-func (panickingObserver) Committed(context.Context, session.SessionID, session.Commit) {
+func (panickingObserver) Committed(context.Context, session.SessionID, ledger.Commit) {
 	panic("observer failed")
 }
 

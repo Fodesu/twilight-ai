@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -16,7 +17,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/wire"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -313,7 +313,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 		t.Fatal("one command did not produce exactly one commit")
 	}
 	types := eventTypes(res.Events)
-	want := []session.EventType{runmod.Prefix + "model_step_completed", runmod.Prefix + "tool_step_opened"}
+	want := []ledger.EventType{runmod.Prefix + "model_step_completed", runmod.Prefix + "tool_step_opened"}
 	if strings.Join(asStrings(types), ",") != strings.Join(asStrings(want), ",") {
 		t.Fatalf("commit events = %v, want %v and no conversation copy", types, want)
 	}
@@ -392,7 +392,7 @@ func (h *harness) turnSurface() turn.TurnSurface {
 	return state.(turn.TurnSurface)
 }
 
-func asStrings(types []session.EventType) []string {
+func asStrings(types []ledger.EventType) []string {
 	out := make([]string, len(types))
 	for i, t := range types {
 		out[i] = string(t)
@@ -432,7 +432,7 @@ func testAdmission(t *testing.T, factory Factory) {
 	// Registered binding: the claim is Active once the commit is applied.
 	cmdID := schema.Identity().DeriveInputCommandID("r1", "in-2")
 	h.mustCommit("r1", cmdID, 0, run.NextStep(input("in-2")), attach("b1"))
-	commitID := session.CommitID(cmdID)
+	commitID := ledger.CommitID(cmdID)
 	header, err := h.store.Header(h.ctx, sid)
 	if err != nil {
 		t.Fatal(err)
@@ -534,7 +534,7 @@ func testSettlementReplay(t *testing.T, factory Factory) {
 func testProjection(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
-	cached := func() (session.Head, bool) {
+	cached := func() (ledger.Head, bool) {
 		_, through, ok, err := h.cache.Load(h.ctx, sid, runmod.MachineProjectionID, runmod.MachineProjection.Version)
 		if err != nil {
 			t.Fatal(err)
@@ -560,7 +560,7 @@ func testProjection(t *testing.T, factory Factory) {
 		t.Fatalf("cache after return to Open = %+v ok=%v, want head %+v", through, ok, res.Head)
 	}
 	// The cached state plus tail equals the Writer's state.
-	observer := extension.NewProjectionReader(h.store, h.registry, h.cache)
+	observer := session.NewProjectionReader(h.store, h.registry, h.cache)
 	fromCache, _, err := observer.Load(h.ctx, sid, runmod.MachineProjectionID, runmod.MachineProjection.Version)
 	if err != nil {
 		t.Fatal(err)

@@ -3,20 +3,19 @@ package writer
 import (
 	"context"
 	"errors"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // ForkRequest creates a child Session from a parent's ledger prefix.
 type ForkRequest struct {
 	Parent session.SessionID
 	// At is the last parent commit the child inherits.
-	At                 session.CommitSeq
+	At                 ledger.CommitSeq
 	Child              session.SessionID
 	CreatedAtUnixMilli int64
 	// Ext are the child segment's module extension slots (SES-WIR-5).
-	Ext session.Extensions
+	Ext ledger.Extensions
 }
 
 // Fork creates req.Child from req.Parent's history at commit req.At
@@ -26,12 +25,12 @@ type ForkRequest struct {
 // commits stay while a live path's span still covers them (SES-GC-3).
 // Fork is idempotent: a repeat with the same arguments returns the same
 // header.
-func Fork(ctx context.Context, store session.Store, registry *extension.Registry, req ForkRequest) (session.SegmentHeader, error) {
+func Fork(ctx context.Context, store session.Store, registry *ledger.Registry, req ForkRequest) (ledger.SegmentHeader, error) {
 	if store == nil || registry == nil {
-		return session.SegmentHeader{}, errors.New("writer: nil store or registry")
+		return ledger.SegmentHeader{}, errors.New("writer: nil store or registry")
 	}
 	if req.Parent == "" || req.Child == "" {
-		return session.SegmentHeader{}, errors.New("writer: fork requires parent and child session ids")
+		return ledger.SegmentHeader{}, errors.New("writer: fork requires parent and child session ids")
 	}
 	return store.Create(ctx, session.CreateRequest{SessionID: req.Child,
 		CreatedAtUnixMilli: req.CreatedAtUnixMilli, Fork: &session.ForkOrigin{Session: req.Parent, Seq: req.At}, Ext: req.Ext})

@@ -1,21 +1,12 @@
 package session
 
 import (
-	"math"
+	"github.com/felinics/twilight/agentcore/ledger"
 )
-
-// Limit32 converts a count or sequence to the uint32 a page limit takes,
-// saturating instead of wrapping.
-func Limit32(n uint64) uint32 {
-	if n > math.MaxUint32 {
-		return math.MaxUint32
-	}
-	return uint32(n)
-}
 
 // IndexWithin converts a commit offset to an index into a slice of n items,
 // clamping to n so a caller can slice from it without checking bounds.
-func IndexWithin(off CommitSeq, n int) int {
+func IndexWithin(off ledger.CommitSeq, n int) int {
 	if n <= 0 || uint64(off) >= uint64(n) {
 		return max(n, 0)
 	}

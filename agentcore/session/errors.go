@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/ledger"
 )
 
 // ErrorCode classifies kernel failures (SES 7).
@@ -34,7 +35,7 @@ type Error struct {
 	Code      ErrorCode
 	Operation string
 	SessionID SessionID
-	CommitID  CommitID
+	CommitID  ledger.CommitID
 	Detail    string
 }
 

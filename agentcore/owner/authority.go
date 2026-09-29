@@ -12,9 +12,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-	"time"
-
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
@@ -29,10 +26,11 @@ import (
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
+	"sync"
+	"time"
 )
 
 // Artifacts groups the artifact ports (OWN-PRT-3): the binding index the
@@ -84,15 +82,15 @@ type Ports struct {
 	Observers []writer.CommitObserver
 	// Modules are application modules registered after the first-party four
 	// (EXT-APP).
-	Modules []extension.ModuleDescriptor
+	Modules []ledger.ModuleDescriptor
 	// Clock stamps event times; nil selects time.Now.
 	Clock func() time.Time
 	// Cache stores folded projection states; nil asks the Store for a durable
 	// cache and falls back to an in-memory one (APP-MEM-2).
-	Cache extension.ProjectionCache
+	Cache session.ProjectionCache
 	// CacheEvery bounds how far a cached projection may fall behind the head;
-	// zero takes extension.DefaultCacheEvery (EXT-PRJ-7).
-	CacheEvery session.CommitSeq
+	// zero takes ledger.DefaultCacheEvery (EXT-PRJ-7).
+	CacheEvery ledger.CommitSeq
 	// Ownership configures how Writers open Sessions.
 	Ownership session.OpenOptions
 	// Fail receives failures of work the Owner does outside any caller's
@@ -105,7 +103,7 @@ type Ports struct {
 type Owner struct {
 	Store     session.Stores
 	Writers   writer.Writers
-	Registry  *extension.Registry
+	Registry  *ledger.Registry
 	Admission writer.Admission
 	// Runs is the Run module's Session adapter: the Run core's store bound
 	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
@@ -117,7 +115,7 @@ type Owner struct {
 	Executor effect.ExecutionPort
 	Frozen   frozen.Store
 	// Projections reads every projection through the Session's Writer.
-	Projections extension.ProjectionReader
+	Projections session.ProjectionReader
 	// Content materializes the frozen bodies projections name (CHT-MAT-1).
 	Content chatlog.ContentResolver
 	// Chatlog commits the chatlog's own facts (APP-INP-1, APP-CKP-1).
@@ -150,8 +148,8 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	store := p.Store
 	// The first-party four are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
-	registry, err := extension.BuildRegistryWithExtensions(
-		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
+	registry, err := ledger.BuildRegistryWithExtensions(
+		[]ledger.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
 	if err != nil {
 		return nil, err
 	}
@@ -161,10 +159,10 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	// durably provides its own; otherwise they live as long as the process.
 	cache := p.Cache
 	if cache == nil {
-		if provider, ok := store.(extension.ProjectionCacheProvider); ok {
+		if provider, ok := store.(session.ProjectionCacheProvider); ok {
 			cache = provider.ProjectionCache()
 		} else {
-			cache = extension.NewMemoryProjectionCache()
+			cache = session.NewMemoryProjectionCache()
 		}
 	}
 	// Frozen bodies live in the content store and are admitted through the
@@ -195,7 +193,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	// The read model folds from the Store through the cache: reading a Session
 	// takes no ownership (OWN-HDL-2). The Writer keeps its own transactional
 	// projections for the commit critical section.
-	projections := extension.NewProjectionReader(store, registry, cache)
+	projections := session.NewProjectionReader(store, registry, cache)
 	content := runmod.NewContent(fz)
 	a := &Owner{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
@@ -274,7 +272,7 @@ func (a *Owner) EnsureSession(ctx context.Context, sid session.SessionID) error 
 // from there under its own identity.
 type ForkRequest struct {
 	Parent session.SessionID
-	At     session.CommitSeq
+	At     ledger.CommitSeq
 	Child  session.SessionID
 	// Ext are the child segment's module extension slots (SES-WIR-5).
 	Ext ledger.Extensions
@@ -282,20 +280,20 @@ type ForkRequest struct {
 
 // Fork creates the child Session (SES-FRK-1) and claims the artifacts its
 // inherited prefix references (EXT-WRT-8). The child is not opened.
-func (a *Owner) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
+func (a *Owner) Fork(ctx context.Context, req ForkRequest) (ledger.SegmentHeader, error) {
 	if req.Parent == "" || req.Child == "" {
-		return session.SegmentHeader{}, errors.New("owner: fork requires parent and child session ids")
+		return ledger.SegmentHeader{}, errors.New("owner: fork requires parent and child session ids")
 	}
 	if req.Parent == req.Child {
-		return session.SegmentHeader{}, errors.New("owner: a session cannot fork itself")
+		return ledger.SegmentHeader{}, errors.New("owner: a session cannot fork itself")
 	}
 	// A fork point inside a Turn would hand the child a Turn whose Run is
 	// the parent's execution (SES-FRK-5): semantic history branches only at
 	// quiescent points (OWN-FRK-1).
 	if active, ok, err := a.History.ActiveAt(ctx, req.Parent, req.At); err != nil {
-		return session.SegmentHeader{}, err
+		return ledger.SegmentHeader{}, err
 	} else if ok {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: req.Child,
+		return ledger.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: req.Child,
 			Detail: fmt.Sprintf("turn %s of %s is active at commit %d; fork at a quiescent point", active, req.Parent, req.At)}
 	}
 	return writer.Fork(ctx, a.Store, a.Registry, writer.ForkRequest{
@@ -306,13 +304,13 @@ func (a *Owner) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeade
 // ForkBeforeTurn forks Parent at the commit just before turnID started
 // (OWN-FRK-2): the child holds the conversation as it was when that Turn's
 // inputs were still submitted and undelivered.
-func (a *Owner) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
+func (a *Owner) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (ledger.SegmentHeader, error) {
 	seq, err := a.History.StartCommit(ctx, parent, turnID)
 	if err != nil {
-		return session.SegmentHeader{}, err
+		return ledger.SegmentHeader{}, err
 	}
 	if seq == 0 {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
+		return ledger.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
 			Detail: fmt.Sprintf("turn %s started in the first commit of %s; there is no prefix to fork", turnID, parent)}
 	}
 	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
@@ -354,6 +352,6 @@ func (a *Owner) Collect(ctx context.Context) (session.CollectReport, error) {
 
 // Projection reads any registered projection through the Session's Writer
 // (APP-MEM-1).
-func (a *Owner) Projection(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
+func (a *Owner) Projection(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion) (any, ledger.Head, error) {
 	return a.Projections.Load(ctx, sid, id, v)
 }

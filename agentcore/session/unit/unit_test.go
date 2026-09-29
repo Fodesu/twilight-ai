@@ -3,23 +3,22 @@ package unit_test
 import (
 	"context"
 	"errors"
-	"testing"
-
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"testing"
 )
 
 func newWriter(t *testing.T) writer.Writer {
 	t.Helper()
 	ctx := context.Background()
-	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module)
+	registry, err := ledger.BuildRegistry(chatlog.Module, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

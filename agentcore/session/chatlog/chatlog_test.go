@@ -3,21 +3,19 @@ package chatlog
 import (
 	"context"
 	"errors"
-	"testing"
-
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"testing"
 )
 
-func registry(t *testing.T) *extension.Registry {
+func registry(t *testing.T) *ledger.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(runmod.Module, Module)
+	r, err := ledger.BuildRegistry(runmod.Module, Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +23,7 @@ func registry(t *testing.T) *extension.Registry {
 }
 
 type step struct {
-	typ   session.EventType
+	typ   ledger.EventType
 	value any
 }
 
@@ -59,11 +57,11 @@ func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 		if err != nil {
 			t.Fatalf("step %d encode: %v", i, err)
 		}
-		d, err := r.Decode(session.Event{Type: st.typ, Payload: wire})
+		d, err := r.Decode(ledger.Event{Type: st.typ, Payload: wire})
 		if err != nil {
 			t.Fatal(err)
 		}
-		d.Position = session.Position{Commit: session.CommitSeq(i)}
+		d.Position = ledger.Position{Commit: ledger.CommitSeq(i)}
 		nextSurface, err := SurfaceProjection.Apply(surfaceState, d)
 		if err != nil {
 			return contextState.(Context), surfaceState.(Surface), err
@@ -229,13 +227,13 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	if summary.Digest, err = DigestSummary(&summary); err != nil {
 		t.Fatal(err)
 	}
-	compaction := CompactionCreatedPayload{CompactionID: "ck1", CoveredThrough: session.Position{Commit: 3}, BaseContextDigest: "sha256:base",
+	compaction := CompactionCreatedPayload{CompactionID: "ck1", CoveredThrough: ledger.Position{Commit: 3}, BaseContextDigest: "sha256:base",
 		SummaryID: summary.ID, SummaryDigest: summary.Digest,
 		Retained: []EntryDigestPair{{Kind: EntryAssistant, ID: "a1", Digest: "sha256:a1"}}}
 	if compaction.Digest, err = DigestCompaction(&compaction); err != nil {
 		t.Fatal(err)
 	}
-	samples := map[session.EventType]any{
+	samples := map[ledger.EventType]any{
 		TypeInputSubmitted:        InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1},
 		TypeInputDelivered:        InputDeliveredPayload{InputID: "in-1", TurnID: "t1", RunID: "r1"},
 		TypeInputWithdrawn:        InputWithdrawnPayload{InputID: "in-1", Reason: "user"},
@@ -389,9 +387,9 @@ func entryDigest(t *testing.T, stepID run.StepID, result jsonstable.Digest) json
 }
 
 // at is the ledger Position of foldSteps' step i.
-func at(i int) session.Position { return session.Position{Commit: session.CommitSeq(i)} }
+func at(i int) ledger.Position { return ledger.Position{Commit: ledger.CommitSeq(i)} }
 
-func mustCompaction(t *testing.T, id CompactionID, covered session.Position, base []EntryDigestPair, sum Summary, retained []EntryDigestPair) CompactionCreatedPayload {
+func mustCompaction(t *testing.T, id CompactionID, covered ledger.Position, base []EntryDigestPair, sum Summary, retained []EntryDigestPair) CompactionCreatedPayload {
 	t.Helper()
 	baseDigest, err := DigestBaseContext(base)
 	if err != nil {

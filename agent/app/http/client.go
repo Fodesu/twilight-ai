@@ -7,16 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/workspace"
+	"github.com/felinics/twilight/agentcore/inbox"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/turn"
 	"io"
 	stdhttp "net/http"
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/felinics/twilight/agent/workspace"
-	"github.com/felinics/twilight/agentcore/inbox"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // Client drives an owner's command face.
@@ -179,8 +179,8 @@ func (c *Client) AllocateWorkspace(ctx context.Context, req AllocateWorkspaceReq
 }
 
 // Fork forks the Session.
-func (c *Client) Fork(ctx context.Context, parent session.SessionID, req ForkRequest) (session.SegmentHeader, error) {
-	var out session.SegmentHeader
+func (c *Client) Fork(ctx context.Context, parent session.SessionID, req ForkRequest) (ledger.SegmentHeader, error) {
+	var out ledger.SegmentHeader
 	err := c.do(ctx, stdhttp.MethodPost, sessionPath(parent, "/fork"), nil, req, &out)
 	return out, err
 }
@@ -188,7 +188,7 @@ func (c *Client) Fork(ctx context.Context, parent session.SessionID, req ForkReq
 // Events streams the Session's events to fn until fn returns false, ctx
 // ends or the stream closes; from > 0 starts from that commit sequence
 // (OBS-2).
-func (c *Client) Events(ctx context.Context, sid session.SessionID, from session.CommitSeq, fn func(Event) bool) error {
+func (c *Client) Events(ctx context.Context, sid session.SessionID, from ledger.CommitSeq, fn func(Event) bool) error {
 	var query url.Values
 	if from > 0 {
 		query = url.Values{"from": {fmt.Sprint(uint64(from))}}

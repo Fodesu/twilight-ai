@@ -3,13 +3,11 @@ package turn
 import (
 	"context"
 	"fmt"
-
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // ReadSurface loads the turn surface of one Session through r.
-func ReadSurface(ctx context.Context, r extension.ProjectionReader, sid session.SessionID) (TurnSurface, error) {
+func ReadSurface(ctx context.Context, r session.ProjectionReader, sid session.SessionID) (TurnSurface, error) {
 	state, _, err := r.Load(ctx, sid, SurfaceProjectionID, SurfaceProjection.Version)
 	if err != nil {
 		return TurnSurface{}, err

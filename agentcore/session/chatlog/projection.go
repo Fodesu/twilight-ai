@@ -3,17 +3,15 @@ package chatlog
 import (
 	"errors"
 	"fmt"
-
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
 const (
-	SurfaceProjectionID extension.ProjectionID = "twilight/chatlog/surface"
-	ContextProjectionID extension.ProjectionID = "twilight/chatlog/context"
+	SurfaceProjectionID ledger.ProjectionID = "twilight/chatlog/surface"
+	ContextProjectionID ledger.ProjectionID = "twilight/chatlog/context"
 )
 
 type InputStatus string
@@ -30,7 +28,7 @@ type InputView struct {
 	Status InputStatus `json:"status"`
 	// Position is the ledger position of the input_submitted event; it orders
 	// inputs by submission without a projection-owned counter.
-	Position session.Position `json:"position"`
+	Position ledger.Position `json:"position"`
 }
 
 type EntryKind string
@@ -43,9 +41,9 @@ const (
 )
 
 type SurfaceEntry struct {
-	Kind     EntryKind        `json:"kind"`
-	ID       string           `json:"id"`
-	Position session.Position `json:"position"`
+	Kind     EntryKind       `json:"kind"`
+	ID       string          `json:"id"`
+	Position ledger.Position `json:"position"`
 }
 
 type CompactionStatus string
@@ -61,7 +59,7 @@ type CompactionView struct {
 	Compaction CompactionCreatedPayload `json:"compaction"`
 	Status     CompactionStatus         `json:"status"`
 	Reason     string                   `json:"reason,omitempty"`
-	Position   session.Position         `json:"position"`
+	Position   ledger.Position          `json:"position"`
 }
 
 // Surface is the UI-facing read model (CHT-SUR-1). Every table is persistent
@@ -110,8 +108,8 @@ func sortViews(views []InputView) {
 // chatlogConsumes is what both projections fold: the module's own facts and
 // the Run facts that produce assistant and tool_result entries, and the
 // attempt binding that names their Turn (CHT-SCP-1).
-var chatlogConsumes = func() []session.EventType {
-	out := make([]session.EventType, 0, 9+len(consumedRunFacts))
+var chatlogConsumes = func() []ledger.EventType {
+	out := make([]ledger.EventType, 0, 9+len(consumedRunFacts))
 	out = append(out, TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
 		TypeToolResultSuperseded, TypeSummary, TypeCompactionCreated, TypeCompactionInvalidated)
 	for _, name := range consumedRunFacts {
@@ -120,18 +118,18 @@ var chatlogConsumes = func() []session.EventType {
 	return out
 }()
 
-var SurfaceProjection = extension.ProjectionDefinition{
+var SurfaceProjection = ledger.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: chatlogConsumes,
 	// Assistant and tool_result entries are projected from run facts
 	// (CHT-SCP-1); a fork inherits that conversation content (EXT-PRJ-8).
-	Inherits:      extension.InheritAll,
+	Inherits:      ledger.InheritAll,
 	Authoritative: true,
 	Initial: func() (any, error) {
 		return Surface{}, nil
 	},
 	Apply:      applySurface,
-	StateCodec: extension.JSONStateCodec[Surface]{},
+	StateCodec: ledger.JSONStateCodec[Surface]{},
 }
 
 // applySurface is copy-on-write: the Surface value is copied, every table is
@@ -140,7 +138,7 @@ var SurfaceProjection = extension.ProjectionDefinition{
 // Every position an entry carries is the ledger Position of the event that
 // produced it (EXT-PRJ-1): the projection keeps no counter and a snapshot
 // restores without rescanning.
-func applySurface(state any, e extension.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
+func applySurface(state any, e ledger.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	s, ok := state.(Surface)
 	if !ok {
 		return nil, fmt.Errorf("chatlog surface: state is %T", state)
@@ -223,7 +221,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 // applyRun folds one Run fact into the Surface (CHT-ENT-1, CHT-ENT-2). The
 // Run's Turn is remembered from run_created until run_ended: no fact of the
 // Run follows its end, so the table is bounded by the Runs active now.
-func (s Surface) applyRun(ev runmod.Event, pos session.Position) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
+func (s Surface) applyRun(ev runmod.Event, pos ledger.Position) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
 		// The Run's Turn comes from the input_delivered that fed it.
@@ -378,7 +376,7 @@ type Entry struct {
 	Kind       EntryKind         `json:"kind"`
 	ID         string            `json:"id"`
 	Digest     jsonstable.Digest `json:"digest"`
-	Position   session.Position  `json:"position"`
+	Position   ledger.Position   `json:"position"`
 	Input      *Input            `json:"input,omitempty"`
 	Assistant  *Assistant        `json:"assistant,omitempty"`
 	ToolResult *ToolResult       `json:"toolResult,omitempty"`
@@ -413,16 +411,16 @@ type Context struct {
 	Runs        map[run.RunID]RunOwner        `json:"runs,omitempty"`
 }
 
-var ContextProjection = extension.ProjectionDefinition{
+var ContextProjection = ledger.ProjectionDefinition{
 	ID: ContextProjectionID, Version: 1,
 	Consumes:      chatlogConsumes,
-	Inherits:      extension.InheritAll,
+	Inherits:      ledger.InheritAll,
 	Authoritative: true,
 	Initial: func() (any, error) {
 		return Context{Pending: map[InputID]Input{}, Superseded: map[ToolResultID]ToolResultID{}, Runs: map[run.RunID]RunOwner{}}, nil
 	},
 	Apply:      applyContext,
-	StateCodec: extension.JSONStateCodec[Context]{},
+	StateCodec: ledger.JSONStateCodec[Context]{},
 }
 
 // applyContext is copy-on-write like applySurface: Entries and Compactions
@@ -430,7 +428,7 @@ var ContextProjection = extension.ProjectionDefinition{
 // element the previous state still holds, and a map is copied only by the
 // event that writes it. Entry positions are the ledger Positions of the
 // events that produced them.
-func applyContext(state any, e extension.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
+func applyContext(state any, e ledger.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	c, ok := state.(Context)
 	if !ok {
 		return nil, fmt.Errorf("chatlog context: state is %T", state)
@@ -509,7 +507,7 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 
 // applyRun folds one Run fact into the Context (CHT-CTX-2). Runs is bounded
 // like the Surface's: the Turn is forgotten at run_ended.
-func (c Context) applyRun(ev runmod.Event, pos session.Position) (any, error) {
+func (c Context) applyRun(ev runmod.Event, pos ledger.Position) (any, error) {
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
 		// The Run's Turn comes from the input_delivered that fed it.
@@ -559,7 +557,7 @@ func (c *Context) indexOf(kind EntryKind, id string) int {
 // applyCompaction validates and applies one compaction_created (CHT-EVT-3).
 // pos is the compaction's own position; CoveredThrough names an entry
 // position, so it must precede the compaction event.
-func applyCompaction(c Context, p *CompactionCreatedPayload, pos session.Position) (any, error) {
+func applyCompaction(c Context, p *CompactionCreatedPayload, pos ledger.Position) (any, error) {
 	if !p.CoveredThrough.Less(pos) {
 		return nil, fmt.Errorf("compaction %s covers through %v at position %v", p.CompactionID, p.CoveredThrough, pos)
 	}
@@ -616,11 +614,11 @@ func selectRetained(base []Entry, pairs []EntryDigestPair) ([]Entry, error) {
 }
 
 // ContextFold folds decoded chatlog and run events into entries (CHT-CTX-1).
-func ContextFold(events []extension.DecodedEvent) ([]Entry, error) {
+func ContextFold(events []ledger.DecodedEvent) ([]Entry, error) {
 	state, _ := ContextProjection.Initial()
 	for i := range events {
 		e := &events[i]
-		if e.Unknown || (e.Module != extension.TwilightModule(ModuleID) && e.Module != extension.TwilightModule(runmod.ModuleID)) {
+		if e.Unknown || (e.Module != ledger.TwilightModule(ModuleID) && e.Module != ledger.TwilightModule(runmod.ModuleID)) {
 			return nil, errors.New("chatlog: context fold requires decoded chatlog or run events")
 		}
 		next, err := applyContext(state, *e)

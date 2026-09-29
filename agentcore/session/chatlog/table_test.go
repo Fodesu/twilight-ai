@@ -3,14 +3,12 @@ package chatlog
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // TestTablePersistence checks the persistent map on its own: a Set never
@@ -74,13 +72,13 @@ func TestTablePersistence(t *testing.T) {
 // (EXT-PRJ-1). Each event carries its own ledger Position, as a fold would
 // stamp it.
 func TestSurfaceFoldIsPure(t *testing.T) {
-	var seq session.CommitSeq
-	next := func() session.Position { seq++; return session.Position{Commit: seq} }
-	assistant := func(id string) extension.DecodedEvent {
-		return extension.DecodedEvent{Position: next(), Value: runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(id), FinishReason: model.FinishReasonStop, ResultDigest: "sha256:x"}}}
+	var seq ledger.CommitSeq
+	next := func() ledger.Position { seq++; return ledger.Position{Commit: seq} }
+	assistant := func(id string) ledger.DecodedEvent {
+		return ledger.DecodedEvent{Position: next(), Value: runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(id), FinishReason: model.FinishReasonStop, ResultDigest: "sha256:x"}}}
 	}
-	input := func(id string) extension.DecodedEvent {
-		return extension.DecodedEvent{Position: next(), Value: InputSubmittedPayload{InputID: InputID(id), Content: jsonstable.MustParse(`{"text":"x"}`)}}
+	input := func(id string) ledger.DecodedEvent {
+		return ledger.DecodedEvent{Position: next(), Value: InputSubmittedPayload{InputID: InputID(id), Content: jsonstable.MustParse(`{"text":"x"}`)}}
 	}
 	state, _ := SurfaceProjection.Initial()
 	var err error

@@ -3,12 +3,11 @@ package writer
 import (
 	"context"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"runtime"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
-	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 )
 
 // countState is O(1) on purpose: a projection whose state grows with the log
@@ -19,18 +18,18 @@ type countPayload struct {
 	Text string `json:"text"`
 }
 
-func countModule() extension.ModuleDescriptor {
+func countModule() ledger.ModuleDescriptor {
 	typ := tpfx("q") + "row"
-	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "q", Streams: noteStreams(),
-		Events: []extension.EventDefinition{{Type: typ, Domain: noteDomain,
-			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[countPayload]{}}}},
-		Projections: []extension.ProjectionDefinition{{
-			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
+	return ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "q", Streams: noteStreams(),
+		Events: []ledger.EventDefinition{{Type: typ, Domain: noteDomain,
+			Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[countPayload]{}}}},
+		Projections: []ledger.ProjectionDefinition{{
+			ID: ledger.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return countState{}, nil },
-			Apply: func(state any, _ extension.DecodedEvent) (any, error) {
+			Apply: func(state any, _ ledger.DecodedEvent) (any, error) {
 				return countState{N: state.(countState).N + 1}, nil
 			},
-			StateCodec: extension.JSONStateCodec[countState]{},
+			StateCodec: ledger.JSONStateCodec[countState]{},
 		}}}
 }
 
@@ -63,20 +62,20 @@ func retainedOnReopen(t *testing.T, commits int) uint64 {
 	t.Helper()
 	ctx := context.Background()
 	store := filestoretest.Store(t)
-	reg, err := extension.BuildRegistry(countModule())
+	reg, err := ledger.BuildRegistry(countModule())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
-	cache := extension.NewMemoryProjectionCache()
+	cache := session.NewMemoryProjectionCache()
 	w, err := openWriter(ctx, store, reg, Admission{}, "s", session.OpenOptions{}, WritersConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < commits; i++ {
-		group := &SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("c%d", i)),
+		group := &SemanticGroup{CommitID: ledger.CommitID(fmt.Sprintf("c%d", i)),
 			Batches: noteBatch(TypedEvent{Type: tpfx("q") + "row", Value: countPayload{Text: fmt.Sprintf("t%d", i)}})}
 		if _, err := w.Commit(ctx, func(View) (*SemanticGroup, error) { return group, nil }); err != nil {
 			t.Fatal(err)

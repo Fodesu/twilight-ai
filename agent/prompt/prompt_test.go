@@ -4,32 +4,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
-	"testing"
-
 	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
+	"reflect"
+	"testing"
 )
 
 // fixedSource serves one Context state at one head, the way an Owner or
 // an observer would for the same stream position.
 type fixedSource struct {
 	state chatlog.Context
-	head  session.Head
+	head  ledger.Head
 }
 
-func (s fixedSource) Load(_ context.Context, _ session.SessionID, id extension.ProjectionID, _ extension.ProjectionVersion) (any, session.Head, error) {
+func (s fixedSource) Load(_ context.Context, _ session.SessionID, id ledger.ProjectionID, _ ledger.ProjectionVersion) (any, ledger.Head, error) {
 	if id != chatlog.ContextProjectionID {
-		return nil, session.Head{}, errors.New("unexpected projection")
+		return nil, ledger.Head{}, errors.New("unexpected projection")
 	}
 	return s.state, s.head, nil
 }
@@ -61,7 +60,7 @@ func (c fixedContent) ToolResponse(ctx context.Context, d jsonstable.Digest) (ru
 	return c.ToolOutput(ctx, d)
 }
 
-func sources(state chatlog.Context, head session.Head, content fixedContent) decision.Sources {
+func sources(state chatlog.Context, head ledger.Head, content fixedContent) decision.Sources {
 	return decision.Sources{Projections: fixedSource{state: state, head: head}, Content: content}
 }
 
@@ -74,8 +73,8 @@ func entries() (chatlog.Context, fixedContent) {
 	as := chatlog.Assistant{ID: "a-1", TurnID: "t1", StepID: "a-1", ResultDigest: "sha256:r1"}
 	content := fixedContent{results: map[jsonstable.Digest]model.ModelResult{"sha256:r1": {Text: "hi", FinishReason: model.FinishReasonStop}}}
 	return chatlog.Context{Entries: []chatlog.Entry{
-		{Kind: chatlog.EntryInput, ID: "in-1", Position: session.Position{Commit: 1}, Input: &in},
-		{Kind: chatlog.EntryAssistant, ID: "a-1", Position: session.Position{Commit: 2}, Assistant: &as},
+		{Kind: chatlog.EntryInput, ID: "in-1", Position: ledger.Position{Commit: 1}, Input: &in},
+		{Kind: chatlog.EntryAssistant, ID: "a-1", Position: ledger.Position{Commit: 2}, Assistant: &as},
 	}}, content
 }
 
@@ -84,7 +83,7 @@ func entries() (chatlog.Context, fixedContent) {
 // the registry refuses refs it does not hold.
 func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	state, content := entries()
-	src := sources(state, session.Head{Next: 3}, content)
+	src := sources(state, ledger.Head{Next: 3}, content)
 	input := decision.Input{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Digest: "sha256:in-1"}}}
 	var prompts []decision.Prompt
 	for i := 0; i < 2; i++ {
@@ -117,7 +116,7 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	}
 	// A body the frozen store lost fails the build; the projection itself is
 	// unaffected (CHT-MAT-1).
-	if _, err := prompt.NewContextPromptBuilder(testPreset(), sources(state, session.Head{}, fixedContent{})).Build(context.Background(), input); !errors.Is(err, frozen.ErrMissing) {
+	if _, err := prompt.NewContextPromptBuilder(testPreset(), sources(state, ledger.Head{}, fixedContent{})).Build(context.Background(), input); !errors.Is(err, frozen.ErrMissing) {
 		t.Fatalf("missing body: err = %v", err)
 	}
 }
@@ -173,13 +172,13 @@ func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
 		{"interleaved summary", []chatlog.Entry{call, summary, result}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: tc.entries}, session.Head{}, content))
+			builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: tc.entries}, ledger.Head{}, content))
 			if _, err := builder.Build(context.Background(), decision.Input{Scope: "s"}); err == nil {
 				t.Fatal("unpaired history produced a provider request")
 			}
 		})
 	}
-	builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: []chatlog.Entry{call, input, result}}, session.Head{}, content))
+	builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: []chatlog.Entry{call, input, result}}, ledger.Head{}, content))
 	prompt, err := builder.Build(context.Background(), decision.Input{Scope: "s"})
 	if err != nil {
 		t.Fatal(err)

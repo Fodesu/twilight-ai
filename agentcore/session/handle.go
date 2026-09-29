@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"sync"
 )
 
@@ -21,20 +22,20 @@ type ledgerHandle struct {
 	session *Session
 	lease   Lease
 	opts    OpenOptions
-	head    Head
+	head    ledger.Head
 	// streams caches the tip's head of each stream the handle was asked
 	// about, read from the backend once below the handle's head and
 	// advanced by this handle's own Appends (SES-REP-3).
-	streams map[Domain]StreamSeq
+	streams map[ledger.Domain]ledger.StreamSeq
 	// failed is set once an Append's durable outcome is unknown (SES-APP-1):
 	// the handle then answers nothing about the ledger, because what reached
 	// storage is exactly what it cannot know. The caller reopens.
 	failed error
 }
 
-func (w *ledgerHandle) SessionID() SessionID  { return w.session.ID() }
-func (w *ledgerHandle) Epoch() Epoch          { return w.lease.Epoch }
-func (w *ledgerHandle) Header() SegmentHeader { return w.session.Header() }
+func (w *ledgerHandle) SessionID() SessionID         { return w.session.ID() }
+func (w *ledgerHandle) Epoch() ledger.Epoch          { return w.lease.Epoch }
+func (w *ledgerHandle) Header() ledger.SegmentHeader { return w.session.Header() }
 
 func (w *ledgerHandle) Lease() Lease {
 	w.mu.Lock()
@@ -62,7 +63,7 @@ func (w *ledgerHandle) Renew(ctx context.Context) error {
 	return nil
 }
 
-func (w *ledgerHandle) Head() Head {
+func (w *ledgerHandle) Head() ledger.Head {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.head
@@ -74,7 +75,7 @@ func (w *ledgerHandle) Head() Head {
 // lie at or past the head, so a superseded handle does not learn of them
 // here and reaches the Epoch fence at Append, exactly as when the index
 // lived in its memory.
-func (w *ledgerHandle) Committed(id CommitID) (bool, error) {
+func (w *ledgerHandle) Committed(id ledger.CommitID) (bool, error) {
 	w.mu.Lock()
 	failed, head := w.failed, w.head
 	w.mu.Unlock()
@@ -94,11 +95,11 @@ func (w *ledgerHandle) Committed(id CommitID) (bool, error) {
 
 // countStreams advances the cached head of each stream the commit wrote and
 // the handle has been asked about; w.mu is held.
-func (w *ledgerHandle) countStreams(c *Commit) {
+func (w *ledgerHandle) countStreams(c *ledger.Commit) {
 	for i := range c.Batches {
 		stream := c.Batches[i].Domain
 		if _, known := w.streams[stream]; known {
-			w.streams[stream] += StreamSeq(len(c.Batches[i].Events))
+			w.streams[stream] += ledger.StreamSeq(len(c.Batches[i].Events))
 		}
 	}
 }
@@ -107,7 +108,7 @@ func (w *ledgerHandle) countStreams(c *Commit) {
 // index the first time it is asked about a stream, and advances the cached
 // value with each Append (SES-REP-3, SES-FRK-5); the bound keeps a
 // superseded handle from seeing its successor's streams.
-func (w *ledgerHandle) StreamHead(stream Domain) (StreamSeq, bool) {
+func (w *ledgerHandle) StreamHead(stream ledger.Domain) (ledger.StreamSeq, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.failed != nil {
@@ -127,49 +128,49 @@ func (w *ledgerHandle) StreamHead(stream Domain) (StreamSeq, bool) {
 
 // LookupCommit is SES-REP-4, under the same bound as Committed: a tip commit
 // below the head, else an inherited one.
-func (w *ledgerHandle) LookupCommit(id CommitID) (Commit, bool, error) {
+func (w *ledgerHandle) LookupCommit(id ledger.CommitID) (ledger.Commit, bool, error) {
 	w.mu.Lock()
 	failed, head := w.failed, w.head
 	w.mu.Unlock()
 	if failed != nil {
-		return Commit{}, false, failed
+		return ledger.Commit{}, false, failed
 	}
 	ctx := context.Background()
 	if c, ok, err := w.session.st.LookupCommit(ctx, w.session.root.Tip, id); err != nil {
-		return Commit{}, false, err
+		return ledger.Commit{}, false, err
 	} else if ok && c.Seq < head.Next {
 		return c, true, nil
 	}
 	return w.session.path.LookupInherited(ctx, w.session.st, id)
 }
 
-func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
+func (w *ledgerHandle) Append(ctx context.Context, p ledger.Proposal) (ledger.Commit, error) {
 	if err := ctx.Err(); err != nil {
-		return Commit{}, err
+		return ledger.Commit{}, err
 	}
 	sid := w.session.ID()
-	staged := Proposal{CommitID: p.CommitID, Batches: cloneBatches(p.Batches)}
+	staged := ledger.Proposal{CommitID: p.CommitID, Batches: cloneBatches(p.Batches)}
 	if err := staged.Validate(); err != nil {
-		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
+		return ledger.Commit{}, newError(ErrInvalid, "append", sid, err.Error())
 	}
 	if ok, err := w.Committed(p.CommitID); err != nil {
-		return Commit{}, err
+		return ledger.Commit{}, err
 	} else if ok {
-		return Commit{}, &Error{Code: ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in the ledger"}
+		return ledger.Commit{}, &Error{Code: ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in the ledger"}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.failed != nil {
-		return Commit{}, w.failed
+		return ledger.Commit{}, w.failed
 	}
 	c := staged.At(w.head.Next)
 	if err := w.session.st.Append(ctx, w.lease, w.session.root.Tip, c); err != nil {
 		if IsCode(err, ErrHandleFailed) {
 			w.failed = err
 		}
-		return Commit{}, err
+		return ledger.Commit{}, err
 	}
-	w.head = Head{Next: c.Seq + 1}
+	w.head = ledger.Head{Next: c.Seq + 1}
 	w.countStreams(&c)
 	return cloneCommit(c), nil
 }

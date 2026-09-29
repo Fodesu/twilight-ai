@@ -3,13 +3,13 @@ package filestore_test
 import (
 	"context"
 	"flag"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/filestore"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/filestore"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden testdata files from the current wire")
@@ -28,7 +28,7 @@ func TestLogFileGolden(t *testing.T) {
 	}
 	// The segment identity is the kernel's; the fixture pins it so the
 	// frozen bytes are reproducible.
-	store.Ledger = session.NewLedger(store, session.WithSegmentIDSource(func() (session.SegmentID, error) { return "golden", nil }))
+	store.Ledger = session.NewLedger(store, session.WithSegmentIDSource(func() (ledger.SegmentID, error) { return "golden", nil }))
 	const sid session.SessionID = "golden"
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
@@ -37,22 +37,22 @@ func TestLogFileGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev := func(typ, payload string, at int64) session.Event {
-		return session.Event{Type: session.EventType(typ), Payload: jsonstable.MustParse(payload), RecordedAtUnixMilli: at}
+	ev := func(typ, payload string, at int64) ledger.Event {
+		return ledger.Event{Type: ledger.EventType(typ), Payload: jsonstable.MustParse(payload), RecordedAtUnixMilli: at}
 	}
-	if _, err := w.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.EventBatch{
-		{Domain: session.Domain{Name: "chat"}, Events: []session.Event{
+	if _, err := w.Append(ctx, ledger.Proposal{CommitID: "c1", Batches: []ledger.EventBatch{
+		{Domain: ledger.Domain{Name: "chat"}, Events: []ledger.Event{
 			ev("twilight/x/a", `{"a":1}`, 1),
 			ev("twilight/x/b", `{"b":[1,2]}`, 2),
 		}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.EventBatch{
-		{Domain: session.Domain{Name: "chat"}, Events: []session.Event{
+	if _, err := w.Append(ctx, ledger.Proposal{CommitID: "c2", Batches: []ledger.EventBatch{
+		{Domain: ledger.Domain{Name: "chat"}, Events: []ledger.Event{
 			ev("twilight/x/c", `{}`, 3),
 		}},
-		{Domain: session.Domain{Name: "run", Id: "r7"}, Events: []session.Event{
+		{Domain: ledger.Domain{Name: "run", Id: "r7"}, Events: []ledger.Event{
 			ev("twilight/run/created", `{"runId":"r7"}`, 3),
 		}},
 	}}); err != nil {

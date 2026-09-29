@@ -1,6 +1,8 @@
 package chatlog
 
-import "encoding/json"
+import (
+	"encoding/json"
+)
 
 // Table is the persistent map of the Surface projection. A state derived by
 // Apply shares the previous state's storage and never writes it, so every

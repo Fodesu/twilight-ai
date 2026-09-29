@@ -2,12 +2,12 @@ package filestore
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/session"
 )
 
 // DeleteRecord tombstones the root and clears its path without reclaiming.
@@ -33,9 +33,9 @@ func TestCollectReclaimsAfterDeleteRecord(t *testing.T) {
 	}
 	appendOne := func(id string) {
 		t.Helper()
-		if _, err := w.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.EventBatch{{
-			Domain: session.Domain{Name: "chat"},
-			Events: []session.Event{{Type: "twilight/x/n", Payload: jsonstable.MustParse(`{"n":1}`)}},
+		if _, err := w.Append(ctx, ledger.Proposal{CommitID: ledger.CommitID(id), Batches: []ledger.EventBatch{{
+			Domain: ledger.Domain{Name: "chat"},
+			Events: []ledger.Event{{Type: "twilight/x/n", Payload: jsonstable.MustParse(`{"n":1}`)}},
 		}}}); err != nil {
 			t.Fatal(err)
 		}
@@ -67,7 +67,7 @@ func TestCollectReclaimsAfterDeleteRecord(t *testing.T) {
 	if err != nil || report.Truncated[header.ID] != 1 || len(report.Dropped[header.ID]) != 1 || report.Dropped[header.ID][0] != "c1" {
 		t.Fatalf("collect repair = %+v %v", report, err)
 	}
-	removed := map[session.SegmentID]bool{}
+	removed := map[ledger.SegmentID]bool{}
 	for _, id := range report.Removed {
 		removed[id] = true
 	}

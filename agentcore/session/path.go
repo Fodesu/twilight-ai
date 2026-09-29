@@ -3,15 +3,16 @@ package session
 import (
 	"context"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/ledger"
 )
 
 // Span is one segment's contribution on a session path. From is the first
 // stitched CommitSeq it contributes. End is closed for every span except
 // the last, which stays open: that span is the session's only append target.
 type Span struct {
-	Segment SegmentID `json:"segment"`
-	From    CommitSeq `json:"from"`
-	End     Bound     `json:"end"`
+	Segment ledger.SegmentID `json:"segment"`
+	From    ledger.CommitSeq `json:"from"`
+	End     Bound            `json:"end"`
 }
 
 // Path is one session's history: a strictly increasing sequence of spans.
@@ -23,11 +24,11 @@ type Path []Span
 // Validate checks the path shape against tip: the last span names tip and
 // is open, earlier spans are closed, segments are unique, and each span
 // starts where the previous one stopped.
-func (p Path) Validate(tip SegmentID) error {
+func (p Path) Validate(tip ledger.SegmentID) error {
 	if len(p) == 0 {
 		return fmt.Errorf("empty path")
 	}
-	seen := make(map[SegmentID]struct{}, len(p))
+	seen := make(map[ledger.SegmentID]struct{}, len(p))
 	for i, span := range p {
 		if span.Segment == "" {
 			return fmt.Errorf("span %d: empty segment", i)
@@ -64,9 +65,9 @@ func (p Path) Validate(tip SegmentID) error {
 // Branch copies the prefix of p through the span that contains seq, closes
 // that span at seq, and appends an open span for next. Spans after that one
 // are dropped. p is unchanged. The returned edge is the parent pointer of next.
-func (p Path) Branch(seq CommitSeq, next SegmentID) (Path, CommitRef, error) {
+func (p Path) Branch(seq ledger.CommitSeq, next ledger.SegmentID) (Path, ledger.CommitRef, error) {
 	if len(p) == 0 {
-		return nil, CommitRef{}, fmt.Errorf("empty path")
+		return nil, ledger.CommitRef{}, fmt.Errorf("empty path")
 	}
 	for i := range p {
 		span := p[i]
@@ -77,9 +78,9 @@ func (p Path) Branch(seq CommitSeq, next SegmentID) (Path, CommitRef, error) {
 		copy(out, p[:i])
 		out[i] = Span{Segment: span.Segment, From: span.From, End: ThroughBound(seq)}
 		out[i+1] = Span{Segment: next, From: seq + 1, End: OpenBound()}
-		return out, CommitRef{Segment: span.Segment, Seq: seq}, nil
+		return out, ledger.CommitRef{Segment: span.Segment, Seq: seq}, nil
 	}
-	return nil, CommitRef{}, fmt.Errorf("commit %d is outside the path", seq)
+	return nil, ledger.CommitRef{}, fmt.Errorf("commit %d is outside the path", seq)
 }
 
 // MaxBound is the retention bound of the ends that still name a segment:
@@ -122,19 +123,19 @@ func pathFromLoaded(a *LoadedPath) Path {
 // Open covers every commit the segment has, through its live head; otherwise
 // Through is the last included CommitSeq.
 type Bound struct {
-	Open    bool      `json:"open,omitempty"`
-	Through CommitSeq `json:"through,omitempty"`
+	Open    bool             `json:"open,omitempty"`
+	Through ledger.CommitSeq `json:"through,omitempty"`
 }
 
 // OpenBound retains or contributes every commit of a segment.
 func OpenBound() Bound { return Bound{Open: true} }
 
 // ThroughBound retains or contributes commits through seq, inclusive.
-func ThroughBound(seq CommitSeq) Bound { return Bound{Through: seq} }
+func ThroughBound(seq ledger.CommitSeq) Bound { return Bound{Through: seq} }
 
 // Includes reports whether seq is inside the bound. An open bound
 // includes every seq.
-func (c Bound) Includes(seq CommitSeq) bool {
+func (c Bound) Includes(seq ledger.CommitSeq) bool {
 	return c.Open || seq <= c.Through
 }
 
@@ -150,22 +151,22 @@ type LoadedPath struct {
 // range it contributes. A closed end stops at End.Through. The tip's end
 // is open and contributes through its live head.
 type LoadedSpan struct {
-	Segment Segment
+	Segment ledger.Segment
 	// From is the first stitched CommitSeq the segment contributes.
-	From CommitSeq
+	From ledger.CommitSeq
 	// End is the last stitched CommitSeq it contributes. The tip's End is
 	// open: it contributes through its live head.
 	End Bound
 }
 
 // Tip is the segment the Session appends to.
-func (a *LoadedPath) Tip() Segment { return a.Segments[len(a.Segments)-1].Segment }
+func (a *LoadedPath) Tip() ledger.Segment { return a.Segments[len(a.Segments)-1].Segment }
 
 // Header is the tip's creation record: the Session's public header.
-func (a *LoadedPath) Header() SegmentHeader { return a.Tip().Header }
+func (a *LoadedPath) Header() ledger.SegmentHeader { return a.Tip().Header }
 
 // At returns the loaded span that contributes seq.
-func (a *LoadedPath) At(seq CommitSeq) (LoadedSpan, bool) {
+func (a *LoadedPath) At(seq ledger.CommitSeq) (LoadedSpan, bool) {
 	for i := range a.Segments {
 		if s := &a.Segments[i]; seq >= s.From && s.End.Includes(seq) {
 			return *s, true
@@ -178,9 +179,9 @@ func (a *LoadedPath) At(seq CommitSeq) (LoadedSpan, bool) {
 // to the root. It is the fallback for a root stored before paths were
 // written. Each segment contributes from its seed through the child edge's
 // seq; the tip stays open.
-func loadPathFromEdges(ctx context.Context, store SegmentStore, tip SegmentID) (*LoadedPath, error) {
-	var chain []Segment
-	seen := map[SegmentID]bool{}
+func loadPathFromEdges(ctx context.Context, store SegmentStore, tip ledger.SegmentID) (*LoadedPath, error) {
+	var chain []ledger.Segment
+	seen := map[ledger.SegmentID]bool{}
 	for id := tip; ; {
 		if seen[id] {
 			return nil, &Error{Code: ErrCorrupt, Operation: "path", Detail: fmt.Sprintf("segment %s is its own ancestor", id)}
@@ -212,9 +213,9 @@ func loadPathFromEdges(ctx context.Context, store SegmentStore, tip SegmentID) (
 // Read returns the stitched commits of the loaded path from from (inclusive),
 // at most limit (0 = unlimited), the tip's head and whether more follow. It
 // iterates the explicit path; each segment is read once for its range.
-func (a *LoadedPath) Read(ctx context.Context, store SegmentStore, from CommitSeq, limit uint32) ([]Commit, Head, bool, error) {
-	var out []Commit
-	var head Head
+func (a *LoadedPath) Read(ctx context.Context, store SegmentStore, from ledger.CommitSeq, limit uint32) ([]ledger.Commit, ledger.Head, bool, error) {
+	var out []ledger.Commit
+	var head ledger.Head
 	tip := len(a.Segments) - 1
 	for i := range a.Segments {
 		s := &a.Segments[i]
@@ -232,16 +233,16 @@ func (a *LoadedPath) Read(ctx context.Context, store SegmentStore, from CommitSe
 				head, err := a.tipHead(ctx, store)
 				return out, head, true, err
 			}
-			want = Limit32(uint64(remaining))
-			if !s.End.Open && CommitSeq(want) > s.End.Through-start+1 {
-				want = Limit32(uint64(s.End.Through - start + 1))
+			want = ledger.Limit32(uint64(remaining))
+			if !s.End.Open && ledger.CommitSeq(want) > s.End.Through-start+1 {
+				want = ledger.Limit32(uint64(s.End.Through - start + 1))
 			}
 		} else if !s.End.Open {
-			want = Limit32(uint64(s.End.Through - start + 1))
+			want = ledger.Limit32(uint64(s.End.Through - start + 1))
 		}
 		commits, segHead, more, err := store.ReadSegment(ctx, s.Segment.ID(), start, want)
 		if err != nil {
-			return nil, Head{}, false, err
+			return nil, ledger.Head{}, false, err
 		}
 		if s.End.Open {
 			head = segHead
@@ -269,11 +270,11 @@ func (a *LoadedPath) Read(ctx context.Context, store SegmentStore, from CommitSe
 // carry a batch of stream: every segment's under LineageSession, the tip's
 // own under LineageSegment (SES-FRK-5). Each segment is read through
 // SegmentStore.ReadSegmentStream within the range it contributes.
-func (a *LoadedPath) ReadStream(ctx context.Context, store SegmentStore, stream Domain, lineage StreamLineage) ([]Commit, error) {
-	var out []Commit
+func (a *LoadedPath) ReadStream(ctx context.Context, store SegmentStore, stream ledger.Domain, lineage ledger.StreamLineage) ([]ledger.Commit, error) {
+	var out []ledger.Commit
 	tip := len(a.Segments) - 1
 	first := 0
-	if lineage == LineageSegment {
+	if lineage == ledger.LineageSegment {
 		first = tip
 	}
 	for i := first; i <= tip; i++ {
@@ -293,52 +294,52 @@ func (a *LoadedPath) ReadStream(ctx context.Context, store SegmentStore, stream 
 }
 
 // tipHead reads the tip's head without reading commits.
-func (a *LoadedPath) tipHead(ctx context.Context, store SegmentStore) (Head, error) {
-	_, head, _, err := store.ReadSegment(ctx, a.Tip().ID(), ^CommitSeq(0), 1)
+func (a *LoadedPath) tipHead(ctx context.Context, store SegmentStore) (ledger.Head, error) {
+	_, head, _, err := store.ReadSegment(ctx, a.Tip().ID(), ^ledger.CommitSeq(0), 1)
 	return head, err
 }
 
 // Contains reports whether id is a commit of the loaded path: one of the tip's
 // own commits or an inherited one within its anchor range (SES-FRK-3). It
 // consults the segments' indexes only (SES-REP-5).
-func (a *LoadedPath) Contains(ctx context.Context, store SegmentStore, id CommitID) (bool, error) {
+func (a *LoadedPath) Contains(ctx context.Context, store SegmentStore, id ledger.CommitID) (bool, error) {
 	return locateIn(ctx, store, a.Segments, id)
 }
 
 // ContainsInherited is Contains over the loaded path without its tip.
-func (a *LoadedPath) ContainsInherited(ctx context.Context, store SegmentStore, id CommitID) (bool, error) {
+func (a *LoadedPath) ContainsInherited(ctx context.Context, store SegmentStore, id ledger.CommitID) (bool, error) {
 	return locateIn(ctx, store, a.Segments[:len(a.Segments)-1], id)
 }
 
 // Lookup reads a commit of the loaded path by CommitID.
-func (a *LoadedPath) Lookup(ctx context.Context, store SegmentStore, id CommitID) (Commit, bool, error) {
+func (a *LoadedPath) Lookup(ctx context.Context, store SegmentStore, id ledger.CommitID) (ledger.Commit, bool, error) {
 	return lookupIn(ctx, store, a.Segments, id)
 }
 
 // LookupInherited reads an inherited commit by CommitID: the loaded path without
 // its tip. The inherited prefix is immutable, so reading it from storage at
 // any time gives the same answer.
-func (a *LoadedPath) LookupInherited(ctx context.Context, store SegmentStore, id CommitID) (Commit, bool, error) {
+func (a *LoadedPath) LookupInherited(ctx context.Context, store SegmentStore, id ledger.CommitID) (ledger.Commit, bool, error) {
 	return lookupIn(ctx, store, a.Segments[:len(a.Segments)-1], id)
 }
 
-func lookupIn(ctx context.Context, store SegmentStore, segments []LoadedSpan, id CommitID) (Commit, bool, error) {
+func lookupIn(ctx context.Context, store SegmentStore, segments []LoadedSpan, id ledger.CommitID) (ledger.Commit, bool, error) {
 	for i := len(segments) - 1; i >= 0; i-- {
 		s := segments[i]
 		c, ok, err := store.LookupCommit(ctx, s.Segment.ID(), id)
 		if err != nil {
-			return Commit{}, false, err
+			return ledger.Commit{}, false, err
 		}
 		if ok && c.Seq >= s.From && s.End.Includes(c.Seq) {
 			return c, true, nil
 		}
 	}
-	return Commit{}, false, nil
+	return ledger.Commit{}, false, nil
 }
 
 // locateIn reports whether id is a commit of segments within their anchor
 // ranges, from the segments' indexes alone.
-func locateIn(ctx context.Context, store SegmentStore, segments []LoadedSpan, id CommitID) (bool, error) {
+func locateIn(ctx context.Context, store SegmentStore, segments []LoadedSpan, id ledger.CommitID) (bool, error) {
 	for i := len(segments) - 1; i >= 0; i-- {
 		s := &segments[i]
 		seq, ok, err := store.Locate(ctx, s.Segment.ID(), id)

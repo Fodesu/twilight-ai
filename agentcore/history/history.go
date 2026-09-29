@@ -6,23 +6,22 @@ package history
 import (
 	"context"
 	"fmt"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // History reads a Session's committed stream for boundary questions.
 type History struct {
 	Store       session.Store
-	Registry    *extension.Registry
-	Projections extension.ProjectionReader
+	Registry    *ledger.Registry
+	Projections session.ProjectionReader
 }
 
 // StartCommit finds the commit of sid's ledger that carries turnID's
 // started fact. It errors when the Turn is not found.
-func (h History) StartCommit(ctx context.Context, sid session.SessionID, turnID turn.TurnID) (session.CommitSeq, error) {
+func (h History) StartCommit(ctx context.Context, sid session.SessionID, turnID turn.TurnID) (ledger.CommitSeq, error) {
 	return h.scanBoundary(ctx, sid, turnID, false)
 }
 
@@ -31,7 +30,7 @@ func (h History) StartCommit(ctx context.Context, sid session.SessionID, turnID 
 // rooted there sees the conversation as it stood before the Turn opened,
 // without the Turn's submitted inputs. It errors when the Turn opens the
 // history.
-func (h History) PrefixCommit(ctx context.Context, sid session.SessionID, turnID turn.TurnID) (session.CommitSeq, error) {
+func (h History) PrefixCommit(ctx context.Context, sid session.SessionID, turnID turn.TurnID) (ledger.CommitSeq, error) {
 	at, err := h.scanBoundary(ctx, sid, turnID, true)
 	if err != nil {
 		return 0, err
@@ -47,7 +46,7 @@ func (h History) PrefixCommit(ctx context.Context, sid session.SessionID, turnID
 // boundary is the turn's started commit; with inputs it is the earliest
 // commit that submitted one of the Turn's inputs, which always precedes the
 // started commit.
-func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID turn.TurnID, includeInputs bool) (session.CommitSeq, error) {
+func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID turn.TurnID, includeInputs bool) (ledger.CommitSeq, error) {
 	var inputIDs map[chatlog.InputID]struct{}
 	if includeInputs {
 		surface, err := turn.ReadSurface(ctx, h.Projections, sid)
@@ -63,8 +62,8 @@ func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID
 			inputIDs[id] = struct{}{}
 		}
 	}
-	var from session.CommitSeq
-	var started, firstInput session.CommitSeq
+	var from ledger.CommitSeq
+	var started, firstInput ledger.CommitSeq
 	var hasStarted, hasFirstInput bool
 	for {
 		page, err := h.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: from, Limit: 256})
@@ -121,7 +120,7 @@ func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID
 // (inclusive): the turn surface folded over commits [0, at]. A fork at such
 // a point would hand the child a Turn whose execution belongs to the
 // parent, so callers refuse it.
-func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at session.CommitSeq) (turn.TurnID, bool, error) {
+func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at ledger.CommitSeq) (turn.TurnID, bool, error) {
 	scope, err := h.Registry.ScopeFor(turn.SurfaceProjectionID, turn.SurfaceProjection.Version)
 	if err != nil {
 		return "", false, err
@@ -130,13 +129,13 @@ func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at session
 	if err != nil {
 		return "", false, err
 	}
-	var from session.CommitSeq
+	var from ledger.CommitSeq
 	for {
 		page, err := h.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: from, Limit: 256})
 		if err != nil {
 			return "", false, err
 		}
-		var chunk []session.Commit
+		var chunk []ledger.Commit
 		for _, c := range page.Commits {
 			if c.Seq > at {
 				break

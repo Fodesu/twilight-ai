@@ -11,13 +11,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/inbox"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
@@ -94,7 +93,7 @@ type LeaseResponse struct {
 // Lease is the wire form of session.Lease.
 type Lease struct {
 	Session        session.SessionID `json:"session"`
-	Epoch          session.Epoch     `json:"epoch"`
+	Epoch          ledger.Epoch      `json:"epoch"`
 	Owner          string            `json:"owner"`
 	UntilUnixMilli int64             `json:"untilUnixMilli"`
 }
@@ -110,22 +109,22 @@ type AllocateWorkspaceRequest struct {
 type ForkRequest struct {
 	Child      session.SessionID `json:"child"`
 	BeforeTurn turn.TurnID       `json:"beforeTurn,omitempty"`
-	At         session.CommitSeq `json:"at,omitempty"`
+	At         ledger.CommitSeq  `json:"at,omitempty"`
 }
 
 // Event is the wire form of an observe.Event (OBS-1): a committed fact with
 // its ledger position and decoded value, a transient progress observation,
 // or a stream failure.
 type Event struct {
-	Session  session.SessionID        `json:"session"`
-	Position session.Position         `json:"position"`
-	Type     session.EventType        `json:"type,omitempty"`
-	Module   extension.ModuleKey      `json:"module,omitempty"`
-	Version  extension.PayloadVersion `json:"version,omitempty"`
-	Value    json.RawMessage          `json:"value,omitempty"`
-	Unknown  bool                     `json:"unknown,omitempty"`
-	Error    string                   `json:"error,omitempty"`
-	Progress *observe.Progress        `json:"progress,omitempty"`
+	Session  session.SessionID     `json:"session"`
+	Position ledger.Position       `json:"position"`
+	Type     ledger.EventType      `json:"type,omitempty"`
+	Module   ledger.ModuleKey      `json:"module,omitempty"`
+	Version  ledger.PayloadVersion `json:"version,omitempty"`
+	Value    json.RawMessage       `json:"value,omitempty"`
+	Unknown  bool                  `json:"unknown,omitempty"`
+	Error    string                `json:"error,omitempty"`
+	Progress *observe.Progress     `json:"progress,omitempty"`
 }
 
 // EventOf renders an observe.Event.

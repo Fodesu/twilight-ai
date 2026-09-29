@@ -23,14 +23,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/felinics/twilight/agentcore/session"
 )
 
 const (
@@ -53,7 +53,7 @@ type Store struct {
 	// verified against log.jsonl (index.go). It is keyed to the log's size and
 	// mtime: any change by another instance (append, takeover, truncation)
 	// invalidates it and the next use reloads it.
-	index map[session.SegmentID]*segIndex
+	index map[ledger.SegmentID]*segIndex
 	// sync persists an appended commit; tests inject a failing one to exercise
 	// the unknown-outcome path of SES-APP-1. nil means (*os.File).Sync.
 	sync func(*os.File) error
@@ -76,7 +76,7 @@ func NewWithClock(root string, now func() time.Time, opts ...session.LedgerOptio
 	if now == nil {
 		now = time.Now
 	}
-	s := &Store{root: root, now: now, index: make(map[session.SegmentID]*segIndex)}
+	s := &Store{root: root, now: now, index: make(map[ledger.SegmentID]*segIndex)}
 	s.Ledger = session.NewLedger(s, opts...)
 	return s, nil
 }
@@ -93,7 +93,7 @@ func (s *Store) LogPath(sid session.SessionID) string {
 	return filepath.Join(s.segmentDir(rec.Tip), logFile)
 }
 
-func (s *Store) segmentDir(id session.SegmentID) string {
+func (s *Store) segmentDir(id ledger.SegmentID) string {
 	return filepath.Join(s.root, segmentsDir, encodeID(string(id)))
 }
 
@@ -131,60 +131,60 @@ func kerr(code session.ErrorCode, op string, sid session.SessionID, detail strin
 
 // segerr is kerr for a segment operation: segments name no Session, so the
 // segment id goes into the detail.
-func segerr(op string, id session.SegmentID, detail string) error {
+func segerr(op string, id ledger.SegmentID, detail string) error {
 	return &session.Error{Code: session.ErrCorrupt, Operation: op, Detail: fmt.Sprintf("segment %s: %s", id, detail)}
 }
 
 // --- segments (SegmentStore) --------------------------------------------------------
 
-func readHeader(dir string) (session.SegmentHeader, error) {
+func readHeader(dir string) (ledger.SegmentHeader, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, headerFile))
 	if err != nil {
-		return session.SegmentHeader{}, err
+		return ledger.SegmentHeader{}, err
 	}
-	var h session.SegmentHeader
+	var h ledger.SegmentHeader
 	if err := json.Unmarshal(raw, &h); err != nil {
-		return session.SegmentHeader{}, fmt.Errorf("%s: %w", headerFile, err)
+		return ledger.SegmentHeader{}, fmt.Errorf("%s: %w", headerFile, err)
 	}
 	return h, nil
 }
 
 // loadSegment reads and validates a segment's header. The caller holds the
 // lock.
-func (s *Store) loadSegment(id session.SegmentID, op string) (session.SegmentHeader, string, error) {
+func (s *Store) loadSegment(id ledger.SegmentID, op string) (ledger.SegmentHeader, string, error) {
 	dir := s.segmentDir(id)
 	h, err := readHeader(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return session.SegmentHeader{}, "", &session.Error{Code: session.ErrNotFound, Operation: op, Detail: fmt.Sprintf("segment %s not found", id)}
+			return ledger.SegmentHeader{}, "", &session.Error{Code: session.ErrNotFound, Operation: op, Detail: fmt.Sprintf("segment %s not found", id)}
 		}
-		return session.SegmentHeader{}, "", segerr(op, id, err.Error())
+		return ledger.SegmentHeader{}, "", segerr(op, id, err.Error())
 	}
 	if h.ID != id {
 		// A valid header of another segment under this directory (a copied or
 		// renamed directory) must not be served as id's.
-		return session.SegmentHeader{}, "", segerr(op, id, fmt.Sprintf("header names segment %s", h.ID))
+		return ledger.SegmentHeader{}, "", segerr(op, id, fmt.Sprintf("header names segment %s", h.ID))
 	}
 	if err := h.Validate(); err != nil {
-		return session.SegmentHeader{}, "", err
+		return ledger.SegmentHeader{}, "", err
 	}
 	return h, dir, nil
 }
 
-func (s *Store) Segment(ctx context.Context, id session.SegmentID) (session.Segment, error) {
+func (s *Store) Segment(ctx context.Context, id ledger.SegmentID) (ledger.Segment, error) {
 	if err := ctx.Err(); err != nil {
-		return session.Segment{}, err
+		return ledger.Segment{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	h, _, err := s.loadSegment(id, "segment")
 	if err != nil {
-		return session.Segment{}, err
+		return ledger.Segment{}, err
 	}
-	return session.Segment{Header: h}, nil
+	return ledger.Segment{Header: h}, nil
 }
 
-func (s *Store) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
+func (s *Store) ListSegments(ctx context.Context) ([]ledger.SegmentID, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -194,7 +194,7 @@ func (s *Store) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []session.SegmentID
+	var out []ledger.SegmentID
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -210,7 +210,7 @@ func (s *Store) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
 
 // ReadSegmentStream is ReadSegment narrowed to the commits whose index
 // entry counts events of stream (SES-REP-2/5).
-func (s *Store) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.Domain, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
+func (s *Store) ReadSegmentStream(ctx context.Context, id ledger.SegmentID, stream ledger.Domain, from ledger.CommitSeq, limit uint32) ([]ledger.Commit, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
@@ -224,7 +224,7 @@ func (s *Store) ReadSegmentStream(ctx context.Context, id session.SegmentID, str
 	if err != nil {
 		return nil, false, err
 	}
-	var out []session.Commit
+	var out []ledger.Commit
 	for i := range x.idx.Entries {
 		e := &x.idx.Entries[i]
 		if e.Seq < from || !countsStream(e, stream) {
@@ -245,7 +245,7 @@ func (s *Store) ReadSegmentStream(ctx context.Context, id session.SegmentID, str
 	return out, false, nil
 }
 
-func countsStream(e *session.IndexEntry, stream session.Domain) bool {
+func countsStream(e *session.IndexEntry, stream ledger.Domain) bool {
 	for _, sc := range e.Streams {
 		if sc.Domain == stream && sc.Events > 0 {
 			return true
@@ -255,15 +255,15 @@ func countsStream(e *session.IndexEntry, stream session.Domain) bool {
 }
 
 // ReadSegment returns the segment's own commits from from (absolute Seq).
-func (s *Store) ReadSegment(ctx context.Context, id session.SegmentID, from session.CommitSeq, limit uint32) ([]session.Commit, session.Head, bool, error) {
+func (s *Store) ReadSegment(ctx context.Context, id ledger.SegmentID, from ledger.CommitSeq, limit uint32) ([]ledger.Commit, ledger.Head, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, session.Head{}, false, err
+		return nil, ledger.Head{}, false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	header, dir, err := s.loadSegment(id, "read")
 	if err != nil {
-		return nil, session.Head{}, false, err
+		return nil, ledger.Head{}, false, err
 	}
 	seed := header.Seed()
 	if from < seed.Next {
@@ -271,7 +271,7 @@ func (s *Store) ReadSegment(ctx context.Context, id session.SegmentID, from sess
 	}
 	commits, head, err := s.commitsFrom(id, header, dir, from)
 	if err != nil {
-		return nil, session.Head{}, false, err
+		return nil, ledger.Head{}, false, err
 	}
 	if from >= head.Next {
 		return nil, head, false, nil
@@ -283,13 +283,13 @@ func (s *Store) ReadSegment(ctx context.Context, id session.SegmentID, from sess
 		end = start + int(limit)
 		more = true
 	}
-	return append([]session.Commit(nil), commits[start:end]...), head, more, nil
+	return append([]ledger.Commit(nil), commits[start:end]...), head, more, nil
 }
 
 // Append persists a commit at the segment head under the lease: the root
 // file is the ownership authority, re-read here so a takeover through
 // another instance fences this writer (SES-OWN-2).
-func (s *Store) Append(ctx context.Context, lease session.Lease, id session.SegmentID, c session.Commit) error {
+func (s *Store) Append(ctx context.Context, lease session.Lease, id ledger.SegmentID, c ledger.Commit) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -313,7 +313,7 @@ func (s *Store) Append(ctx context.Context, lease session.Lease, id session.Segm
 		return err
 	}
 	path := filepath.Join(dir, logFile)
-	_, head, err := s.commitsFrom(id, header, dir, ^session.CommitSeq(0))
+	_, head, err := s.commitsFrom(id, header, dir, ^ledger.CommitSeq(0))
 	if err != nil {
 		return err
 	}
@@ -387,26 +387,26 @@ func (s *Store) fail(lease session.Lease, owner ownerRecord, step string, cause 
 	return kerr(session.ErrHandleFailed, "append", lease.Session, detail)
 }
 
-func (s *Store) TruncateSegment(ctx context.Context, id session.SegmentID, through session.CommitSeq) (session.Head, []session.CommitID, error) {
+func (s *Store) TruncateSegment(ctx context.Context, id ledger.SegmentID, through ledger.CommitSeq) (ledger.Head, []ledger.CommitID, error) {
 	if err := ctx.Err(); err != nil {
-		return session.Head{}, nil, err
+		return ledger.Head{}, nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	header, dir, err := s.loadSegment(id, "collect")
 	if err != nil {
-		return session.Head{}, nil, err
+		return ledger.Head{}, nil, err
 	}
 	path := filepath.Join(dir, logFile)
 	commits, _, _, _, err := readLog(path, "", "collect")
 	if err != nil {
-		return session.Head{}, nil, err
+		return ledger.Head{}, nil, err
 	}
 	// CreateSession holds this same lock while it checks a commit and writes
 	// the span that names it. A span already stored can only raise the cut.
 	bound, ok, err := s.spanBoundLocked(id)
 	if err != nil {
-		return session.Head{}, nil, err
+		return ledger.Head{}, nil, err
 	}
 	if ok && bound.Open {
 		return headOf(header, commits), nil, nil
@@ -421,16 +421,16 @@ func (s *Store) TruncateSegment(ctx context.Context, id session.SegmentID, throu
 	if keep == len(commits) {
 		return headOf(header, commits), nil, nil
 	}
-	dropped := make([]session.CommitID, 0, len(commits)-keep)
+	dropped := make([]ledger.CommitID, 0, len(commits)-keep)
 	for _, c := range commits[keep:] {
 		dropped = append(dropped, c.CommitID)
 	}
 	s.dropIndex(id)
 	if err := rewriteLog(path, commits[:keep]); err != nil {
-		return session.Head{}, nil, err
+		return ledger.Head{}, nil, err
 	}
 	if _, err := s.rebuildIndex(id, header, dir); err != nil {
-		return session.Head{}, nil, err
+		return ledger.Head{}, nil, err
 	}
 	return headOf(header, commits[:keep]), dropped, nil
 }
@@ -438,7 +438,7 @@ func (s *Store) TruncateSegment(ctx context.Context, id session.SegmentID, throu
 // RemoveSegment deletes the node unless a root's tip or a child's edge
 // still names it (SES-GC-4); the check and the removal are under the store
 // lock, which CreateSession also takes.
-func (s *Store) RemoveSegment(ctx context.Context, id session.SegmentID) error {
+func (s *Store) RemoveSegment(ctx context.Context, id ledger.SegmentID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -457,7 +457,7 @@ func (s *Store) RemoveSegment(ctx context.Context, id session.SegmentID) error {
 
 // SpanBound is the greatest end among live roots whose path names id.
 // The caller does not hold the store lock.
-func (s *Store) SpanBound(ctx context.Context, id session.SegmentID) (session.Bound, bool, error) {
+func (s *Store) SpanBound(ctx context.Context, id ledger.SegmentID) (session.Bound, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return session.Bound{}, false, err
 	}
@@ -467,7 +467,7 @@ func (s *Store) SpanBound(ctx context.Context, id session.SegmentID) (session.Bo
 }
 
 // spanBoundLocked is SpanBound. The caller holds s.mu.
-func (s *Store) spanBoundLocked(id session.SegmentID) (session.Bound, bool, error) {
+func (s *Store) spanBoundLocked(id ledger.SegmentID) (session.Bound, bool, error) {
 	roots, err := s.readRoots()
 	if err != nil {
 		return session.Bound{}, false, err
@@ -495,7 +495,7 @@ func (s *Store) DropOrphanSpans(ctx context.Context) error {
 
 // referenced reports whether a live root's tip or any segment's parent
 // edge names id.
-func (s *Store) referenced(id session.SegmentID) (bool, error) {
+func (s *Store) referenced(id ledger.SegmentID) (bool, error) {
 	roots, err := s.readRoots()
 	if err != nil {
 		return false, err
@@ -530,8 +530,8 @@ func (s *Store) referenced(id session.SegmentID) (bool, error) {
 // ownership. The file is the ownership authority every Append checks.
 type ownerRecord struct {
 	session.SessionRecord
-	Epoch session.Epoch `json:"epoch"`
-	Owned bool          `json:"owned"`
+	Epoch ledger.Epoch `json:"epoch"`
+	Owned bool         `json:"owned"`
 	// Owner and LeaseUntilUnixMilli are the lease's holder and expiry
 	// (SES-OWN-1); a zero expiry never expires.
 	Owner               string `json:"owner,omitempty"`
@@ -578,7 +578,7 @@ func (s *Store) saveRoot(sid session.SessionID, rec ownerRecord) error {
 // in between leaves a segment no root names. Collect removes it (SES-GC-2).
 // There is never a root without its segment, and never a second root on an
 // existing one.
-func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
+func (s *Store) CreateSession(ctx context.Context, seg ledger.Segment, rec session.SessionRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -629,8 +629,8 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 
 // requireRetainedCommits reports ErrNotFound when a closed span's Through,
 // or the parent edge's commit, is not in the log. The caller holds s.mu.
-func (s *Store) requireRetainedCommits(sid session.SessionID, seg session.Segment, path session.Path) error {
-	check := func(id session.SegmentID, seq session.CommitSeq) error {
+func (s *Store) requireRetainedCommits(sid session.SessionID, seg ledger.Segment, path session.Path) error {
+	check := func(id ledger.SegmentID, seq ledger.CommitSeq) error {
 		commits, _, _, _, err := readLog(filepath.Join(s.segmentDir(id), logFile), sid, "create")
 		if err != nil {
 			return err
@@ -891,11 +891,11 @@ func (s *Store) DeleteRecord(ctx context.Context, sid session.SessionID) (sessio
 	return prior, nil
 }
 
-func headOf(h session.SegmentHeader, commits []session.Commit) session.Head {
+func headOf(h ledger.SegmentHeader, commits []ledger.Commit) ledger.Head {
 	if len(commits) == 0 {
 		return h.Seed()
 	}
-	return session.Head{Next: commits[len(commits)-1].Seq + 1}
+	return ledger.Head{Next: commits[len(commits)-1].Seq + 1}
 }
 
 // --- log file ---------------------------------------------------------------------
@@ -905,7 +905,7 @@ func headOf(h session.SegmentHeader, commits []session.Commit) session.Head {
 // retained is the byte length of the retained prefix and torn reports whether
 // anything was excluded. Malformed content before the final line is
 // ErrCorrupt.
-func readLog(path string, sid session.SessionID, op string) (commits []session.Commit, offsets []int64, retained int64, torn bool, err error) {
+func readLog(path string, sid session.SessionID, op string) (commits []ledger.Commit, offsets []int64, retained int64, torn bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -919,7 +919,7 @@ func readLog(path string, sid session.SessionID, op string) (commits []session.C
 // parseLog parses whole lines. offsets has one entry per parsed commit plus a
 // final entry holding the end of the last one, so offsets[len(commits)] is
 // the retained byte length whether or not a tail was dropped.
-func parseLog(data []byte, sid session.SessionID, op string) (commits []session.Commit, offsets []int64, retained int64, torn bool, err error) {
+func parseLog(data []byte, sid session.SessionID, op string) (commits []ledger.Commit, offsets []int64, retained int64, torn bool, err error) {
 	off := 0
 	for off < len(data) {
 		nl := bytes.IndexByte(data[off:], '\n')
@@ -928,7 +928,7 @@ func parseLog(data []byte, sid session.SessionID, op string) (commits []session.
 			break
 		}
 		line := data[off : off+nl]
-		var c session.Commit
+		var c ledger.Commit
 		if uerr := json.Unmarshal(line, &c); uerr != nil {
 			if off+nl+1 == len(data) {
 				torn = true // torn write of the final line
@@ -960,7 +960,7 @@ func readRange(path string, start, end int64) ([]byte, error) {
 }
 
 // rewriteLog replaces log.jsonl with exactly these commits.
-func rewriteLog(path string, commits []session.Commit) error {
+func rewriteLog(path string, commits []ledger.Commit) error {
 	var buf bytes.Buffer
 	for i := range commits {
 		line, err := json.Marshal(commits[i])
@@ -976,10 +976,10 @@ func rewriteLog(path string, commits []session.Commit) error {
 // --- test hooks -----------------------------------------------------------------
 
 // tip locates the segment a live Session appends to. The caller holds the lock.
-func (s *Store) tip(sid session.SessionID, op string) (session.SegmentHeader, string, error) {
+func (s *Store) tip(sid session.SessionID, op string) (ledger.SegmentHeader, string, error) {
 	rec, _, err := s.loadRoot(sid, op)
 	if err != nil {
-		return session.SegmentHeader{}, "", err
+		return ledger.SegmentHeader{}, "", err
 	}
 	return s.loadSegment(rec.Tip, op)
 }

@@ -3,12 +3,11 @@ package writer
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"sync"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // faultStore wraps a Store so one Append can be made to fail either before
@@ -50,17 +49,17 @@ type faultHandle struct {
 
 var errInjected = errors.New("injected transport failure")
 
-func (h *faultHandle) Append(ctx context.Context, p session.Proposal) (session.Commit, error) {
+func (h *faultHandle) Append(ctx context.Context, p ledger.Proposal) (ledger.Commit, error) {
 	switch h.store.take() {
 	case "before":
-		return session.Commit{}, errInjected
+		return ledger.Commit{}, errInjected
 	case "invalid":
-		return session.Commit{}, &session.Error{Code: session.ErrInvalid, Operation: "append", Detail: "injected validation rejection"}
+		return ledger.Commit{}, &session.Error{Code: session.ErrInvalid, Operation: "append", Detail: "injected validation rejection"}
 	case "after":
 		if _, err := h.Handle.Append(ctx, p); err != nil {
-			return session.Commit{}, err
+			return ledger.Commit{}, err
 		}
-		return session.Commit{}, errInjected // durable, but the response is lost
+		return ledger.Commit{}, errInjected // durable, but the response is lost
 	}
 	return h.Handle.Append(ctx, p)
 }
@@ -113,7 +112,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			}
 			assertClaim(tc.beforeOpen)
 			if tc.mode != "invalid" {
-				if _, err := artifact.Reconcile(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(tipSegment(t, f.store, "s"))}, w); !errors.Is(err, &extension.Error{Code: extension.ErrUnknownOutcome}) {
+				if _, err := artifact.Reconcile(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(tipSegment(t, f.store, "s"))}, w); !errors.Is(err, &ledger.Error{Code: ledger.CodeUnknownOutcome}) {
 					t.Fatalf("reconcile against failed writer = %v, want unknown_outcome", err)
 				}
 				assertClaim(artifact.ClaimActive)
@@ -162,7 +161,7 @@ func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 		}
 		return w
 	}
-	unknown := &extension.Error{Code: extension.ErrUnknownOutcome}
+	unknown := &ledger.Error{Code: ledger.CodeUnknownOutcome}
 
 	w1 := open(false)
 	if res, err := w1.Commit(ctx, noteGroup("c1", "one")); err != nil || res.Outcome != CommitApplied {
@@ -225,7 +224,7 @@ func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 		t.Fatalf("final log = %d commits %v, want 5", len(page.Commits), err)
 	}
 	for i := range page.Commits {
-		if page.Commits[i].Seq != session.CommitSeq(i) {
+		if page.Commits[i].Seq != ledger.CommitSeq(i) {
 			t.Fatalf("seq at position %d is %d", i, page.Commits[i].Seq)
 		}
 	}

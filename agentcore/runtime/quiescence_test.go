@@ -2,14 +2,12 @@ package runtime
 
 import (
 	"errors"
-	"strings"
-	"testing"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/turn"
+	"strings"
+	"testing"
 )
 
 // guardView is a writer.View that answers the surface projection with state
@@ -20,16 +18,16 @@ type guardView struct {
 	machine any
 }
 
-func (guardView) Head() session.Head                                  { return session.Head{} }
-func (guardView) Epoch() session.Epoch                                { return 0 }
-func (guardView) Schema() extension.PayloadVersion                    { return 1 }
-func (guardView) Header() session.SegmentHeader                       { return session.SegmentHeader{} }
-func (guardView) Committed(session.CommitID) (bool, error)            { return false, nil }
-func (guardView) StreamHead(session.Domain) (session.StreamSeq, bool) { return 0, false }
-func (guardView) LookupCommit(session.CommitID) (session.Commit, bool, error) {
-	return session.Commit{}, false, nil
+func (guardView) Head() ledger.Head                                 { return ledger.Head{} }
+func (guardView) Epoch() ledger.Epoch                               { return 0 }
+func (guardView) Schema() ledger.PayloadVersion                     { return 1 }
+func (guardView) Header() ledger.SegmentHeader                      { return ledger.SegmentHeader{} }
+func (guardView) Committed(ledger.CommitID) (bool, error)           { return false, nil }
+func (guardView) StreamHead(ledger.Domain) (ledger.StreamSeq, bool) { return 0, false }
+func (guardView) LookupCommit(ledger.CommitID) (ledger.Commit, bool, error) {
+	return ledger.Commit{}, false, nil
 }
-func (v guardView) Projection(id extension.ProjectionID, _ extension.ProjectionVersion) (any, error) {
+func (v guardView) Projection(id ledger.ProjectionID, _ ledger.ProjectionVersion) (any, error) {
 	if id == runmod.MachineProjectionID {
 		return v.machine, v.err
 	}

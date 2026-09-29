@@ -2,10 +2,8 @@ package writer
 
 import (
 	"fmt"
-
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
+	"github.com/felinics/twilight/agentcore/ledger"
 )
 
 // bindingRef is one artifact reference an event declares: the BindingID, the
@@ -14,7 +12,7 @@ import (
 // them.
 type bindingRef struct {
 	id    artifact.BindingID
-	decl  *extension.BindingReferenceDefinition
+	decl  *ledger.BindingReferenceDefinition
 	where string
 }
 
@@ -34,11 +32,11 @@ func bindingIDs(refs []bindingRef) []artifact.BindingID {
 // each batch's stream attribution against the stream domain its event types
 // declare, extracts the artifact references the events declare and returns
 // the proposal batches. It touches no store.
-func encode(registry *extension.Registry, group *SemanticGroup) ([]session.EventBatch, []bindingRef, string) {
-	batches := make([]session.EventBatch, len(group.Batches))
+func encode(registry *ledger.Registry, group *SemanticGroup) ([]ledger.EventBatch, []bindingRef, string) {
+	batches := make([]ledger.EventBatch, len(group.Batches))
 	var refs []bindingRef
 	for bi, tb := range group.Batches {
-		events := make([]session.Event, len(tb.Events))
+		events := make([]ledger.Event, len(tb.Events))
 		for i, te := range tb.Events {
 			where := fmt.Sprintf("batch %d event %d", bi, i)
 			_, def, ok := registry.LookupEvent(te.Type)
@@ -69,9 +67,9 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Event
 					refs = append(refs, bindingRef{id: id, decl: decl, where: where})
 				}
 			}
-			events[i] = session.Event{Type: te.Type, RecordedAtUnixMilli: te.RecordedAtUnixMilli, Payload: payload}
+			events[i] = ledger.Event{Type: te.Type, RecordedAtUnixMilli: te.RecordedAtUnixMilli, Payload: payload}
 		}
-		batches[bi] = session.EventBatch{Domain: tb.Domain, Events: events}
+		batches[bi] = ledger.EventBatch{Domain: tb.Domain, Events: events}
 	}
 	return batches, refs, ""
 }
@@ -80,7 +78,7 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Event
 // declaration of the domain the event type names (EXT-STR-1). It returns a
 // human verdict for the commit's detail string; the declarations themselves
 // are validated at BuildRegistry.
-func checkStreamAffinity(stream session.Domain, def extension.StreamDefinition, value any) string {
+func checkStreamAffinity(stream ledger.Domain, def ledger.StreamDefinition, value any) string {
 	if stream.Name != def.Domain {
 		return fmt.Sprintf("event belongs to stream domain %q but the batch is %s", def.Domain, stream)
 	}

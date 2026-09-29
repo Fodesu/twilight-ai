@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/writer"
 	"strconv"
 	"time"
-
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
-	"github.com/felinics/twilight/agentcore/session/writer"
 )
 
 // The Session binding is a Session fact (APP-WSP-1): which Workspace the
@@ -21,29 +20,29 @@ import (
 // is the Share policy; the other fork policies write the child's own fact.
 const (
 	// Source is the SourceID of this agent's application modules (EXT-REG-1).
-	Source extension.SourceID = "agent"
+	Source ledger.SourceID = "agent"
 	// ModuleID names the module.
-	ModuleID extension.ModuleID = "workspace"
+	ModuleID ledger.ModuleID = "workspace"
 	// StreamDomain is the singleton stream the binding facts live on.
 	StreamDomain = "workspace"
 	// Version is the payload version the module writes.
-	Version extension.PayloadVersion = 1
+	Version ledger.PayloadVersion = 1
 	// TypeBound binds the Session to a Workspace.
-	TypeBound session.EventType = "agent/workspace/bound"
+	TypeBound ledger.EventType = "agent/workspace/bound"
 	// TypeUnbound records that the Session works in no Workspace, ending a
 	// binding of its own or an inherited one.
-	TypeUnbound session.EventType = "agent/workspace/unbound"
+	TypeUnbound ledger.EventType = "agent/workspace/unbound"
 	// TypeSnapshotted records a Snapshot of the Session's bound Workspace
 	// at this point of the conversation (APP-WSP-7): what a fork at this
 	// point restores.
-	TypeSnapshotted session.EventType = "agent/workspace/snapshotted"
+	TypeSnapshotted ledger.EventType = "agent/workspace/snapshotted"
 	// BindingProjectionID is the module's projection.
-	BindingProjectionID extension.ProjectionID = "agent/workspace/binding"
+	BindingProjectionID ledger.ProjectionID = "agent/workspace/binding"
 	// TargetKind is the run.TargetRef Kind of a Workspace target.
 	TargetKind = "workspace"
 )
 
-var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Lineage: session.LineageSession}
+var streamDefinition = ledger.StreamDefinition{Domain: StreamDomain, Lineage: ledger.LineageSession}
 
 // Stream is the module's logical stream.
 var Stream = streamDefinition.Ref("")
@@ -84,16 +83,16 @@ type Binding struct {
 func (b Binding) InheritedBy(sid session.SessionID) bool { return b.Bound && b.Scope != sid }
 
 // BindingProjection folds the module's two facts into the current Binding.
-var BindingProjection = extension.ProjectionDefinition{
+var BindingProjection = ledger.ProjectionDefinition{
 	ID: BindingProjectionID, Version: 1,
-	Consumes:   []session.EventType{TypeBound, TypeUnbound, TypeSnapshotted},
+	Consumes:   []ledger.EventType{TypeBound, TypeUnbound, TypeSnapshotted},
 	Initial:    func() (any, error) { return Binding{}, nil },
 	Apply:      applyBinding,
-	StateCodec: extension.JSONStateCodec[Binding]{},
+	StateCodec: ledger.JSONStateCodec[Binding]{},
 }
 
 //nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
-func applyBinding(state any, e extension.DecodedEvent) (any, error) {
+func applyBinding(state any, e ledger.DecodedEvent) (any, error) {
 	b, ok := state.(Binding)
 	if !ok {
 		return nil, fmt.Errorf("workspace binding: state is %T", state)
@@ -120,35 +119,35 @@ func applyBinding(state any, e extension.DecodedEvent) (any, error) {
 
 // Module is the workspace ModuleDescriptor: one singleton stream, two
 // facts, one projection.
-var Module = extension.ModuleDescriptor{
+var Module = ledger.ModuleDescriptor{
 	Source:  Source,
 	ID:      ModuleID,
-	Streams: []extension.StreamDefinition{streamDefinition},
-	Events: []extension.EventDefinition{
-		{Type: TypeBound, Domain: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[BoundPayload]{Check: func(p *BoundPayload) error {
+	Streams: []ledger.StreamDefinition{streamDefinition},
+	Events: []ledger.EventDefinition{
+		{Type: TypeBound, Domain: StreamDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{Version: ledger.JSONCodec[BoundPayload]{Check: func(p *BoundPayload) error {
 			if p.Workspace == "" || p.Scope == "" {
 				return errors.New("workspace bound requires workspace and scope")
 			}
 			return nil
 		}}}},
-		{Type: TypeUnbound, Domain: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[UnboundPayload]{Check: func(p *UnboundPayload) error {
+		{Type: TypeUnbound, Domain: StreamDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{Version: ledger.JSONCodec[UnboundPayload]{Check: func(p *UnboundPayload) error {
 			if p.Scope == "" {
 				return errors.New("workspace unbound requires scope")
 			}
 			return nil
 		}}}},
-		{Type: TypeSnapshotted, Domain: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[SnapshottedPayload]{Check: func(p *SnapshottedPayload) error {
+		{Type: TypeSnapshotted, Domain: StreamDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{Version: ledger.JSONCodec[SnapshottedPayload]{Check: func(p *SnapshottedPayload) error {
 			if p.Workspace == "" || p.Snapshot == "" || p.Scope == "" {
 				return errors.New("workspace snapshotted requires workspace, snapshot and scope")
 			}
 			return nil
 		}}}},
 	},
-	Projections: []extension.ProjectionDefinition{BindingProjection},
+	Projections: []ledger.ProjectionDefinition{BindingProjection},
 }
 
 // Read folds the Session's Binding through a lease-free reader.
-func Read(ctx context.Context, reader extension.ProjectionReader, sid session.SessionID) (Binding, error) {
+func Read(ctx context.Context, reader session.ProjectionReader, sid session.SessionID) (Binding, error) {
 	state, _, err := reader.Load(ctx, sid, BindingProjectionID, BindingProjection.Version)
 	if err != nil {
 		return Binding{}, err
@@ -194,11 +193,11 @@ func (c *Commands) Bind(ctx context.Context, w writer.Writer, id ID) error {
 		return errors.New("workspace: bind requires a workspace id")
 	}
 	sid := w.SessionID()
-	return c.commit(ctx, w, func(v writer.View, b Binding) (session.CommitID, writer.TypedEvent, bool) {
+	return c.commit(ctx, w, func(v writer.View, b Binding) (ledger.CommitID, writer.TypedEvent, bool) {
 		if b.Bound && b.Workspace == id && b.Scope == sid {
 			return "", writer.TypedEvent{}, false
 		}
-		return session.CommitID("workspace-bound/" + string(id) + "/" + strconv.FormatUint(uint64(v.Head().Next), 10)),
+		return ledger.CommitID("workspace-bound/" + string(id) + "/" + strconv.FormatUint(uint64(v.Head().Next), 10)),
 			writer.TypedEvent{Type: TypeBound, RecordedAtUnixMilli: c.now(), Value: BoundPayload{Workspace: id, Scope: sid}}, true
 	})
 }
@@ -207,11 +206,11 @@ func (c *Commands) Bind(ctx context.Context, w writer.Writer, id ID) error {
 // binding, own or inherited, writes nothing.
 func (c *Commands) Unbind(ctx context.Context, w writer.Writer, reason string) error {
 	sid := w.SessionID()
-	return c.commit(ctx, w, func(v writer.View, b Binding) (session.CommitID, writer.TypedEvent, bool) {
+	return c.commit(ctx, w, func(v writer.View, b Binding) (ledger.CommitID, writer.TypedEvent, bool) {
 		if !b.Bound {
 			return "", writer.TypedEvent{}, false
 		}
-		return session.CommitID("workspace-unbound/" + strconv.FormatUint(uint64(v.Head().Next), 10)),
+		return ledger.CommitID("workspace-unbound/" + strconv.FormatUint(uint64(v.Head().Next), 10)),
 			writer.TypedEvent{Type: TypeUnbound, RecordedAtUnixMilli: c.now(), Value: UnboundPayload{Scope: sid, Reason: reason}}, true
 	})
 }
@@ -224,16 +223,16 @@ func (c *Commands) RecordSnapshot(ctx context.Context, w writer.Writer, snap *Sn
 		return errors.New("workspace: record snapshot requires a snapshot with a ref and a workspace")
 	}
 	sid := w.SessionID()
-	return c.commit(ctx, w, func(_ writer.View, b Binding) (session.CommitID, writer.TypedEvent, bool) {
+	return c.commit(ctx, w, func(_ writer.View, b Binding) (ledger.CommitID, writer.TypedEvent, bool) {
 		if b.Snapshot == snap.Ref {
 			return "", writer.TypedEvent{}, false
 		}
-		return session.CommitID("workspace-snapshotted/" + string(snap.Ref)),
+		return ledger.CommitID("workspace-snapshotted/" + string(snap.Ref)),
 			writer.TypedEvent{Type: TypeSnapshotted, RecordedAtUnixMilli: c.now(), Value: SnapshottedPayload{Workspace: snap.Workspace, Snapshot: snap.Ref, Scope: sid}}, true
 	})
 }
 
-func (c *Commands) commit(ctx context.Context, w writer.Writer, decide func(writer.View, Binding) (session.CommitID, writer.TypedEvent, bool)) error {
+func (c *Commands) commit(ctx context.Context, w writer.Writer, decide func(writer.View, Binding) (ledger.CommitID, writer.TypedEvent, bool)) error {
 	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		b, err := current(v)
 		if err != nil {

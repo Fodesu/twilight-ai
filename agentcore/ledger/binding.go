@@ -1,8 +1,7 @@
-package extension
+package ledger
 
 import (
 	"errors"
-
 	"github.com/felinics/twilight/agentcore/artifact"
 )
 

@@ -8,19 +8,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/wire"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 const (
-	ModuleID extension.ModuleID = "run"
+	ModuleID ledger.ModuleID = "run"
 	// Prefix is the EventType namespace of every Run fact.
-	Prefix session.EventType = "twilight/run/"
+	Prefix ledger.EventType = "twilight/run/"
 	// StreamDomain is the stream domain of Run facts: one keyed stream per
 	// Run, bound by the payload's runId.
 	StreamDomain = "run"
@@ -28,7 +26,7 @@ const (
 
 // streamDefinition declares the run domain: keyed by RunID and of segment
 // lineage, so a fork never reads an ancestor's Runs as its own.
-var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Key: streamKey, Lineage: session.LineageSegment}
+var streamDefinition = ledger.StreamDefinition{Domain: StreamDomain, Key: streamKey, Lineage: ledger.LineageSegment}
 
 // streamKey binds a run event to its Run's stream (EXT-STR-1).
 func streamKey(value any) (string, error) {
@@ -40,7 +38,7 @@ func streamKey(value any) (string, error) {
 }
 
 // Stream is the logical stream of one Run's facts.
-func Stream(runID run.RunID) session.Domain { return streamDefinition.Ref(string(runID)) }
+func Stream(runID run.RunID) ledger.Domain { return streamDefinition.Ref(string(runID)) }
 
 // factNames is the closed list of fact discriminators, from the Run core's
 // variant registry: a fact the core knows is a wire type this module
@@ -48,8 +46,8 @@ func Stream(runID run.RunID) session.Domain { return streamDefinition.Ref(string
 var factNames = wire.FactTypes()
 
 // EventType returns the EventType of a fact.
-func EventType(f run.Fact) session.EventType {
-	return Prefix + session.EventType(wire.Facts{}.FactType(f))
+func EventType(f run.Fact) ledger.EventType {
+	return Prefix + ledger.EventType(wire.Facts{}.FactType(f))
 }
 
 // Event is the typed value of one twilight/run/ event: the fact plus the
@@ -145,9 +143,9 @@ var frozenBodyFacts = map[string]bool{
 	"model_step_prepared": true, "model_step_completed": true, "tool_call_completed": true, "tool_call_answered": true,
 }
 
-var frozenBinding = extension.BindingReferenceDefinition{
-	Extractor:          extension.BindingExtractorFunc(frozenRefs),
-	Cardinality:        extension.Cardinality{Min: 1, Max: &one},
+var frozenBinding = ledger.BindingReferenceDefinition{
+	Extractor:          ledger.BindingExtractorFunc(frozenRefs),
+	Cardinality:        ledger.Cardinality{Min: 1, Max: &one},
 	AllowedSchemes:     []artifact.Scheme{artifact.SchemeCAS},
 	RequiredDurability: artifact.EventBound,
 }
@@ -167,9 +165,9 @@ var Module = buildModule()
 // whose shape changes keeps its previous codec under its old version and
 // moves up one version by itself. A history with a gap is a programming
 // error in this module's own table and stops the build.
-func factCodecs(name string, older map[extension.PayloadVersion]extension.PayloadCodec) (map[extension.PayloadVersion]extension.PayloadCodec, extension.PayloadVersion) {
-	codecs := make(map[extension.PayloadVersion]extension.PayloadCodec, len(older)+1)
-	for v := extension.PayloadVersion(1); int(v) <= len(older); v++ {
+func factCodecs(name string, older map[ledger.PayloadVersion]ledger.PayloadCodec) (map[ledger.PayloadVersion]ledger.PayloadCodec, ledger.PayloadVersion) {
+	codecs := make(map[ledger.PayloadVersion]ledger.PayloadCodec, len(older)+1)
+	for v := ledger.PayloadVersion(1); int(v) <= len(older); v++ {
 		c, ok := older[v]
 		if !ok || c == nil {
 			panic(fmt.Sprintf("runmod: fact %s: codec history has no version %d", name, v))
@@ -179,7 +177,7 @@ func factCodecs(name string, older map[extension.PayloadVersion]extension.Payloa
 	if len(codecs) != len(older) {
 		panic(fmt.Sprintf("runmod: fact %s: codec history is not contiguous from 1", name))
 	}
-	current := extension.PayloadVersion(len(older) + 1) //nolint:gosec // G115: a handful of versions
+	current := ledger.PayloadVersion(len(older) + 1) //nolint:gosec // G115: a handful of versions
 	codecs[current] = factCodec{local: name, wire: wire.Facts{}}
 	return codecs, current
 }
@@ -188,26 +186,26 @@ func factCodecs(name string, older map[extension.PayloadVersion]extension.Payloa
 // fact type has changed wire shape since it was first written, so every
 // type is at version 1 with no history; the first change adds the codec of
 // the shape it replaces here, under version 1, and keeps it for good.
-func olderFactCodecs(string) map[extension.PayloadVersion]extension.PayloadCodec { return nil }
+func olderFactCodecs(string) map[ledger.PayloadVersion]ledger.PayloadCodec { return nil }
 
 // eventDefinition is the EventDefinition of one fact type over its codec
 // history.
-func eventDefinition(name string, codecs map[extension.PayloadVersion]extension.PayloadCodec, current extension.PayloadVersion) extension.EventDefinition {
-	def := extension.EventDefinition{
-		Type:    Prefix + session.EventType(name),
+func eventDefinition(name string, codecs map[ledger.PayloadVersion]ledger.PayloadCodec, current ledger.PayloadVersion) ledger.EventDefinition {
+	def := ledger.EventDefinition{
+		Type:    Prefix + ledger.EventType(name),
 		Domain:  StreamDomain,
 		Codecs:  codecs,
 		Version: current,
 	}
 	if frozenBodyFacts[name] {
-		def.Bindings = []extension.BindingReferenceDefinition{frozenBinding}
+		def.Bindings = []ledger.BindingReferenceDefinition{frozenBinding}
 	}
 	return def
 }
 
-func buildModule() extension.ModuleDescriptor {
-	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID,
-		Streams: []extension.StreamDefinition{streamDefinition}, Projections: []extension.ProjectionDefinition{MachineProjection}}
+func buildModule() ledger.ModuleDescriptor {
+	m := ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: ModuleID,
+		Streams: []ledger.StreamDefinition{streamDefinition}, Projections: []ledger.ProjectionDefinition{MachineProjection}}
 	for _, name := range factNames {
 		codecs, current := factCodecs(name, olderFactCodecs(name))
 		m.Events = append(m.Events, eventDefinition(name, codecs, current))
@@ -216,13 +214,13 @@ func buildModule() extension.ModuleDescriptor {
 }
 
 // Type returns the EventType of one fact discriminator.
-func Type(name string) session.EventType { return Prefix + session.EventType(name) }
+func Type(name string) ledger.EventType { return Prefix + ledger.EventType(name) }
 
 // AllTypes lists every registered twilight/run/ EventType.
-func AllTypes() []session.EventType {
-	out := make([]session.EventType, len(factNames))
+func AllTypes() []ledger.EventType {
+	out := make([]ledger.EventType, len(factNames))
 	for i, name := range factNames {
-		out[i] = Prefix + session.EventType(name)
+		out[i] = Prefix + ledger.EventType(name)
 	}
 	return out
 }

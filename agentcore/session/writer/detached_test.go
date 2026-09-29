@@ -2,10 +2,8 @@ package writer
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 type nestedEntry struct {
@@ -20,11 +18,11 @@ func TestProjectionReadsAreDetached(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 	module := noteModule("nested")
-	id := extension.ProjectionID(string(tpfx("nested")) + "state")
-	module.Projections = []extension.ProjectionDefinition{{
-		ID: id, Version: 1, Consumes: []session.EventType{tpfx("nested") + "note"},
+	id := ledger.ProjectionID(string(tpfx("nested")) + "state")
+	module.Projections = []ledger.ProjectionDefinition{{
+		ID: id, Version: 1, Consumes: []ledger.EventType{tpfx("nested") + "note"},
 		Initial: func() (any, error) { return nestedState{Entries: map[string][]*nestedEntry{}}, nil },
-		Apply: func(state any, event extension.DecodedEvent) (any, error) {
+		Apply: func(state any, event ledger.DecodedEvent) (any, error) {
 			s := state.(nestedState)
 			entries := make(map[string][]*nestedEntry, len(s.Entries)+1)
 			for key, value := range s.Entries {
@@ -34,10 +32,10 @@ func TestProjectionReadsAreDetached(t *testing.T) {
 			entries[text] = []*nestedEntry{{Values: []string{text}}}
 			return nestedState{Entries: entries}, nil
 		},
-		StateCodec: extension.JSONStateCodec[nestedState]{},
+		StateCodec: ledger.JSONStateCodec[nestedState]{},
 	}}
 	var err error
-	f.registry, err = extension.BuildRegistry(module)
+	f.registry, err = ledger.BuildRegistry(module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +44,7 @@ func TestProjectionReadsAreDetached(t *testing.T) {
 	commit := func(text string) {
 		t.Helper()
 		res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-			return &SemanticGroup{CommitID: session.CommitID(text), Batches: noteBatch(TypedEvent{Type: tpfx("nested") + "note", Value: notePayload{Text: text}})}, nil
+			return &SemanticGroup{CommitID: ledger.CommitID(text), Batches: noteBatch(TypedEvent{Type: tpfx("nested") + "note", Value: notePayload{Text: text}})}, nil
 		})
 		if err != nil || res.Outcome != CommitApplied {
 			t.Fatalf("commit = %+v, %v", res, err)

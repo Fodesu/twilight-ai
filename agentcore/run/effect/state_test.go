@@ -1,6 +1,8 @@
 package effect
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestExecutionStatusTerminal(t *testing.T) {
 	for _, status := range []ExecutionStatus{ExecutionCompleted, ExecutionFailed, ExecutionCancelled, ExecutionUnknown} {

@@ -1,8 +1,6 @@
-package extension_test
+package ledger
 
 import (
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"testing"
 )
 
@@ -13,16 +11,16 @@ type goldenPayload struct {
 // TestEncodeWireGolden freezes the framework's payload wire: the canonical
 // bytes after the `v` field is injected (EXT-COD-2). A drift with a non-empty
 // want is an intentional wire change or an accident — update the fixture and
-// agent-session-extension.md only for the former.
+// agent-session-md only for the former.
 func TestEncodeWireGolden(t *testing.T) {
-	reg, err := extension.BuildRegistry(extension.ModuleDescriptor{
+	reg, err := BuildRegistry(ModuleDescriptor{
 		Source:  "goldsrc",
 		ID:      "gold",
-		Streams: []extension.StreamDefinition{{Domain: "gold", Lineage: session.LineageSession}},
-		Events: []extension.EventDefinition{{
+		Streams: []StreamDefinition{{Domain: "gold", Lineage: LineageSession}},
+		Events: []EventDefinition{{
 			Type:   "goldsrc/gold/sample",
 			Domain: "gold",
-			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[goldenPayload]{}},
+			Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[goldenPayload]{}},
 		}},
 	})
 	if err != nil {

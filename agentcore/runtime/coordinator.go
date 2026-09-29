@@ -4,19 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
-
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
+	"time"
 )
 
 // Coordinator commits the Turn protocol's commands. Each is one unit of
@@ -29,7 +27,7 @@ import (
 // transitions and computes dispositions.
 type Coordinator struct {
 	// Projections is the lease-free read side for Status.
-	Projections extension.ProjectionReader
+	Projections session.ProjectionReader
 	// Runs is the Run module's Session adapter: it reads Runs for Status and
 	// contributes the Run Parts of every Turn unit.
 	Runs *runmod.SessionRunStore
@@ -66,7 +64,7 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, wo
 	res, err := unit.Commit(ctx, w, c.now(), work)
 	if err != nil {
 		switch {
-		case errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}):
+		case errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}):
 			return fmt.Errorf("%w: %w", store.ErrOwnershipLost, err)
 		case errors.Is(err, chatlog.ErrNotSubmitted), errors.Is(err, runmod.ErrRunExists):
 			return fmt.Errorf("%w: %w", turn.ErrConflict, err)
@@ -112,7 +110,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req turn.Start
 	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
 	p := turn.PlanDigest(turnID, req.Preset.Digest, inputIDs)
-	commitID := session.CommitID(turn.StartOperationDigest(sid, turnID, p))
+	commitID := ledger.CommitID(turn.StartOperationDigest(sid, turnID, p))
 	runID := turn.DeriveRunID(sid, turnID)
 	newRun, err := run.BuildNewRun(runID, ledger.CausationID(commitID))
 	if err != nil {
@@ -174,7 +172,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req turn.Del
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
-	work := unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{accept, chatlog.DeliverInputs(chatlog.TurnID(req.Ref.TurnID), runID, req.Inputs)}}
+	work := unit.Work{CommitID: ledger.CommitID(env.ID), Parts: []unit.Part{accept, chatlog.DeliverInputs(chatlog.TurnID(req.Ref.TurnID), runID, req.Inputs)}}
 	if err := c.commit(ctx, w, "deliver", work); err != nil {
 		if errors.Is(err, run.ErrRunTerminal) {
 			// The last step settled first: the inputs stay submitted.
@@ -210,7 +208,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req turn.StopRe
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
-	work := unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{cancel,
+	work := unit.Work{CommitID: ledger.CommitID(env.ID), Parts: []unit.Part{cancel,
 		unit.PartFunc(func(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
 			return turnBatch(turnID, now, writer.TypedEvent{Type: turn.TypeFailed,
 				Value: turn.FailedPayload{TurnID: turnID, RunID: runID, Settlement: turn.SettlementStopped, FailureClass: "cancelled"}}), nil

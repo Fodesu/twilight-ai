@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"io"
 	"os"
 	"path/filepath"
-
-	"github.com/felinics/twilight/agentcore/session"
 )
 
 // indexFile is the persisted CommitIndex of a segment (SES-REP-5): one line
@@ -39,7 +39,7 @@ type commitSpan struct{ start, end int64 }
 type segIndex struct {
 	idx     session.CommitIndex
 	spans   []commitSpan
-	byID    map[session.CommitID]int
+	byID    map[ledger.CommitID]int
 	logSize int64
 	logMod  int64
 }
@@ -51,7 +51,7 @@ func (x *segIndex) end() int64 {
 	return x.spans[len(x.spans)-1].end
 }
 
-func (x *segIndex) extend(c *session.Commit, start, end int64) {
+func (x *segIndex) extend(c *ledger.Commit, start, end int64) {
 	x.idx.Extend(c)
 	x.spans = append(x.spans, commitSpan{start, end})
 	x.byID[c.CommitID] = len(x.spans) - 1
@@ -59,7 +59,7 @@ func (x *segIndex) extend(c *session.Commit, start, end int64) {
 
 // segIndex returns the segment's index, current against the log at path
 // (SES-REP-5). The caller holds the store lock.
-func (s *Store) segIndex(id session.SegmentID, header session.SegmentHeader, dir string) (*segIndex, error) {
+func (s *Store) segIndex(id ledger.SegmentID, header ledger.SegmentHeader, dir string) (*segIndex, error) {
 	logPath := filepath.Join(dir, logFile)
 	st, err := os.Stat(logPath)
 	size, mod := int64(0), int64(0)
@@ -84,7 +84,7 @@ func (s *Store) segIndex(id session.SegmentID, header session.SegmentHeader, dir
 // its last span ends where the log ends and its last entry matches the log's
 // last line; lagging when the log continues past it, in which case the tail
 // is parsed and appended; anything else is rebuilt from the whole log.
-func (s *Store) loadIndex(id session.SegmentID, header session.SegmentHeader, dir string, logSize int64) (*segIndex, error) {
+func (s *Store) loadIndex(id ledger.SegmentID, header ledger.SegmentHeader, dir string, logSize int64) (*segIndex, error) {
 	logPath := filepath.Join(dir, logFile)
 	x := s.readIndexFile(header, dir)
 	switch {
@@ -101,12 +101,12 @@ func (s *Store) loadIndex(id session.SegmentID, header session.SegmentHeader, di
 // readIndexFile parses index.jsonl into a segIndex, or returns nil when the
 // file is absent or unusable. A torn final line is dropped like a torn log
 // line; malformed content before it makes the file unusable.
-func (s *Store) readIndexFile(header session.SegmentHeader, dir string) *segIndex {
+func (s *Store) readIndexFile(header ledger.SegmentHeader, dir string) *segIndex {
 	data, err := os.ReadFile(filepath.Join(dir, indexFile))
 	if err != nil {
 		return nil
 	}
-	x := &segIndex{idx: session.CommitIndex{Through: header.Seed()}, byID: map[session.CommitID]int{}}
+	x := &segIndex{idx: session.CommitIndex{Through: header.Seed()}, byID: map[ledger.CommitID]int{}}
 	off := 0
 	for off < len(data) {
 		nl := bytes.IndexByte(data[off:], '\n')
@@ -124,7 +124,7 @@ func (s *Store) readIndexFile(header session.SegmentHeader, dir string) *segInde
 			return nil // not a contiguous index of this log
 		}
 		x.idx.Entries = append(x.idx.Entries, line.IndexEntry)
-		x.idx.Through = session.Head{Next: line.Seq + 1}
+		x.idx.Through = ledger.Head{Next: line.Seq + 1}
 		x.spans = append(x.spans, commitSpan{line.Start, line.End})
 		x.byID[line.CommitID] = len(x.spans) - 1
 		off += nl + 1
@@ -193,12 +193,12 @@ func (s *Store) repairIndexTail(x *segIndex, logPath string) (bool, error) {
 }
 
 // rebuildIndex derives the index from the whole log and rewrites index.jsonl.
-func (s *Store) rebuildIndex(id session.SegmentID, header session.SegmentHeader, dir string) (*segIndex, error) {
+func (s *Store) rebuildIndex(id ledger.SegmentID, header ledger.SegmentHeader, dir string) (*segIndex, error) {
 	commits, offsets, _, _, err := readLog(filepath.Join(dir, logFile), "", "index")
 	if err != nil {
 		return nil, err
 	}
-	x := &segIndex{idx: session.CommitIndex{Through: header.Seed()}, byID: make(map[session.CommitID]int, len(commits))}
+	x := &segIndex{idx: session.CommitIndex{Through: header.Seed()}, byID: make(map[ledger.CommitID]int, len(commits))}
 	var buf []byte
 	for i := range commits {
 		x.extend(&commits[i], offsets[i], offsets[i+1])
@@ -239,10 +239,10 @@ func appendFile(path string, data []byte) error {
 
 // dropIndex forgets the in-memory index; the next use reloads it from
 // index.jsonl and the log.
-func (s *Store) dropIndex(id session.SegmentID) { delete(s.index, id) }
+func (s *Store) dropIndex(id ledger.SegmentID) { delete(s.index, id) }
 
 // Locate is SES-REP-3/5: membership and Seq from the index alone.
-func (s *Store) Locate(ctx context.Context, id session.SegmentID, cid session.CommitID) (session.CommitSeq, bool, error) {
+func (s *Store) Locate(ctx context.Context, id ledger.SegmentID, cid ledger.CommitID) (ledger.CommitSeq, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}
@@ -264,44 +264,44 @@ func (s *Store) Locate(ctx context.Context, id session.SegmentID, cid session.Co
 }
 
 // Index is SES-REP-5: the segment's CommitIndex and head.
-func (s *Store) Index(ctx context.Context, id session.SegmentID) (session.CommitIndex, session.Head, error) {
+func (s *Store) Index(ctx context.Context, id ledger.SegmentID) (session.CommitIndex, ledger.Head, error) {
 	if err := ctx.Err(); err != nil {
-		return session.CommitIndex{}, session.Head{}, err
+		return session.CommitIndex{}, ledger.Head{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	header, dir, err := s.loadSegment(id, "index")
 	if err != nil {
-		return session.CommitIndex{}, session.Head{}, err
+		return session.CommitIndex{}, ledger.Head{}, err
 	}
 	x, err := s.segIndex(id, header, dir)
 	if err != nil {
-		return session.CommitIndex{}, session.Head{}, err
+		return session.CommitIndex{}, ledger.Head{}, err
 	}
 	return x.idx.Clone(), x.idx.Through, nil
 }
 
 // Summarize is the segment index's summary (SES-REP-5).
-func (s *Store) Summarize(ctx context.Context, id session.SegmentID) (session.IndexSummary, session.Head, error) {
+func (s *Store) Summarize(ctx context.Context, id ledger.SegmentID) (session.IndexSummary, ledger.Head, error) {
 	if err := ctx.Err(); err != nil {
-		return session.IndexSummary{}, session.Head{}, err
+		return session.IndexSummary{}, ledger.Head{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	header, dir, err := s.loadSegment(id, "index")
 	if err != nil {
-		return session.IndexSummary{}, session.Head{}, err
+		return session.IndexSummary{}, ledger.Head{}, err
 	}
 	x, err := s.segIndex(id, header, dir)
 	if err != nil {
-		return session.IndexSummary{}, session.Head{}, err
+		return session.IndexSummary{}, ledger.Head{}, err
 	}
 	return x.idx.Summary(), x.idx.Through, nil
 }
 
 // StreamHead sums the stream's event counts over the segment's index
 // entries (SES-REP-3).
-func (s *Store) StreamHead(ctx context.Context, id session.SegmentID, stream session.Domain, before session.CommitSeq) (session.StreamSeq, error) {
+func (s *Store) StreamHead(ctx context.Context, id ledger.SegmentID, stream ledger.Domain, before ledger.CommitSeq) (ledger.StreamSeq, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -315,14 +315,14 @@ func (s *Store) StreamHead(ctx context.Context, id session.SegmentID, stream ses
 	if err != nil {
 		return 0, err
 	}
-	var n session.StreamSeq
+	var n ledger.StreamSeq
 	for i := range x.idx.Entries {
 		if x.idx.Entries[i].Seq >= before {
 			break
 		}
 		for _, sc := range x.idx.Entries[i].Streams {
 			if sc.Domain == stream {
-				n += session.StreamSeq(sc.Events)
+				n += ledger.StreamSeq(sc.Events)
 			}
 		}
 	}
@@ -331,7 +331,7 @@ func (s *Store) StreamHead(ctx context.Context, id session.SegmentID, stream ses
 
 // PutIndex accepts the kernel's rebuild by rebuilding from the log itself,
 // which is where the byte spans come from, and checks the two agree.
-func (s *Store) PutIndex(ctx context.Context, id session.SegmentID, idx session.CommitIndex) error {
+func (s *Store) PutIndex(ctx context.Context, id ledger.SegmentID, idx session.CommitIndex) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -353,35 +353,35 @@ func (s *Store) PutIndex(ctx context.Context, id session.SegmentID, idx session.
 }
 
 // LookupCommit is SES-REP-4: it reads exactly the commit's byte range.
-func (s *Store) LookupCommit(ctx context.Context, id session.SegmentID, cid session.CommitID) (session.Commit, bool, error) {
+func (s *Store) LookupCommit(ctx context.Context, id ledger.SegmentID, cid ledger.CommitID) (ledger.Commit, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return session.Commit{}, false, err
+		return ledger.Commit{}, false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	header, dir, err := s.loadSegment(id, "lookup")
 	if err != nil {
-		return session.Commit{}, false, err
+		return ledger.Commit{}, false, err
 	}
 	x, err := s.segIndex(id, header, dir)
 	if err != nil {
-		return session.Commit{}, false, err
+		return ledger.Commit{}, false, err
 	}
 	i, ok := x.byID[cid]
 	if !ok {
-		return session.Commit{}, false, nil
+		return ledger.Commit{}, false, nil
 	}
 	sp := x.spans[i]
 	data, err := readRange(filepath.Join(dir, logFile), sp.start, sp.end)
 	if err != nil {
-		return session.Commit{}, false, segerr("lookup", id, err.Error())
+		return ledger.Commit{}, false, segerr("lookup", id, err.Error())
 	}
 	commits, _, _, torn, err := parseLog(data, "", "lookup")
 	if err != nil {
-		return session.Commit{}, false, err
+		return ledger.Commit{}, false, err
 	}
 	if torn || len(commits) != 1 || commits[0].CommitID != cid {
-		return session.Commit{}, false, segerr("lookup", id, "index span does not hold the commit")
+		return ledger.Commit{}, false, segerr("lookup", id, "index span does not hold the commit")
 	}
 	return commits[0], true, nil
 }
@@ -389,10 +389,10 @@ func (s *Store) LookupCommit(ctx context.Context, id session.SegmentID, cid sess
 // commitsFrom returns the segment's own commits from from onward and the
 // segment head, reading only the bytes the index points at. The caller
 // holds the lock.
-func (s *Store) commitsFrom(id session.SegmentID, header session.SegmentHeader, dir string, from session.CommitSeq) ([]session.Commit, session.Head, error) {
+func (s *Store) commitsFrom(id ledger.SegmentID, header ledger.SegmentHeader, dir string, from ledger.CommitSeq) ([]ledger.Commit, ledger.Head, error) {
 	x, err := s.segIndex(id, header, dir)
 	if err != nil {
-		return nil, session.Head{}, err
+		return nil, ledger.Head{}, err
 	}
 	n := len(x.spans)
 	base := header.Seed().Next
@@ -405,14 +405,14 @@ func (s *Store) commitsFrom(id session.SegmentID, header session.SegmentHeader, 
 	slot := session.IndexWithin(from-base, n)
 	data, err := readRange(filepath.Join(dir, logFile), x.spans[slot].start, x.spans[n-1].end)
 	if err != nil {
-		return nil, session.Head{}, segerr("read", id, err.Error())
+		return nil, ledger.Head{}, segerr("read", id, err.Error())
 	}
 	commits, _, _, torn, err := parseLog(data, "", "read")
 	if err != nil {
-		return nil, session.Head{}, err
+		return nil, ledger.Head{}, err
 	}
 	if torn || len(commits) != n-slot || commits[0].Seq != from {
-		return nil, session.Head{}, segerr("read", id, "log does not match its index")
+		return nil, ledger.Head{}, segerr("read", id, "log does not match its index")
 	}
 	return commits, x.idx.Through, nil
 }

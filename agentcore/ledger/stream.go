@@ -98,6 +98,17 @@ func ValidateStreamLineage(l StreamLineage) error {
 	}
 }
 
+// ValidateStreamRef checks a domain as a stream attribution: ledger-valid
+// and not empty. The empty domain is the unpartitioned ledger's group, not
+// a stream; which domains a writer owns and which ID an event binds to are
+// the module framework's checks (EXT-STR-1).
+func ValidateStreamRef(r Domain) error {
+	if r.Name == "" {
+		return errors.New("stream domain is empty")
+	}
+	return ValidateDomain(r)
+}
+
 const (
 	// LineageSession reads the stream as the host's semantic history: the
 	// inherited prefix stitched before the tip's own commits, so a fork

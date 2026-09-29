@@ -1,16 +1,15 @@
 package turn
 
 import (
-	"testing"
-
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
-	"github.com/felinics/twilight/agentcore/session"
+	"testing"
 )
 
 // EXT-COD-1: every registered event type's current codec is canonical
 // round-trip stable — Encode, Decode, Encode reproduces the bytes.
 func TestEventCodecCanonicalRoundTrip(t *testing.T) {
-	samples := map[session.EventType]any{
+	samples := map[ledger.EventType]any{
 		TypeStarted:    StartedPayload{TurnID: "t1", RunID: "r1", InputIDs: nil, Preset: preset.PresetRef{ID: "b", Digest: "sha256:b"}},
 		TypeFailed:     FailedPayload{TurnID: "t1", RunID: "run-1", Settlement: SettlementFailed, FailureClass: "provider"},
 		TypeSuperseded: SupersededPayload{TurnID: "t1", ReplacementTurnID: "t2"},

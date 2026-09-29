@@ -2,8 +2,8 @@ package filestore_test
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"os"
@@ -15,7 +15,7 @@ import (
 // This file covers the durable side of EXT-PRJ-3: the cache entries a Writer
 // leaves in the session directory, and a fresh process resuming from them.
 
-const projectID = extension.ProjectionID("twilight/z/rows")
+const projectID = ledger.ProjectionID("twilight/z/rows")
 
 type rowPayload struct {
 	Text string `json:"text"`
@@ -50,27 +50,27 @@ func (c *foldCounter) reset() {
 
 // counterModule is a one-projection module whose Apply counts the events it
 // folds, which is how these tests tell a resume from a full fold.
-func counterModule(c *foldCounter) extension.ModuleDescriptor {
-	const typ session.EventType = "twilight/z/row"
-	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "z",
-		Streams: []extension.StreamDefinition{{Domain: "z", Lineage: session.LineageSession}},
-		Events: []extension.EventDefinition{{Type: typ, Domain: "z",
-			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[rowPayload]{}}}},
-		Projections: []extension.ProjectionDefinition{{
-			ID: projectID, Version: 1, Consumes: []session.EventType{typ},
+func counterModule(c *foldCounter) ledger.ModuleDescriptor {
+	const typ ledger.EventType = "twilight/z/row"
+	return ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "z",
+		Streams: []ledger.StreamDefinition{{Domain: "z", Lineage: ledger.LineageSession}},
+		Events: []ledger.EventDefinition{{Type: typ, Domain: "z",
+			Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[rowPayload]{}}}},
+		Projections: []ledger.ProjectionDefinition{{
+			ID: projectID, Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return rowState{}, nil },
-			Apply: func(state any, e extension.DecodedEvent) (any, error) {
+			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
 				c.inc()
 				s := state.(rowState)
 				return rowState{Rows: append(append([]string(nil), s.Rows...), e.Value.(rowPayload).Text)}, nil
 			},
-			StateCodec: extension.JSONStateCodec[rowState]{},
+			StateCodec: ledger.JSONStateCodec[rowState]{},
 		}}}
 }
 
-func mustRegistry(t *testing.T, c *foldCounter) *extension.Registry {
+func mustRegistry(t *testing.T, c *foldCounter) *ledger.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(counterModule(c))
+	r, err := ledger.BuildRegistry(counterModule(c))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func mustRegistry(t *testing.T, c *foldCounter) *extension.Registry {
 
 // entryPath is the layout the adapter must keep: a projection ID contains
 // slashes, so it is percent-encoded like a Session ID.
-func entryPath(root string, sid session.SessionID, v extension.ProjectionVersion) string {
+func entryPath(root string, sid session.SessionID, v ledger.ProjectionVersion) string {
 	return filepath.Join(root, "sessions", string(sid), "projections", "twilight%2Fz%2Frows", "1.json")
 }
 
@@ -91,7 +91,7 @@ func TestProjectionCacheRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := store.ProjectionCache()
-	state, err := extension.JSONStateCodec[rowState]{}.Encode(rowState{Rows: []string{"a"}})
+	state, err := ledger.JSONStateCodec[rowState]{}.Encode(rowState{Rows: []string{"a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestProjectionCacheRoundTrip(t *testing.T) {
 	if _, _, ok, err := cache.Load(ctx, "s", projectID, 1); ok || err != nil {
 		t.Fatalf("absent entry: ok=%v err=%v, want a miss with no error", ok, err)
 	}
-	want := session.Head{Next: 4}
+	want := ledger.Head{Next: 4}
 	if err := cache.Save(ctx, "s", projectID, 1, state, want); err != nil {
 		t.Fatal(err)
 	}
@@ -123,11 +123,11 @@ func TestProjectionCacheIgnoresCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := store.ProjectionCache()
-	state, err := extension.JSONStateCodec[rowState]{}.Encode(rowState{Rows: []string{"a"}})
+	state, err := ledger.JSONStateCodec[rowState]{}.Encode(rowState{Rows: []string{"a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.Save(ctx, "s", projectID, 1, state, session.Head{Next: 1}); err != nil {
+	if err := cache.Save(ctx, "s", projectID, 1, state, ledger.Head{Next: 1}); err != nil {
 		t.Fatal(err)
 	}
 	path := entryPath(root, "s", 1)
@@ -163,15 +163,15 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	writers := writer.NewWriters(first, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: extension.CacheEvery(0).AtClose()})
+		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: ledger.CacheEvery(0).AtClose()})
 	w, err := writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i, text := range []string{"a", "b", "c"} {
 		res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
-			return &writer.SemanticGroup{CommitID: session.CommitID(string(rune('1' + i))),
-				Batches: []writer.TypedBatch{{Domain: session.Domain{Name: "z"},
+			return &writer.SemanticGroup{CommitID: ledger.CommitID(string(rune('1' + i))),
+				Batches: []writer.TypedBatch{{Domain: ledger.Domain{Name: "z"},
 					Events: []writer.TypedEvent{{Type: "twilight/z/row", Value: rowPayload{Text: text}}}}}}, nil
 		})
 		if err != nil || res.Outcome != writer.CommitApplied {

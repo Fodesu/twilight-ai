@@ -1,6 +1,9 @@
 package session
 
-import "fmt"
+import (
+	"fmt"
+	"github.com/felinics/twilight/agentcore/ledger"
+)
 
 // CommitIndex is the index of one segment's own commits by CommitID
 // (SES-REP-5): a component of the segment, persisted next to its commits and
@@ -13,7 +16,7 @@ import "fmt"
 // read of the commits themselves.
 type CommitIndex struct {
 	// Through is the segment head the index covers.
-	Through Head `json:"through"`
+	Through ledger.Head `json:"through"`
 	// Entries are the indexed commits in Seq order.
 	Entries []IndexEntry `json:"entries"`
 }
@@ -22,19 +25,19 @@ type CommitIndex struct {
 // count of each logical stream it wrote, so StreamHead is a sum over entries
 // (SES-REP-3).
 type IndexEntry struct {
-	CommitID CommitID      `json:"commitId"`
-	Seq      CommitSeq     `json:"seq"`
-	Streams  []StreamCount `json:"streams,omitempty"`
+	CommitID ledger.CommitID  `json:"commitId"`
+	Seq      ledger.CommitSeq `json:"seq"`
+	Streams  []StreamCount    `json:"streams,omitempty"`
 }
 
 // StreamCount is the number of events one commit wrote to one stream.
 type StreamCount struct {
-	Domain Domain `json:"domain"`
-	Events uint32 `json:"events"`
+	Domain ledger.Domain `json:"domain"`
+	Events uint32        `json:"events"`
 }
 
 // IndexEntryOf derives the entry of a commit.
-func IndexEntryOf(c *Commit) IndexEntry {
+func IndexEntryOf(c *ledger.Commit) IndexEntry {
 	e := IndexEntry{CommitID: c.CommitID, Seq: c.Seq}
 	if len(c.Batches) > 0 {
 		e.Streams = make([]StreamCount, len(c.Batches))
@@ -47,7 +50,7 @@ func IndexEntryOf(c *Commit) IndexEntry {
 
 // BuildCommitIndex derives the index of a segment from its own commits, which
 // are contiguous from header.Seed().Next.
-func BuildCommitIndex(header SegmentHeader, commits []Commit) CommitIndex {
+func BuildCommitIndex(header ledger.SegmentHeader, commits []ledger.Commit) CommitIndex {
 	idx := CommitIndex{Through: header.Seed()}
 	if len(commits) > 0 {
 		idx.Entries = make([]IndexEntry, 0, len(commits))
@@ -59,14 +62,14 @@ func BuildCommitIndex(header SegmentHeader, commits []Commit) CommitIndex {
 }
 
 // Extend appends one commit that continues the index at Through.
-func (x *CommitIndex) Extend(c *Commit) {
+func (x *CommitIndex) Extend(c *ledger.Commit) {
 	x.Entries = append(x.Entries, IndexEntryOf(c))
-	x.Through = Head{Next: c.Seq + 1}
+	x.Through = ledger.Head{Next: c.Seq + 1}
 }
 
 // Truncate drops the entries after through and moves Through back to the
 // last kept entry, or to seed when none is kept.
-func (x *CommitIndex) Truncate(seed Head, through CommitSeq) {
+func (x *CommitIndex) Truncate(seed ledger.Head, through ledger.CommitSeq) {
 	keep := 0
 	for keep < len(x.Entries) && x.Entries[keep].Seq <= through {
 		keep++
@@ -76,7 +79,7 @@ func (x *CommitIndex) Truncate(seed Head, through CommitSeq) {
 		x.Through = seed
 		return
 	}
-	x.Through = Head{Next: x.Entries[keep-1].Seq + 1}
+	x.Through = ledger.Head{Next: x.Entries[keep-1].Seq + 1}
 }
 
 // IndexSummary is what Open checks a segment's CommitIndex by (SES-REP-5):
@@ -85,8 +88,8 @@ func (x *CommitIndex) Truncate(seed Head, through CommitSeq) {
 // check costs the same for any segment length.
 type IndexSummary struct {
 	Entries     uint64
-	First, Last CommitSeq
-	Through     Head
+	First, Last ledger.CommitSeq
+	Through     ledger.Head
 }
 
 // Summary is the index's IndexSummary.
@@ -102,7 +105,7 @@ func (x *CommitIndex) Summary() IndexSummary {
 // commits from seed to head: Through equals head, the entry count equals
 // the distance from seed, and the entries run from seed to head-1. With
 // Seq unique per segment (the adapter's key) these imply contiguity.
-func (s IndexSummary) Valid(seed, head Head) bool {
+func (s IndexSummary) Valid(seed, head ledger.Head) bool {
 	if s.Through != head || head.Next < seed.Next {
 		return false
 	}
@@ -116,14 +119,14 @@ func (s IndexSummary) Valid(seed, head Head) bool {
 }
 
 // Valid is Summary().Valid plus the contiguity walk over the entries.
-func (x *CommitIndex) Valid(seed, head Head) bool {
+func (x *CommitIndex) Valid(seed, head ledger.Head) bool {
 	return x.Summary().Valid(seed, head) && x.checkContiguous(seed) == nil
 }
 
 // checkContiguous verifies entry Seqs run from seed without gaps or repeats.
-func (x *CommitIndex) checkContiguous(seed Head) error {
+func (x *CommitIndex) checkContiguous(seed ledger.Head) error {
 	for i := range x.Entries {
-		if want := seed.Next + CommitSeq(i); x.Entries[i].Seq != want { //nolint:gosec // i < len(Entries)
+		if want := seed.Next + ledger.CommitSeq(i); x.Entries[i].Seq != want { //nolint:gosec // i < len(Entries)
 			return fmt.Errorf("index entry %d has seq %d, want %d", i, x.Entries[i].Seq, want)
 		}
 	}
@@ -132,7 +135,7 @@ func (x *CommitIndex) checkContiguous(seed Head) error {
 
 // Locate returns the entry of id, if indexed. It is a linear scan; a Handle
 // builds a map from the entries it holds.
-func (x *CommitIndex) Locate(id CommitID) (IndexEntry, bool) {
+func (x *CommitIndex) Locate(id ledger.CommitID) (IndexEntry, bool) {
 	for i := range x.Entries {
 		if x.Entries[i].CommitID == id {
 			return x.Entries[i], true
