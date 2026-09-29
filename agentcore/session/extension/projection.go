@@ -41,16 +41,16 @@ type ProjectionDefinition struct {
 
 // InheritPolicy decides whether a projection folds the batches of one
 // logical stream from a fork's inherited prefix.
-type InheritPolicy func(session.StreamRef) bool
+type InheritPolicy func(session.Domain) bool
 
 // InheritAll folds every batch of inherited commits.
-func InheritAll(session.StreamRef) bool { return true }
+func InheritAll(session.Domain) bool { return true }
 
 // InheritStreams folds the listed stream domains of inherited commits.
 func InheritStreams(domains ...string) InheritPolicy {
-	return func(stream session.StreamRef) bool {
+	return func(stream session.Domain) bool {
 		for _, d := range domains {
-			if stream.Domain == d {
+			if stream.Name == d {
 				return true
 			}
 		}
@@ -61,11 +61,11 @@ func InheritStreams(domains ...string) InheritPolicy {
 // inherits applies the definition's policy; nil follows the lineage the
 // stream's domain declared, and a domain no module declared is not
 // inherited.
-func (r *Registry) inherits(d *ProjectionDefinition, stream session.StreamRef) bool {
+func (r *Registry) inherits(d *ProjectionDefinition, stream session.Domain) bool {
 	if d.Inherits != nil {
 		return d.Inherits(stream)
 	}
-	_, def, ok := r.LookupStream(stream.Domain)
+	_, def, ok := r.LookupStream(stream.Name)
 	return ok && def.Lineage == session.LineageSession
 }
 
@@ -120,7 +120,7 @@ func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Com
 		var index uint32
 		for j := range commits[i].Batches {
 			b := &commits[i].Batches[j]
-			if inherited && !r.inherits(&s.Def, b.Stream) {
+			if inherited && !r.inherits(&s.Def, b.Domain) {
 				index += session.Limit32(uint64(len(b.Events)))
 				continue
 			}
@@ -128,7 +128,7 @@ func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Com
 				var err error
 				pos := session.Position{Commit: commits[i].Seq, Index: index}
 				index++
-				state, err = r.applyEvent(s, state, pos, b.Stream, e)
+				state, err = r.applyEvent(s, state, pos, b.Domain, e)
 				if err != nil {
 					return nil, err
 				}
@@ -138,7 +138,7 @@ func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Com
 	return state, nil
 }
 
-func (r *Registry) applyEvent(s *ProjectionScope, state any, pos session.Position, stream session.StreamRef, e session.Event) (any, error) {
+func (r *Registry) applyEvent(s *ProjectionScope, state any, pos session.Position, stream session.Domain, e session.Event) (any, error) {
 	seq := pos.Commit
 	entry, registered := r.events[e.Type]
 	if _, want := s.consumes[e.Type]; !want {
@@ -158,7 +158,7 @@ func (r *Registry) applyEvent(s *ProjectionScope, state any, pos session.Positio
 	if err != nil {
 		return nil, err
 	}
-	decoded.Stream, decoded.Position = stream, pos
+	decoded.Domain, decoded.Position = stream, pos
 	if decoded.Unknown {
 		if entry.def.Ignorable {
 			return state, nil

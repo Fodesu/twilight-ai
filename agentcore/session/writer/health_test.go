@@ -32,7 +32,7 @@ func healthModule() extension.ModuleDescriptor {
 		}
 	}
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "h", Streams: noteStreams(),
-		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+		Events:      []extension.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
 		Projections: []extension.ProjectionDefinition{mk("h/authoritative", true), mk("h/derived", false)}}
 }
 

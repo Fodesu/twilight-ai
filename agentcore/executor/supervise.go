@@ -61,7 +61,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 				return nil, nil
 			}
 			return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(key, "bind", fmt.Sprint(uint64(lease.Epoch))),
-				Events: []executionstore.Event{w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: bound})}}, nil
+				Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: bound})}}}}, nil
 		})
 		if err != nil {
 			return err
@@ -204,7 +204,7 @@ func (w *Worker) restarted(ctx context.Context, lease executionstore.Lease, from
 			return nil, fmt.Errorf("%w: restart of %+v, ledger holds %+v", executionstore.ErrStateConflict, from, state.ExecutionRef)
 		}
 		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, "restart", from.Ref),
-			Events: []executionstore.Event{w.event(executionstore.EventExecutionRestarted, executionstore.Restarted{Superseded: from, Ref: fresh})}}, nil
+			Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(executionstore.EventExecutionRestarted, executionstore.Restarted{Superseded: from, Ref: fresh})}}}}, nil
 	})
 }
 

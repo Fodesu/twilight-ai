@@ -66,7 +66,7 @@ func SeedCommits(state Execution, at int64) ([]Commit, error) { //nolint:gocriti
 	head := Head{}
 	commits := make([]Commit, 0, len(events))
 	for i, evs := range events {
-		c := Commit{Seq: head.Next, CommitID: DeriveCommitID(key, "seed", fmt.Sprint(i)), Events: evs}
+		c := Commit{Seq: head.Next, CommitID: DeriveCommitID(key, "seed", fmt.Sprint(i)), Batches: []EventBatch{{Events: evs}}}
 		switch evs[0].Type {
 		case EventExecutionAccepted:
 			c.CommitID = AcceptCommitID(key)

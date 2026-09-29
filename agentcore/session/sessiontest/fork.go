@@ -96,7 +96,7 @@ func testFork(t *testing.T, f Fixture) {
 	if err != nil || !ok || got.CommitID != c1.CommitID || got.Seq != c1.Seq {
 		t.Fatalf("lookup inherited = %+v %v %v", got, ok, err)
 	}
-	if _, err := cw.Append(ctx, session.Proposal{CommitID: "c0", Batches: []session.StreamBatch{batch(chatStream(), "twilight/x/a", `{"dup":true}`)}}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := cw.Append(ctx, session.Proposal{CommitID: "c0", Batches: []session.EventBatch{batch(chatStream(), "twilight/x/a", `{"dup":true}`)}}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("append of an inherited CommitID = %v, want conflict", err)
 	}
 	c3 := appendCommit(t, cw, "c3", batch(chatStream(), "twilight/x/a", `{"n":3}`), batch(runStream("r1"), "twilight/x/r", `{"n":3}`))
@@ -139,23 +139,23 @@ func testFork(t *testing.T, f Fixture) {
 	// (c3). Read with LineageSegment, the child's r1 holds only c3: the
 	// parent's c1 event is not the child segment's. The same r1 read with
 	// LineageSession stitches c1 before c3.
-	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: chatStream(), Lineage: session.LineageSession})
+	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Lineage: session.LineageSession})
 	if err != nil || len(sp.Events) != 3 || sp.Events[0].Payload.String() != `{"n":0}` || sp.Events[2].Payload.String() != `{"n":3}` {
 		t.Fatalf("child chat stream = %+v %v", sp.Events, err)
 	}
-	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: chatStream(), Lineage: session.LineageSession, From: 2})
+	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Lineage: session.LineageSession, From: 2})
 	if len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
 		t.Fatalf("child chat stream from 2 = %+v", sp.Events)
 	}
-	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: runStream("r1"), Lineage: session.LineageSegment})
+	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Lineage: session.LineageSegment})
 	if err != nil || len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
 		t.Fatalf("child run stream = %+v %v, want the child's own event only", sp.Events, err)
 	}
-	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: runStream("r1"), Lineage: session.LineageSession})
+	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Lineage: session.LineageSession})
 	if err != nil || len(sp.Events) != 2 || sp.Events[1].Payload.String() != `{"n":3}` {
 		t.Fatalf("child run stream stitched = %+v %v, want c1 then c3", sp.Events, err)
 	}
-	if sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "parent", Stream: runStream("r1"), Lineage: session.LineageSegment}); len(sp.Events) != 2 {
+	if sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "parent", Domain: runStream("r1"), Lineage: session.LineageSegment}); len(sp.Events) != 2 {
 		t.Fatalf("parent run stream = %+v, want c1 and c2", sp.Events)
 	}
 

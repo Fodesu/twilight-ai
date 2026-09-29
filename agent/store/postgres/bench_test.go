@@ -41,7 +41,7 @@ func seedSession(b *testing.B, store *postgres.SessionStore, dbh *postgres.DB, s
 		commits := make([]session.Commit, 0, to-from)
 		for i := from; i < to; i++ {
 			commits = append(commits, session.Commit{Seq: session.CommitSeq(i), CommitID: session.CommitID(fmt.Sprintf("c%08d", i)), //nolint:gosec // G115: bounded by n
-				Batches: []session.StreamBatch{{Stream: session.StreamRef{Domain: "z"}, Events: []session.Event{{
+				Batches: []session.EventBatch{{Domain: session.Domain{Name: "z"}, Events: []session.Event{{
 					Type: "twilight/z/row", RecordedAtUnixMilli: 1, Payload: encodeRow(b, registry, i)}}}}})
 		}
 		if err := dbh.SeedSegmentCommits(ctx, header.ID, commits); err != nil {

@@ -88,7 +88,7 @@ func turnBatch(turnID turn.TurnID, now int64, events ...writer.TypedEvent) []wri
 	for i := range events {
 		events[i].RecordedAtUnixMilli = now
 	}
-	return []writer.TypedBatch{{Stream: turn.Stream(turnID), Events: events}}
+	return []writer.TypedBatch{{Domain: turn.Stream(turnID), Events: events}}
 }
 
 // Start opens a new Turn: the Turn's started fact, the chatlog's deliveries

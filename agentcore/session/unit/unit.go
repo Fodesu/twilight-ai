@@ -63,7 +63,7 @@ func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.
 			return nil, nil
 		}
 		group := &writer.SemanticGroup{CommitID: work.CommitID}
-		index := map[session.StreamRef]int{}
+		index := map[session.Domain]int{}
 		for _, p := range work.Parts {
 			batches, err := p.Prepare(ctx, view, now)
 			if err != nil {
@@ -73,12 +73,12 @@ func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.
 				if len(b.Events) == 0 {
 					continue
 				}
-				if i, ok := index[b.Stream]; ok {
+				if i, ok := index[b.Domain]; ok {
 					group.Batches[i].Events = append(group.Batches[i].Events, b.Events...)
 					continue
 				}
-				index[b.Stream] = len(group.Batches)
-				group.Batches = append(group.Batches, writer.TypedBatch{Stream: b.Stream, Events: append([]writer.TypedEvent(nil), b.Events...)})
+				index[b.Domain] = len(group.Batches)
+				group.Batches = append(group.Batches, writer.TypedBatch{Domain: b.Domain, Events: append([]writer.TypedEvent(nil), b.Events...)})
 			}
 		}
 		if len(group.Batches) == 0 {

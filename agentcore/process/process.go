@@ -20,13 +20,14 @@ import (
 
 // The commit vocabulary is the kernel's (agentcore/ledger).
 type (
-	CommitSeq = ledger.CommitSeq
-	CommitID  = ledger.CommitID
-	Epoch     = ledger.Epoch
-	EventType = ledger.EventType
-	Event     = ledger.Event
-	Commit    = ledger.Commit
-	Head      = ledger.Head
+	CommitSeq  = ledger.CommitSeq
+	CommitID   = ledger.CommitID
+	Epoch      = ledger.Epoch
+	EventType  = ledger.EventType
+	Event      = ledger.Event
+	Commit     = ledger.Commit
+	EventBatch = ledger.EventBatch
+	Head       = ledger.Head
 )
 
 const (
@@ -115,12 +116,16 @@ func (s State) Pending() int {
 // Fold applies one commit; an event not legal from the state is
 // ledger.ErrStateConflict.
 func Fold(state State, c *Commit) (State, error) { //nolint:gocritic // hugeParam: a fold takes and returns the state by value
-	for i := range c.Events {
-		e := &c.Events[i]
-		var err error
-		state, err = apply(state, e)
-		if err != nil {
-			return State{}, fmt.Errorf("%w: commit %d event %d (%s): %w", ledger.ErrStateConflict, c.Seq, i, e.Type, err)
+	k := 0
+	for b := range c.Batches {
+		for i := range c.Batches[b].Events {
+			e := &c.Batches[b].Events[i]
+			var err error
+			state, err = apply(state, e)
+			if err != nil {
+				return State{}, fmt.Errorf("%w: commit %d event %d (%s): %w", ledger.ErrStateConflict, c.Seq, k, e.Type, err)
+			}
+			k++
 		}
 	}
 	return state, nil
@@ -231,7 +236,7 @@ func append1(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey
 	if err != nil {
 		return err
 	}
-	err = s.Append(ctx, epoch, key, Commit{Seq: head.Next, CommitID: id, Events: []Event{ev}})
+	err = s.Append(ctx, epoch, key, Commit{Seq: head.Next, CommitID: id, Batches: []EventBatch{{Events: []Event{ev}}}})
 	if err == nil || errors.Is(err, ledger.ErrAlreadyApplied) {
 		return nil
 	}

@@ -46,7 +46,7 @@ var auditModule = extension.ModuleDescriptor{
 	}},
 	Streams: []extension.StreamDefinition{{Domain: "audit", Lineage: session.LineageSession}},
 	Events: []extension.EventDefinition{{
-		Type: auditNoteType, Stream: "audit",
+		Type: auditNoteType, Domain: "audit",
 		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[auditNote]{}},
 	}},
 	Projections: []extension.ProjectionDefinition{{
@@ -95,7 +95,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	// The app module commits its own event through the same Writer.
 	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 		return &writer.SemanticGroup{CommitID: "audit/n1",
-			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Domain: "audit"}, Events: []writer.TypedEvent{{
+			Batches: []writer.TypedBatch{{Domain: session.Domain{Name: "audit"}, Events: []writer.TypedEvent{{
 				Type: auditNoteType, RecordedAtUnixMilli: 1, Value: auditNote{InputID: "in-1", Text: "flagged"},
 			}}}}}, nil
 	})

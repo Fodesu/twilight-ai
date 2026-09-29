@@ -1,4 +1,6 @@
-// Package ledger is the commit vocabulary of an append-only event ledger.
+// Package ledger is the commit vocabulary of an append-only event ledger:
+// commits, events and the module extension slots a commit-carrying record
+// holds.
 package ledger
 
 import (
@@ -58,13 +60,6 @@ func NewEvent(typ EventType, recordedAtUnixMilli int64, payload any) (Event, err
 
 // Decode decodes the payload into dst.
 func (e *Event) Decode(dst any) error { return e.Payload.Decode(dst) }
-
-// Commit is one atomic step of a ledger.
-type Commit struct {
-	Seq      CommitSeq `json:"seq"`
-	CommitID CommitID  `json:"commitId"`
-	Events   []Event   `json:"events"`
-}
 
 // Head is a ledger's tip: the next Seq to assign.
 type Head struct {

@@ -25,7 +25,7 @@ func commit(t *testing.T, seq process.CommitSeq, id process.CommitID, typ proces
 	if err != nil {
 		t.Fatal(err)
 	}
-	return process.Commit{Seq: seq, CommitID: id, Events: []process.Event{ev}}
+	return process.Commit{Seq: seq, CommitID: id, Batches: []process.EventBatch{{Events: []process.Event{ev}}}}
 }
 
 // The dispatch ledger answers replays by identity, stale sequences and

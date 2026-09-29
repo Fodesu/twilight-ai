@@ -40,19 +40,19 @@ func TestLogFileGolden(t *testing.T) {
 	ev := func(typ, payload string, at int64) session.Event {
 		return session.Event{Type: session.EventType(typ), Payload: jsonstable.MustParse(payload), RecordedAtUnixMilli: at}
 	}
-	if _, err := w.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.StreamBatch{
-		{Stream: session.StreamRef{Domain: "chat"}, Events: []session.Event{
+	if _, err := w.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.EventBatch{
+		{Domain: session.Domain{Name: "chat"}, Events: []session.Event{
 			ev("twilight/x/a", `{"a":1}`, 1),
 			ev("twilight/x/b", `{"b":[1,2]}`, 2),
 		}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.StreamBatch{
-		{Stream: session.StreamRef{Domain: "chat"}, Events: []session.Event{
+	if _, err := w.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.EventBatch{
+		{Domain: session.Domain{Name: "chat"}, Events: []session.Event{
 			ev("twilight/x/c", `{}`, 3),
 		}},
-		{Stream: session.StreamRef{Domain: "run", ID: "r7"}, Events: []session.Event{
+		{Domain: session.Domain{Name: "run", Id: "r7"}, Events: []session.Event{
 			ev("twilight/run/created", `{"runId":"r7"}`, 3),
 		}},
 	}}); err != nil {

@@ -252,7 +252,7 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 	c.before, c.after = state, decision.NewState
 	c.position = proj.Positions[runID] + run.RunPosition(len(decision.Facts))
 	c.facts = decision.Facts
-	return []writer.TypedBatch{{Stream: Stream(runID), Events: events}}, nil
+	return []writer.TypedBatch{{Domain: Stream(runID), Events: events}}, nil
 }
 
 // Result maps the unit's outcome onto the Run's CommitResult. w is the Writer
@@ -290,7 +290,7 @@ func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.Commi
 func (s *SessionRunStore) factsOf(c session.Commit, runID run.RunID) ([]run.Fact, error) {
 	var out []run.Fact
 	for _, b := range c.Batches {
-		if b.Stream != Stream(runID) {
+		if b.Domain != Stream(runID) {
 			continue
 		}
 		for i := range b.Events {
@@ -384,7 +384,7 @@ func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]wr
 	for _, f := range facts {
 		events = append(events, writer.TypedEvent{Type: EventType(f), RecordedAtUnixMilli: now, Value: Event{RunID: c.newRun.RunID, Fact: f}})
 	}
-	return []writer.TypedBatch{{Stream: Stream(c.newRun.RunID), Events: events}}, nil
+	return []writer.TypedBatch{{Domain: Stream(c.newRun.RunID), Events: events}}, nil
 }
 
 // --- Record --------------------------------------------------------------------------
@@ -425,7 +425,7 @@ func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, run
 // same head: the two reads are separate round trips, and a commit landing
 // between them makes both correct at different points, not divergent.
 func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, runID run.RunID, expect *run.MachineState, expectHead session.Head) (Record, error) {
-	page, err := s.cfg.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: sid, Stream: Stream(runID), Lineage: streamDefinition.Lineage})
+	page, err := s.cfg.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: sid, Domain: Stream(runID), Lineage: streamDefinition.Lineage})
 	if err != nil {
 		return Record{}, err
 	}

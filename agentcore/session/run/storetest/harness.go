@@ -175,7 +175,7 @@ func (h *harness) submitInputs(inputs ...run.AgentInput) {
 	for _, in := range inputs {
 		h.seq++
 		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("submitted/%s/%d", in.ID, h.seq)),
-			Batches: []writer.TypedBatch{{Stream: chatlog.Stream, Events: []writer.TypedEvent{{
+			Batches: []writer.TypedBatch{{Domain: chatlog.Stream, Events: []writer.TypedEvent{{
 				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: 1,
 				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(in.ID), Content: inputContent(in.ID), SubmittedAtUnixMilli: 1}}}}}})
 	}
@@ -218,12 +218,12 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	// One batch per stream: the Turn's (naming its Run, TRN-SCP-2), the
 	// chatlog's when inputs are delivered, and the Run's.
 	if len(turnEvents) > 0 {
-		group.Batches = append(group.Batches, writer.TypedBatch{Stream: turn.Stream(turnID), Events: turnEvents})
+		group.Batches = append(group.Batches, writer.TypedBatch{Domain: turn.Stream(turnID), Events: turnEvents})
 	}
 	if len(chatEvents) > 0 {
-		group.Batches = append(group.Batches, writer.TypedBatch{Stream: chatlog.Stream, Events: chatEvents})
+		group.Batches = append(group.Batches, writer.TypedBatch{Domain: chatlog.Stream, Events: chatEvents})
 	}
-	group.Batches = append(group.Batches, writer.TypedBatch{Stream: runmod.Stream(runID), Events: runEvents})
+	group.Batches = append(group.Batches, writer.TypedBatch{Domain: runmod.Stream(runID), Events: runEvents})
 	return group
 }
 
@@ -269,7 +269,7 @@ func (a attachPart) Prepare(_ context.Context, _ writer.View, now int64) ([]writ
 	for i, me := range a {
 		events[i] = writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value}
 	}
-	return []writer.TypedBatch{{Stream: chatlog.Stream, Events: events}}, nil
+	return []writer.TypedBatch{{Domain: chatlog.Stream, Events: events}}, nil
 }
 
 // commitResult is a Run command's result plus the stored commit it landed in.

@@ -16,12 +16,12 @@ type guardView struct {
 	err   error
 }
 
-func (guardView) Head() session.Head                                     { return session.Head{} }
-func (guardView) Epoch() session.Epoch                                   { return 0 }
-func (guardView) Schema() extension.PayloadVersion                       { return 1 }
-func (guardView) Header() session.SegmentHeader                          { return session.SegmentHeader{} }
-func (guardView) Committed(session.CommitID) (bool, error)               { return false, nil }
-func (guardView) StreamHead(session.StreamRef) (session.StreamSeq, bool) { return 0, false }
+func (guardView) Head() session.Head                                  { return session.Head{} }
+func (guardView) Epoch() session.Epoch                                { return 0 }
+func (guardView) Schema() extension.PayloadVersion                    { return 1 }
+func (guardView) Header() session.SegmentHeader                       { return session.SegmentHeader{} }
+func (guardView) Committed(session.CommitID) (bool, error)            { return false, nil }
+func (guardView) StreamHead(session.Domain) (session.StreamSeq, bool) { return 0, false }
 func (guardView) LookupCommit(session.CommitID) (session.Commit, bool, error) {
 	return session.Commit{}, false, nil
 }

@@ -33,8 +33,8 @@ func TestCollectReclaimsAfterDeleteRecord(t *testing.T) {
 	}
 	appendOne := func(id string) {
 		t.Helper()
-		if _, err := w.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.StreamBatch{{
-			Stream: session.StreamRef{Domain: "chat"},
+		if _, err := w.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.EventBatch{{
+			Domain: session.Domain{Name: "chat"},
 			Events: []session.Event{{Type: "twilight/x/n", Payload: jsonstable.MustParse(`{"n":1}`)}},
 		}}}); err != nil {
 			t.Fatal(err)

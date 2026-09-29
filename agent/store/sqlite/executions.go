@@ -193,9 +193,11 @@ func (s *ExecutionStore) Append(ctx context.Context, lease executionstore.Lease,
 			return err
 		}
 		if lease.IsZero() {
-			for i := range c.Events {
-				if executionstore.Fenced(c.Events[i].Type) {
-					return fmt.Errorf("%w: %s requires the key's lease", executionstore.ErrLeaseLost, c.Events[i].Type)
+			for b := range c.Batches {
+				for i := range c.Batches[b].Events {
+					if executionstore.Fenced(c.Batches[b].Events[i].Type) {
+						return fmt.Errorf("%w: %s requires the key's lease", executionstore.ErrLeaseLost, c.Batches[b].Events[i].Type)
+					}
 				}
 			}
 		} else {
@@ -265,7 +267,7 @@ func (s *ExecutionStore) Acquire(ctx context.Context, key effect.AssignmentKey, 
 		if err != nil {
 			return err
 		}
-		c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "claim", fmt.Sprint(uint64(epoch))), Events: []executionstore.Event{ev}}
+		c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "claim", fmt.Sprint(uint64(epoch))), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}}
 		if _, err := executionstore.Fold(state, &c); err != nil {
 			return err
 		}

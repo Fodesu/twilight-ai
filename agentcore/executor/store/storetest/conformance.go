@@ -50,7 +50,7 @@ func accept(t *testing.T, s executionstore.Store, a effect.Assignment) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Append(context.Background(), executionstore.Lease{}, a.Key(), executionstore.Commit{CommitID: executionstore.AcceptCommitID(a.Key()), Events: []executionstore.Event{ev}}); err != nil {
+	if err := s.Append(context.Background(), executionstore.Lease{}, a.Key(), executionstore.Commit{CommitID: executionstore.AcceptCommitID(a.Key()), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -60,7 +60,7 @@ func step(s executionstore.Store, lease executionstore.Lease, seq executionstore
 	if err != nil {
 		return err
 	}
-	return s.Append(context.Background(), lease, lease.Key, executionstore.Commit{Seq: seq, CommitID: executionstore.DeriveCommitID(lease.Key, "test", string(typ)+"/"+strconv.FormatUint(uint64(seq), 10)), Events: []executionstore.Event{ev}})
+	return s.Append(context.Background(), lease, lease.Key, executionstore.Commit{Seq: seq, CommitID: executionstore.DeriveCommitID(lease.Key, "test", string(typ)+"/"+strconv.FormatUint(uint64(seq), 10)), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}})
 }
 
 // One execution ledger, two handles: the second handle stands for a second
@@ -80,7 +80,7 @@ func testLedger(t *testing.T, f Fixture) { //nolint:gocyclo // one scenario, che
 	// A replayed acceptance is recognised by its identity and not written
 	// again; the Worker tells two Assignments apart by reading the ledger.
 	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg})
-	if err := b.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrAlreadyApplied) {
+	if err := b.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{CommitID: executionstore.AcceptCommitID(key), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}}); !errors.Is(err, executionstore.ErrAlreadyApplied) {
 		t.Fatalf("replayed acceptance through the other handle = %v, want already applied", err)
 	}
 	if state, _, ok, err := b.Load(ctx, key); err != nil || !ok || state.Assignment.Key() != key {
@@ -224,7 +224,7 @@ func testSeedAborted(t *testing.T, f Fixture) {
 		t.Fatalf("seeded aborted key = %+v head=%+v ok:%v %v, want a lone tombstone", state, head, ok, err)
 	}
 	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg})
-	if err := f.Store.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrConflict) {
+	if err := f.Store.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}}); !errors.Is(err, executionstore.ErrConflict) {
 		t.Fatalf("acceptance against the tombstone = %v, want the Seq 0 conflict a live Abort produces", err)
 	}
 	if owned, err := f.Store.ListOwned(ctx, "ignored"); err != nil || len(owned) != 0 {

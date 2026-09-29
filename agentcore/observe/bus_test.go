@@ -23,7 +23,7 @@ func registry(t *testing.T) *extension.Registry {
 	t.Helper()
 	r, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "z",
 		Streams: []extension.StreamDefinition{{Domain: "z", Lineage: session.LineageSession}},
-		Events: []extension.EventDefinition{{Type: rowType, Stream: "z",
+		Events: []extension.EventDefinition{{Type: rowType, Domain: "z",
 			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[rowPayload]{}}}}})
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func registry(t *testing.T) *extension.Registry {
 func commitRow(t *testing.T, w writer.Writer, id, text string) {
 	t.Helper()
 	res, err := w.Commit(context.Background(), func(writer.View) (*writer.SemanticGroup, error) {
-		return &writer.SemanticGroup{CommitID: session.CommitID(id), Batches: []writer.TypedBatch{{Stream: session.StreamRef{Domain: "z"},
+		return &writer.SemanticGroup{CommitID: session.CommitID(id), Batches: []writer.TypedBatch{{Domain: session.Domain{Name: "z"},
 			Events: []writer.TypedEvent{{Type: rowType, Value: rowPayload{Text: text}}}}}}, nil
 	})
 	if err != nil || res.Outcome != writer.CommitApplied {

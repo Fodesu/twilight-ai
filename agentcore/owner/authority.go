@@ -19,6 +19,7 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/history"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -154,7 +155,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	if err != nil {
 		return nil, err
 	}
-	bindings, ledger := p.Artifacts.Bindings, p.Artifacts.Ledger
+	bindings, retention := p.Artifacts.Bindings, p.Artifacts.Ledger
 	// A projection cache lets a reopened Session start folding instead of
 	// refolding the whole log (EXT-PRJ-3). An adapter that can store entries
 	// durably provides its own; otherwise they live as long as the process.
@@ -176,7 +177,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	if now == nil {
 		now = time.Now
 	}
-	admission := writer.Admission{Bindings: bindings, Ledger: ledger}
+	admission := writer.Admission{Bindings: bindings, Ledger: retention}
 	writers := writer.NewWriters(store, registry, admission, p.Ownership,
 		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery), Observers: p.Observers})
 	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: fz, Cache: cache, Now: now})
@@ -243,7 +244,7 @@ func (a *Owner) Close(ctx context.Context) error {
 
 // CreateSession creates the Session; ext are the segment's module extension
 // slots (nil for none), carried opaquely by the kernel (SES-WIR-5).
-func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, ext session.Extensions) error {
+func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, ext ledger.Extensions) error {
 	_, err := a.Store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Ext: ext})
 	return err
 }
@@ -276,7 +277,7 @@ type ForkRequest struct {
 	At     session.CommitSeq
 	Child  session.SessionID
 	// Ext are the child segment's module extension slots (SES-WIR-5).
-	Ext session.Extensions
+	Ext ledger.Extensions
 }
 
 // Fork creates the child Session (SES-FRK-1) and claims the artifacts its

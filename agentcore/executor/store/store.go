@@ -35,13 +35,14 @@ var (
 
 // The commit vocabulary is the kernel's (agentcore/ledger).
 type (
-	CommitSeq = ledger.CommitSeq
-	CommitID  = ledger.CommitID
-	Epoch     = ledger.Epoch
-	EventType = ledger.EventType
-	Event     = ledger.Event
-	Commit    = ledger.Commit
-	Head      = ledger.Head
+	CommitSeq  = ledger.CommitSeq
+	CommitID   = ledger.CommitID
+	Epoch      = ledger.Epoch
+	EventType  = ledger.EventType
+	Event      = ledger.Event
+	Commit     = ledger.Commit
+	EventBatch = ledger.EventBatch
+	Head       = ledger.Head
 )
 
 // NewEvent renders payload as the event's canonical JSON.
@@ -247,12 +248,16 @@ func Fenced(typ EventType) bool {
 // current state is ErrStateConflict. The store folds every commit before it
 // is appended, so the ledger never holds an illegal step.
 func Fold(state ExecutionState, c *Commit) (ExecutionState, error) { //nolint:gocritic // hugeParam: a fold takes and returns the state by value
-	for i := range c.Events {
-		e := &c.Events[i]
-		var err error
-		state, err = apply(state, e)
-		if err != nil {
-			return ExecutionState{}, fmt.Errorf("%w: commit %d event %d (%s): %w", ErrStateConflict, c.Seq, i, e.Type, err)
+	k := 0
+	for b := range c.Batches {
+		for i := range c.Batches[b].Events {
+			e := &c.Batches[b].Events[i]
+			var err error
+			state, err = apply(state, e)
+			if err != nil {
+				return ExecutionState{}, fmt.Errorf("%w: commit %d event %d (%s): %w", ErrStateConflict, c.Seq, k, e.Type, err)
+			}
+			k++
 		}
 	}
 	return state, nil

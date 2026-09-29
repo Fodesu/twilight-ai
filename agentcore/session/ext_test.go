@@ -59,7 +59,7 @@ func TestKernelExtRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.StreamBatch{{Stream: session.StreamRef{Domain: "chat"},
+	if _, err := h.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.EventBatch{{Domain: session.Domain{Name: "chat"},
 		Events: []session.Event{{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)}}}}}); err != nil {
 		t.Fatal(err)
 	}

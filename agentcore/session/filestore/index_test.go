@@ -83,12 +83,12 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 func appendCommits(t *testing.T, w session.Handle, firstCommit int, groups [][]string) {
 	t.Helper()
 	for i, g := range groups {
-		batch := session.StreamBatch{Stream: session.StreamRef{Domain: "chat"}}
+		batch := session.EventBatch{Domain: session.Domain{Name: "chat"}}
 		for j, kind := range g {
 			batch.Events = append(batch.Events, session.Event{Type: session.EventType("twilight/" + kind + "/e"), RecordedAtUnixMilli: 1,
 				Payload: jsonstable.MustParse(fmt.Sprintf(`{"g":%d,"i":%d}`, firstCommit+i, j))})
 		}
-		if _, err := w.Append(context.Background(), session.Proposal{CommitID: session.CommitID(fmt.Sprintf("c%d", firstCommit+i)), Batches: []session.StreamBatch{batch}}); err != nil {
+		if _, err := w.Append(context.Background(), session.Proposal{CommitID: session.CommitID(fmt.Sprintf("c%d", firstCommit+i)), Batches: []session.EventBatch{batch}}); err != nil {
 			t.Fatalf("append c%d: %v", firstCommit+i, err)
 		}
 	}

@@ -39,9 +39,9 @@ func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
 	typ := tpfx(id) + "note"
 	return ModuleDescriptor{Source: SourceTwilight, ID: id, Requires: requires, Streams: ownStream(string(id)),
 		Events: []EventDefinition{
-			{Type: typ, Stream: string(id), Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+			{Type: typ, Domain: string(id), Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
 				Bindings: []BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Stream: string(id), Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Domain: string(id), Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []ProjectionDefinition{{
 			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
@@ -85,7 +85,7 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 func srcModule(source SourceID, id ModuleID) ModuleDescriptor {
 	domain := string(source) + "." + string(id)
 	return ModuleDescriptor{Source: source, ID: id, Streams: ownStream(domain), Events: []EventDefinition{{
-		Type: ModulePrefix(source, id) + "note", Stream: domain,
+		Type: ModulePrefix(source, id) + "note", Domain: domain,
 		Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
 	}}}
 }
@@ -159,7 +159,7 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 		{"nil codec", map[PayloadVersion]PayloadCodec{1: nil}, "nil codec or zero payload version"},
 	} {
 		_, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
-			Events: []EventDefinition{{Type: tpfx("a") + "note", Stream: "a", Codecs: tc.codecs}}})
+			Events: []EventDefinition{{Type: tpfx("a") + "note", Domain: "a", Codecs: tc.codecs}}})
 		if err == nil {
 			t.Fatalf("%s: registry built", tc.name)
 		}
@@ -172,7 +172,7 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 	// declared write Version without a codec is refused.
 	r, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
 		Events: []EventDefinition{{
-			Type: tpfx("a") + "note", Stream: "a",
+			Type: tpfx("a") + "note", Domain: "a",
 			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
 		}}})
 	if err != nil {
@@ -182,7 +182,7 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 		t.Fatalf("default write version = %d, want the highest codec, 2", def.Version)
 	}
 	if _, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
-		Events: []EventDefinition{{Type: tpfx("a") + "note", Stream: "a", Version: 3,
+		Events: []EventDefinition{{Type: tpfx("a") + "note", Domain: "a", Version: 3,
 			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}}}}}); err == nil || !strings.Contains(err.Error(), "write version 3 has no codec") {
 		t.Fatalf("write version without codec: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	typ := tpfx("v") + "note"
 	codecs := map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}}
 	upgraded := ModuleDescriptor{Source: SourceTwilight, ID: "v", Streams: ownStream("v"), Events: []EventDefinition{{
-		Type: typ, Stream: "v", Codecs: codecs,
+		Type: typ, Domain: "v", Codecs: codecs,
 	}}}
 	r, err := BuildRegistry(upgraded)
 	if err != nil {
@@ -240,7 +240,7 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	}
 	// A module still writing the older version declares it.
 	pinned := upgraded
-	pinned.Events = []EventDefinition{{Type: typ, Stream: "v", Codecs: codecs, Version: 1}}
+	pinned.Events = []EventDefinition{{Type: typ, Domain: "v", Codecs: codecs, Version: 1}}
 	r1, err := BuildRegistry(pinned)
 	if err != nil {
 		t.Fatal(err)

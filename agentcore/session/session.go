@@ -122,14 +122,14 @@ func (s *Session) ReadCommits(ctx context.Context, from CommitSeq, limit uint32)
 
 // ReadStream returns the events of one logical stream in the order the
 // requested lineage sees them.
-func (s *Session) ReadStream(ctx context.Context, stream StreamRef, lineage StreamLineage, from StreamSeq, limit uint32) (StreamPage, error) {
+func (s *Session) ReadStream(ctx context.Context, stream Domain, lineage StreamLineage, from StreamSeq, limit uint32) (StreamPage, error) {
 	if err := validateStreamRead(s.ID(), stream, lineage); err != nil {
 		return StreamPage{}, err
 	}
 	return s.collectStream(ctx, stream, lineage, from, limit)
 }
 
-func (s *Session) collectStream(ctx context.Context, stream StreamRef, lineage StreamLineage, from StreamSeq, limit uint32) (StreamPage, error) {
+func (s *Session) collectStream(ctx context.Context, stream Domain, lineage StreamLineage, from StreamSeq, limit uint32) (StreamPage, error) {
 	commits, err := s.path.ReadStream(ctx, s.st, stream, lineage)
 	if err != nil {
 		return StreamPage{}, err
@@ -138,12 +138,12 @@ func (s *Session) collectStream(ctx context.Context, stream StreamRef, lineage S
 	if err != nil {
 		return StreamPage{}, err
 	}
-	page := StreamPage{Header: s.Header(), Stream: stream, Head: head}
+	page := StreamPage{Header: s.Header(), Domain: stream, Head: head}
 	page.Events, page.HasMore = StreamEvents(commits, stream, from, limit)
 	return page, nil
 }
 
-func validateStreamRead(sid SessionID, stream StreamRef, lineage StreamLineage) error {
+func validateStreamRead(sid SessionID, stream Domain, lineage StreamLineage) error {
 	if err := ValidateStreamRef(stream); err != nil {
 		return newError(ErrInvalid, "read_stream", sid, err.Error())
 	}

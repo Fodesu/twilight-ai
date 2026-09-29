@@ -524,7 +524,7 @@ var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Lineage:
 var Stream = streamDefinition.Ref("")
 
 func def[T any](typ session.EventType, check func(*T) error, bindings ...extension.BindingReferenceDefinition) extension.EventDefinition {
-	return extension.EventDefinition{Type: typ, Stream: StreamDomain,
+	return extension.EventDefinition{Type: typ, Domain: StreamDomain,
 		Codecs:   map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[T]{Check: check}},
 		Bindings: bindings}
 }

@@ -37,7 +37,7 @@ func newWriter(t *testing.T) writer.Writer {
 
 func submitted(id chatlog.InputID) unit.Part {
 	return unit.PartFunc(func(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
-		return []writer.TypedBatch{{Stream: chatlog.Stream, Events: []writer.TypedEvent{{
+		return []writer.TypedBatch{{Domain: chatlog.Stream, Events: []writer.TypedEvent{{
 			Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: now,
 			Value: chatlog.InputSubmittedPayload{InputID: id, Content: run.MustParseCanonicalJSON(`{"text":"x"}`), SubmittedAtUnixMilli: now}}}}}, nil
 	})
@@ -64,8 +64,8 @@ func TestCommitMergesRefusesAndReplays(t *testing.T) {
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("commit = %+v %v", res, err)
 	}
-	if len(res.Commit.Batches) != 2 || res.Commit.Batches[0].Stream != chatlog.Stream || len(res.Commit.Batches[0].Events) != 2 ||
-		res.Commit.Batches[1].Stream != runmod.Stream("r1") {
+	if len(res.Commit.Batches) != 2 || res.Commit.Batches[0].Domain != chatlog.Stream || len(res.Commit.Batches[0].Events) != 2 ||
+		res.Commit.Batches[1].Domain != runmod.Stream("r1") {
 		t.Fatalf("batches = %+v", res.Commit.Batches)
 	}
 	if res.Commit.Batches[0].Events[0].RecordedAtUnixMilli != 7 {
@@ -116,7 +116,7 @@ func TestCommitReplaysByCommitID(t *testing.T) {
 	}
 	// A CommitID written by a plain writer.Commit is a replay for a unit too.
 	if _, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
-		return &writer.SemanticGroup{CommitID: "plain", Batches: []writer.TypedBatch{{Stream: chatlog.Stream, Events: []writer.TypedEvent{{
+		return &writer.SemanticGroup{CommitID: "plain", Batches: []writer.TypedBatch{{Domain: chatlog.Stream, Events: []writer.TypedEvent{{
 			Type: chatlog.TypeInputSubmitted, Value: chatlog.InputSubmittedPayload{InputID: "p", Content: run.MustParseCanonicalJSON(`{"text":"x"}`)}}}}}}, nil
 	}); err != nil {
 		t.Fatal(err)

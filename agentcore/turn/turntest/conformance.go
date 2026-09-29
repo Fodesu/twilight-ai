@@ -395,7 +395,7 @@ func testProjection(t *testing.T, factory Factory) {
 		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
 	}
 	h.mustApply(writer.SemanticGroup{CommitID: "foreign-run", Batches: []writer.TypedBatch{
-		{Stream: runmod.Stream("r-foreign"), Events: runEvents},
+		{Domain: runmod.Stream("r-foreign"), Events: runEvents},
 	}})
 	surface := h.surface()
 	if len(surface.Turns) != 1 || surface.RunOwner["r-foreign"] != "" {
@@ -425,7 +425,7 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 	for i, tc := range rejects {
 		res := h.commit(writer.SemanticGroup{CommitID: session.CommitID("reject-" + string(rune('a'+i))), Batches: []writer.TypedBatch{
-			{Stream: turn.Stream(tc.turnID), Events: []writer.TypedEvent{tc.event}},
+			{Domain: turn.Stream(tc.turnID), Events: []writer.TypedEvent{tc.event}},
 		}})
 		if res.Outcome != writer.CommitInvalid {
 			t.Fatalf("%s: outcome = %s, want invalid", tc.name, res.Outcome)

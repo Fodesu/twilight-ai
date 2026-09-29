@@ -515,8 +515,8 @@ func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 		t.Fatalf("ledger = %d commits head %+v %v, want accept + two claims", len(commits), head, err)
 	}
 	for i, want := range []store.EventType{store.EventExecutionAccepted, store.EventExecutionClaimed, store.EventExecutionClaimed} {
-		if commits[i].Events[0].Type != want {
-			t.Fatalf("commit %d = %s, want %s", i, commits[i].Events[0].Type, want)
+		if commits[i].Batches[0].Events[0].Type != want {
+			t.Fatalf("commit %d = %s, want %s", i, commits[i].Batches[0].Events[0].Type, want)
 		}
 	}
 }
@@ -528,7 +528,7 @@ func openLedger(t *testing.T, records store.Store, a effect.Assignment) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := records.Append(context.Background(), store.Lease{}, a.Key(), store.Commit{CommitID: store.AcceptCommitID(a.Key()), Events: []store.Event{ev}}); err != nil {
+	if err := records.Append(context.Background(), store.Lease{}, a.Key(), store.Commit{CommitID: store.AcceptCommitID(a.Key()), Batches: []store.EventBatch{{Events: []store.Event{ev}}}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -539,7 +539,7 @@ func appendStep(records store.Store, lease store.Lease, seq store.CommitSeq, typ
 	if err != nil {
 		return err
 	}
-	return records.Append(context.Background(), lease, lease.Key, store.Commit{Seq: seq, CommitID: store.DeriveCommitID(lease.Key, "test", fmt.Sprintf("%s/%d", typ, seq)), Events: []store.Event{ev}})
+	return records.Append(context.Background(), lease, lease.Key, store.Commit{Seq: seq, CommitID: store.DeriveCommitID(lease.Key, "test", fmt.Sprintf("%s/%d", typ, seq)), Batches: []store.EventBatch{{Events: []store.Event{ev}}}})
 }
 
 func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {

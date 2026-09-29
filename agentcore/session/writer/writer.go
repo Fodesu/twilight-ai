@@ -26,11 +26,11 @@ type TypedEvent struct {
 	Value               any
 }
 
-// TypedBatch is the caller's view of one StreamBatch: the events of one
+// TypedBatch is the caller's view of one EventBatch: the events of one
 // logical stream inside one commit. A commit carries at most one batch per
 // stream and may span several streams.
 type TypedBatch struct {
-	Stream session.StreamRef
+	Domain session.Domain
 	Events []TypedEvent
 }
 
@@ -57,7 +57,7 @@ type View interface {
 	LookupCommit(session.CommitID) (session.Commit, bool, error)
 	// StreamHead reports whether this Session has written to a logical
 	// stream and the StreamSeq its next event takes (SES-REP-3).
-	StreamHead(session.StreamRef) (session.StreamSeq, bool)
+	StreamHead(session.Domain) (session.StreamSeq, bool)
 	// Projection returns a detached state that the caller owns.
 	Projection(extension.ProjectionID, extension.ProjectionVersion) (any, error)
 }
@@ -266,7 +266,7 @@ func (v view) LookupCommit(id session.CommitID) (session.Commit, bool, error) {
 	return v.w.kernel.LookupCommit(id)
 }
 
-func (v view) StreamHead(stream session.StreamRef) (session.StreamSeq, bool) {
+func (v view) StreamHead(stream session.Domain) (session.StreamSeq, bool) {
 	return v.w.kernel.StreamHead(stream)
 }
 

@@ -12,12 +12,12 @@ import (
 )
 
 func proposal(commit string, n int) session.Proposal {
-	batch := session.StreamBatch{Stream: session.StreamRef{Domain: "chat"}}
+	batch := session.EventBatch{Domain: session.Domain{Name: "chat"}}
 	for i := 0; i < n; i++ {
 		batch.Events = append(batch.Events, session.Event{Type: "twilight/x/e", RecordedAtUnixMilli: 1,
 			Payload: jsonstable.MustParse(fmt.Sprintf(`{"c":%q,"i":%d}`, commit, i))})
 	}
-	return session.Proposal{CommitID: session.CommitID(commit), Batches: []session.StreamBatch{batch}}
+	return session.Proposal{CommitID: session.CommitID(commit), Batches: []session.EventBatch{batch}}
 }
 
 // SES-APP-1: a commit whose bytes were written but whose fsync failed is

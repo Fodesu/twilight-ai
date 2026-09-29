@@ -301,7 +301,7 @@ func (s *Store) Summarize(ctx context.Context, id session.SegmentID) (session.In
 
 // StreamHead sums the stream's event counts over the segment's index
 // entries (SES-REP-3).
-func (s *Store) StreamHead(ctx context.Context, id session.SegmentID, stream session.StreamRef, before session.CommitSeq) (session.StreamSeq, error) {
+func (s *Store) StreamHead(ctx context.Context, id session.SegmentID, stream session.Domain, before session.CommitSeq) (session.StreamSeq, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -321,7 +321,7 @@ func (s *Store) StreamHead(ctx context.Context, id session.SegmentID, stream ses
 			break
 		}
 		for _, sc := range x.idx.Entries[i].Streams {
-			if sc.Stream == stream {
+			if sc.Domain == stream {
 				n += session.StreamSeq(sc.Events)
 			}
 		}

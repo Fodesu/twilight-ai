@@ -29,8 +29,8 @@ type IndexEntry struct {
 
 // StreamCount is the number of events one commit wrote to one stream.
 type StreamCount struct {
-	Stream StreamRef `json:"stream"`
-	Events uint32    `json:"events"`
+	Domain Domain `json:"domain"`
+	Events uint32 `json:"events"`
 }
 
 // IndexEntryOf derives the entry of a commit.
@@ -39,7 +39,7 @@ func IndexEntryOf(c *Commit) IndexEntry {
 	if len(c.Batches) > 0 {
 		e.Streams = make([]StreamCount, len(c.Batches))
 		for i := range c.Batches {
-			e.Streams[i] = StreamCount{Stream: c.Batches[i].Stream, Events: uint32(len(c.Batches[i].Events))} //nolint:gosec // a batch holds far fewer than MaxUint32 events
+			e.Streams[i] = StreamCount{Domain: c.Batches[i].Domain, Events: uint32(len(c.Batches[i].Events))} //nolint:gosec // a batch holds far fewer than MaxUint32 events
 		}
 	}
 	return e

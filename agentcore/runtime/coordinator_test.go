@@ -52,7 +52,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 		}
 		if _, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 			return &writer.SemanticGroup{CommitID: session.CommitID("submit/" + string(id)),
-				Batches: []writer.TypedBatch{{Stream: chatlog.Stream, Events: []writer.TypedEvent{{
+				Batches: []writer.TypedBatch{{Domain: chatlog.Stream, Events: []writer.TypedEvent{{
 					Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: 1,
 					Value: chatlog.InputSubmittedPayload{InputID: id, Content: content, SubmittedAtUnixMilli: 1},
 				}}}}}, nil

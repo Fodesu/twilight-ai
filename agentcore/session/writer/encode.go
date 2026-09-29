@@ -34,8 +34,8 @@ func bindingIDs(refs []bindingRef) []artifact.BindingID {
 // each batch's stream attribution against the stream domain its event types
 // declare, extracts the artifact references the events declare and returns
 // the proposal batches. It touches no store.
-func encode(registry *extension.Registry, group *SemanticGroup) ([]session.StreamBatch, []bindingRef, string) {
-	batches := make([]session.StreamBatch, len(group.Batches))
+func encode(registry *extension.Registry, group *SemanticGroup) ([]session.EventBatch, []bindingRef, string) {
+	batches := make([]session.EventBatch, len(group.Batches))
 	var refs []bindingRef
 	for bi, tb := range group.Batches {
 		events := make([]session.Event, len(tb.Events))
@@ -49,11 +49,11 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Strea
 			if err != nil {
 				return nil, nil, fmt.Sprintf("%s: %v", where, err)
 			}
-			_, stream, declared := registry.LookupStream(def.Stream)
+			_, stream, declared := registry.LookupStream(def.Domain)
 			if !declared {
-				return nil, nil, fmt.Sprintf("%s: event type %s names stream domain %q, which no module declares", where, te.Type, def.Stream)
+				return nil, nil, fmt.Sprintf("%s: event type %s names stream domain %q, which no module declares", where, te.Type, def.Domain)
 			}
-			if verdict := checkStreamAffinity(tb.Stream, stream, te.Value); verdict != "" {
+			if verdict := checkStreamAffinity(tb.Domain, stream, te.Value); verdict != "" {
 				return nil, nil, fmt.Sprintf("%s: %s", where, verdict)
 			}
 			for d := range def.Bindings {
@@ -71,7 +71,7 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Strea
 			}
 			events[i] = session.Event{Type: te.Type, RecordedAtUnixMilli: te.RecordedAtUnixMilli, Payload: payload}
 		}
-		batches[bi] = session.StreamBatch{Stream: tb.Stream, Events: events}
+		batches[bi] = session.EventBatch{Domain: tb.Domain, Events: events}
 	}
 	return batches, refs, ""
 }
@@ -80,17 +80,17 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Strea
 // declaration of the domain the event type names (EXT-STR-1). It returns a
 // human verdict for the commit's detail string; the declarations themselves
 // are validated at BuildRegistry.
-func checkStreamAffinity(stream session.StreamRef, def extension.StreamDefinition, value any) string {
-	if stream.Domain != def.Domain {
+func checkStreamAffinity(stream session.Domain, def extension.StreamDefinition, value any) string {
+	if stream.Name != def.Domain {
 		return fmt.Sprintf("event belongs to stream domain %q but the batch is %s", def.Domain, stream)
 	}
 	if !def.Keyed() {
-		if stream.ID != "" {
+		if stream.Id != "" {
 			return fmt.Sprintf("stream domain %q is a singleton but the batch is %s", def.Domain, stream)
 		}
 		return ""
 	}
-	if stream.ID == "" {
+	if stream.Id == "" {
 		return fmt.Sprintf("stream domain %q is keyed but the batch names no stream ID", def.Domain)
 	}
 	id, err := def.Key(value)
@@ -100,7 +100,7 @@ func checkStreamAffinity(stream session.StreamRef, def extension.StreamDefinitio
 	if id == "" {
 		return fmt.Sprintf("event names no stream of domain %q", def.Domain)
 	}
-	if id != stream.ID {
+	if id != stream.Id {
 		return fmt.Sprintf("event belongs to stream %s/%s but the batch is %s", def.Domain, id, stream)
 	}
 	return ""

@@ -251,7 +251,7 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 		_ = l.st.Release(ctx, lease)
 		return nil, err
 	}
-	return &ledgerHandle{session: s, lease: lease, opts: opts, head: head, streams: make(map[StreamRef]StreamSeq)}, nil
+	return &ledgerHandle{session: s, lease: lease, opts: opts, head: head, streams: make(map[Domain]StreamSeq)}, nil
 }
 
 // --- read -------------------------------------------------------------------------
@@ -274,26 +274,26 @@ func (l *Ledger) ReadStream(ctx context.Context, req StreamReadRequest) (StreamP
 	// Validate before loading so a malformed read is ErrInvalid even when the
 	// Session is absent. Stream positions count the stream's events from the
 	// first commit the read sees (SES-REP-2).
-	if err := validateStreamRead(req.SessionID, req.Stream, req.Lineage); err != nil {
+	if err := validateStreamRead(req.SessionID, req.Domain, req.Lineage); err != nil {
 		return StreamPage{}, err
 	}
 	s, err := l.Load(ctx, req.SessionID)
 	if err != nil {
 		return StreamPage{}, err
 	}
-	return s.collectStream(ctx, req.Stream, req.Lineage, req.From, req.Limit)
+	return s.collectStream(ctx, req.Domain, req.Lineage, req.From, req.Limit)
 }
 
 // StreamEvents walks commits in order and returns the events of stream from
 // position from, at most limit (0 = unlimited); more reports whether events
 // beyond the returned ones exist. It is the one StreamSeq derivation
 // (SES-REP-2).
-func StreamEvents(commits []Commit, stream StreamRef, from StreamSeq, limit uint32) (events []Event, more bool) {
+func StreamEvents(commits []Commit, stream Domain, from StreamSeq, limit uint32) (events []Event, more bool) {
 	var pos StreamSeq
 	for i := range commits {
 		for j := range commits[i].Batches {
 			b := &commits[i].Batches[j]
-			if b.Stream != stream {
+			if b.Domain != stream {
 				continue
 			}
 			for _, e := range b.Events {
@@ -509,8 +509,8 @@ func cloneCommit(c Commit) Commit {
 	return out
 }
 
-func cloneBatches(batches []StreamBatch) []StreamBatch {
-	out := make([]StreamBatch, len(batches))
+func cloneBatches(batches []EventBatch) []EventBatch {
+	out := make([]EventBatch, len(batches))
 	for i := range batches {
 		out[i] = batches[i]
 		out[i].Events = append([]Event(nil), batches[i].Events...)

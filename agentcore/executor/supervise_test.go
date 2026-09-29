@@ -618,7 +618,7 @@ type gateStore struct {
 }
 
 func (s *gateStore) Append(ctx context.Context, lease store.Lease, key effect.AssignmentKey, c store.Commit) error {
-	if lease.Epoch > 0 && len(c.Events) == 1 && c.Events[0].Type == store.EventExecutionStarted {
+	if lease.Epoch > 0 && len(c.Batches) == 1 && len(c.Batches[0].Events) == 1 && c.Batches[0].Events[0].Type == store.EventExecutionStarted {
 		s.mu.Lock()
 		armed := s.armed
 		s.armed = false

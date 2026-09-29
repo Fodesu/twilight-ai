@@ -57,8 +57,8 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) { //nolint:goc
 	if !ok {
 		return m, fmt.Errorf("run machine: unexpected %T", e.Value)
 	}
-	if want := Stream(ev.RunID); e.Stream != want {
-		return m, fmt.Errorf("run machine: fact for %s arrived via stream %s", ev.RunID, e.Stream)
+	if want := Stream(ev.RunID); e.Domain != want {
+		return m, fmt.Errorf("run machine: fact for %s arrived via stream %s", ev.RunID, e.Domain)
 	}
 	out := m.clone()
 	var state run.MachineState

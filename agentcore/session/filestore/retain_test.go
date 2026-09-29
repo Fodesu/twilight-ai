@@ -29,8 +29,8 @@ func TestTruncateObeysLiveSpan(t *testing.T) {
 	}
 	appendOne := func(id string) session.Commit {
 		t.Helper()
-		c, err := w.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.StreamBatch{{
-			Stream: session.StreamRef{Domain: "chat"},
+		c, err := w.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.EventBatch{{
+			Domain: session.Domain{Name: "chat"},
 			Events: []session.Event{{Type: "twilight/x/n", Payload: jsonstable.MustParse(`{"n":1}`)}},
 		}}})
 		if err != nil {

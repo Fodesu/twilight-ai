@@ -44,7 +44,7 @@ func streamKey(value any) (string, error) {
 }
 
 // Stream is the logical stream of one Turn's events.
-func Stream(turnID TurnID) session.StreamRef { return streamDefinition.Ref(string(turnID)) }
+func Stream(turnID TurnID) session.Domain { return streamDefinition.Ref(string(turnID)) }
 
 type TurnID string
 
@@ -129,7 +129,7 @@ func CancelCommandID(sid session.SessionID, turnID TurnID, runID run.RunID) run.
 const Version extension.PayloadVersion = 1
 
 func def[T any](typ session.EventType, check func(*T) error) extension.EventDefinition {
-	return extension.EventDefinition{Type: typ, Stream: StreamDomain,
+	return extension.EventDefinition{Type: typ, Domain: StreamDomain,
 		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[T]{Check: check}}}
 }
 

@@ -47,7 +47,7 @@ func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, 
 	}
 	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 		return &writer.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)),
-			Batches: []writer.TypedBatch{{Stream: Stream, Events: []writer.TypedEvent{{
+			Batches: []writer.TypedBatch{{Domain: Stream, Events: []writer.TypedEvent{{
 				Type: TypeInputSubmitted, RecordedAtUnixMilli: s.Now().UnixMilli(),
 				Value: InputSubmittedPayload{InputID: InputID(id), Content: content, SubmittedAtUnixMilli: s.Now().UnixMilli()},
 			}}}}}, nil
@@ -81,7 +81,7 @@ func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID
 			return nil, fmt.Errorf("%w: input %s is not a submitted input", ErrNotSubmitted, id)
 		}
 		return &writer.SemanticGroup{CommitID: session.CommitID("input-withdrawn/" + string(id)),
-			Batches: []writer.TypedBatch{{Stream: Stream, Events: []writer.TypedEvent{{
+			Batches: []writer.TypedBatch{{Domain: Stream, Events: []writer.TypedEvent{{
 				Type: TypeInputWithdrawn, RecordedAtUnixMilli: s.Now().UnixMilli(),
 				Value: InputWithdrawnPayload{InputID: InputID(id), Reason: reason},
 			}}}}}, nil
@@ -155,7 +155,7 @@ func (s *Commands) Compact(ctx context.Context, w writer.Writer, summaryText str
 		}
 		now := s.Now().UnixMilli()
 		return &writer.SemanticGroup{CommitID: session.CommitID("compaction/" + string(compactionID)),
-			Batches: []writer.TypedBatch{{Stream: Stream, Events: []writer.TypedEvent{
+			Batches: []writer.TypedBatch{{Domain: Stream, Events: []writer.TypedEvent{
 				{Type: TypeSummary, RecordedAtUnixMilli: now, Value: SummaryPayload{Summary: summary}},
 				{Type: TypeCompactionCreated, RecordedAtUnixMilli: now, Value: payload},
 			}}}}, nil
@@ -297,5 +297,5 @@ func (d deliverInputs) Prepare(_ context.Context, view writer.View, now int64) (
 		events = append(events, writer.TypedEvent{Type: TypeInputDelivered, RecordedAtUnixMilli: now,
 			Value: InputDeliveredPayload{InputID: InputID(in.ID), TurnID: d.turnID, RunID: d.runID}})
 	}
-	return []writer.TypedBatch{{Stream: Stream, Events: events}}, nil
+	return []writer.TypedBatch{{Domain: Stream, Events: events}}, nil
 }

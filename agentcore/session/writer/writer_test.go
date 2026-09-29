@@ -50,9 +50,9 @@ func noteModule(id extension.ModuleID, requires ...extension.ModuleRequirement) 
 	typ := tpfx(id) + "note"
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: id, Requires: requires, Streams: noteStreams(),
 		Events: []extension.EventDefinition{
-			{Type: typ, Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
+			{Type: typ, Domain: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 				Bindings: []extension.BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Domain: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []extension.ProjectionDefinition{{
 			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ}, Authoritative: true,
@@ -73,7 +73,7 @@ func noteModule(id extension.ModuleID, requires ...extension.ModuleRequirement) 
 
 // noteBatch wraps events as the single note-stream batch tests write.
 func noteBatch(events ...TypedEvent) []TypedBatch {
-	return []TypedBatch{{Stream: session.StreamRef{Domain: noteDomain}, Events: events}}
+	return []TypedBatch{{Domain: session.Domain{Name: noteDomain}, Events: events}}
 }
 
 type fixture struct {
@@ -267,8 +267,8 @@ func TestProjectionUnknownEvents(t *testing.T) {
 	_ = w.Close(ctx)
 	kw, _ := f.store.Open(ctx, "s", session.OpenOptions{})
 	raw := func(id string, typ session.EventType, payload string) {
-		if _, err := kw.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.StreamBatch{
-			{Stream: session.StreamRef{Domain: noteDomain}, Events: []session.Event{{Type: typ, Payload: jsonstable.MustParse(payload)}}},
+		if _, err := kw.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.EventBatch{
+			{Domain: session.Domain{Name: noteDomain}, Events: []session.Event{{Type: typ, Payload: jsonstable.MustParse(payload)}}},
 		}}); err != nil {
 			t.Fatal(err)
 		}
@@ -446,7 +446,7 @@ func TestBindingAdmission(t *testing.T) {
 	typ := tpfx("r") + "ref"
 	reg, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r", Streams: noteStreams(),
 		Events: []extension.EventDefinition{{
-			Type: typ, Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
+			Type: typ, Domain: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 			Bindings: []extension.BindingReferenceDefinition{{
 				Extractor: refsExtractor, Cardinality: extension.Cardinality{Min: 1, Max: &maxTwo},
 				AllowedSchemes:     []artifact.Scheme{"spill"},

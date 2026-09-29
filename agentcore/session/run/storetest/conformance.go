@@ -607,7 +607,7 @@ func testIsolation(t *testing.T, factory Factory) {
 	h.prepare("r2", false)
 	h.submitInputs(input("noise"))
 	h.mustApply(writer.SemanticGroup{CommitID: "turn-noise", Batches: []writer.TypedBatch{{
-		Stream: turn.Stream("t9"),
+		Domain: turn.Stream("t9"),
 		Events: []writer.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
 			Value: turn.StartedPayload{TurnID: "t9", RunID: "r9", Preset: preset.PresetRef{ID: "b", Digest: "sha256:b"}}}},
 	}}})

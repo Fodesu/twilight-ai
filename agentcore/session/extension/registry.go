@@ -12,16 +12,17 @@ import (
 	"unicode/utf8"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
 )
 
 // SourceID, ModuleID and ModuleKey are the kernel's module identity types
-// (session.ModuleKey), so extension slots on headers and commits can be
+// (ledger.ModuleKey), so extension slots on headers and commits can be
 // keyed by module (SES-WIR-5).
 type (
-	SourceID          = session.SourceID
-	ModuleID          = session.ModuleID
-	ModuleKey         = session.ModuleKey
+	SourceID          = ledger.SourceID
+	ModuleID          = ledger.ModuleID
+	ModuleKey         = ledger.ModuleKey
 	ProjectionID      string
 	ProjectionVersion uint16
 )
@@ -64,7 +65,7 @@ type EventDefinition struct {
 	// Stream names the stream domain the event may be appended to: one the
 	// same module declares in ModuleDescriptor.Streams (EXT-STR-1). The
 	// Writer rejects an event placed in a batch of another domain.
-	Stream string
+	Domain string
 }
 
 // StreamDefinition declares one logical stream domain a module owns
@@ -72,7 +73,7 @@ type EventDefinition struct {
 // names no domain; every domain a Session writes is declared here by
 // exactly one module, which is the only module allowed to append to it.
 type StreamDefinition struct {
-	// Domain is the StreamRef.Domain of every stream of the definition.
+	// Domain is the Domain.Domain of every stream of the definition.
 	Domain string
 	// Key extracts, from a typed event value of this domain, the ID of the
 	// stream it belongs to. Nil declares a singleton domain: one stream, no
@@ -95,8 +96,8 @@ type StreamKey func(value any) (string, error)
 func (d StreamDefinition) Keyed() bool { return d.Key != nil }
 
 // Ref names one stream of the domain; id is empty for a singleton.
-func (d StreamDefinition) Ref(id string) session.StreamRef {
-	return session.StreamRef{Domain: d.Domain, ID: id}
+func (d StreamDefinition) Ref(id string) session.Domain {
+	return session.Domain{Name: d.Domain, Id: id}
 }
 
 // ModuleRequirement declares that a module consumes another module's events
@@ -130,7 +131,7 @@ func (m *ModuleDescriptor) Key() ModuleKey { return ModuleKey{Source: m.Source, 
 // the logical stream the fold read the event from; Decode alone cannot know
 // it, so folds set it after decoding.
 type DecodedEvent struct {
-	Stream session.StreamRef
+	Domain session.Domain
 	// Position is the event's ledger position; a fold fills it, a bare Decode
 	// leaves it zero.
 	Position session.Position
@@ -232,7 +233,7 @@ func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry
 		}
 		r.modules[key] = *m
 		for _, sd := range m.Streams {
-			if err := session.ValidateStreamRef(session.StreamRef{Domain: sd.Domain}); err != nil {
+			if err := session.ValidateStreamRef(session.Domain{Name: sd.Domain}); err != nil {
 				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module %s/%s: %v", key.Source, key.ID, err)}
 			}
 			if prev, dup := r.streams[sd.Domain]; dup {
@@ -364,12 +365,12 @@ func (r *Registry) registerEvent(m *ModuleDescriptor, key ModuleKey, def EventDe
 	if def.Codecs[def.Version] == nil {
 		return &Error{Code: ErrInvalid, Type: def.Type, Detail: fmt.Sprintf("write version %d has no codec", def.Version)}
 	}
-	if def.Stream == "" {
+	if def.Domain == "" {
 		return &Error{Code: ErrInvalid, Type: def.Type, Detail: "event declares no stream domain"}
 	}
-	if se, declared := r.streams[def.Stream]; !declared || se.module != key {
+	if se, declared := r.streams[def.Domain]; !declared || se.module != key {
 		return &Error{Code: ErrInvalid, Type: def.Type,
-			Detail: fmt.Sprintf("event names stream domain %q, which module %s/%s does not declare", def.Stream, key.Source, key.ID)}
+			Detail: fmt.Sprintf("event names stream domain %q, which module %s/%s does not declare", def.Domain, key.Source, key.ID)}
 	}
 	for _, b := range def.Bindings {
 		if err := b.validate(); err != nil {

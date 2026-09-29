@@ -23,7 +23,7 @@ func commit(t *testing.T, seq process.CommitSeq, s step) process.Commit {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return process.Commit{Seq: seq, CommitID: process.CommitID("c" + string(rune('0'+seq))), Events: []process.Event{ev}}
+	return process.Commit{Seq: seq, CommitID: process.CommitID("c" + string(rune('0'+seq))), Batches: []process.EventBatch{{Events: []process.Event{ev}}}}
 }
 
 func TestFold(t *testing.T) {

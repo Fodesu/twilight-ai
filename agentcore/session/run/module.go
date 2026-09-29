@@ -40,7 +40,7 @@ func streamKey(value any) (string, error) {
 }
 
 // Stream is the logical stream of one Run's facts.
-func Stream(runID run.RunID) session.StreamRef { return streamDefinition.Ref(string(runID)) }
+func Stream(runID run.RunID) session.Domain { return streamDefinition.Ref(string(runID)) }
 
 // factNames is the closed list of fact discriminators, from the Run core's
 // variant registry: a fact the core knows is a wire type this module
@@ -195,7 +195,7 @@ func olderFactCodecs(string) map[extension.PayloadVersion]extension.PayloadCodec
 func eventDefinition(name string, codecs map[extension.PayloadVersion]extension.PayloadCodec, current extension.PayloadVersion) extension.EventDefinition {
 	def := extension.EventDefinition{
 		Type:    Prefix + session.EventType(name),
-		Stream:  StreamDomain,
+		Domain:  StreamDomain,
 		Codecs:  codecs,
 		Version: current,
 	}

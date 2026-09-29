@@ -140,9 +140,11 @@ func (m *Map) Append(_ context.Context, lease executionstore.Lease, key effect.A
 		return err
 	}
 	if lease.IsZero() {
-		for i := range c.Events {
-			if executionstore.Fenced(c.Events[i].Type) {
-				return fmt.Errorf("%w: %s requires the key's lease", executionstore.ErrLeaseLost, c.Events[i].Type)
+		for b := range c.Batches {
+			for i := range c.Batches[b].Events {
+				if executionstore.Fenced(c.Batches[b].Events[i].Type) {
+					return fmt.Errorf("%w: %s requires the key's lease", executionstore.ErrLeaseLost, c.Batches[b].Events[i].Type)
+				}
 			}
 		}
 	} else if !l.held || l.lease.Owner != lease.Owner || l.lease.Epoch != lease.Epoch || l.lease.UntilUnixMilli <= m.now().UnixMilli() {
@@ -185,7 +187,7 @@ func (m *Map) Acquire(_ context.Context, key effect.AssignmentKey, owner string,
 		if err != nil {
 			return executionstore.Lease{}, false, err
 		}
-		c := executionstore.Commit{Seq: l.head().Next, CommitID: executionstore.DeriveCommitID(key, "claim", fmt.Sprint(uint64(epoch))), Events: []executionstore.Event{ev}}
+		c := executionstore.Commit{Seq: l.head().Next, CommitID: executionstore.DeriveCommitID(key, "claim", fmt.Sprint(uint64(epoch))), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{ev}}}}
 		if _, err := executionstore.Fold(state, &c); err != nil {
 			return executionstore.Lease{}, false, err
 		}

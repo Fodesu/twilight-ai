@@ -269,7 +269,7 @@ func (a *LoadedPath) Read(ctx context.Context, store SegmentStore, from CommitSe
 // carry a batch of stream: every segment's under LineageSession, the tip's
 // own under LineageSegment (SES-FRK-5). Each segment is read through
 // SegmentStore.ReadSegmentStream within the range it contributes.
-func (a *LoadedPath) ReadStream(ctx context.Context, store SegmentStore, stream StreamRef, lineage StreamLineage) ([]Commit, error) {
+func (a *LoadedPath) ReadStream(ctx context.Context, store SegmentStore, stream Domain, lineage StreamLineage) ([]Commit, error) {
 	var out []Commit
 	tip := len(a.Segments) - 1
 	first := 0

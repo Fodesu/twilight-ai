@@ -190,7 +190,7 @@ func (b *sessionStorage) ReadSegment(ctx context.Context, id session.SegmentID, 
 
 // ReadSegmentStream joins the stream index to the commits (SES-REP-2/5):
 // only the commits that carry the stream are read.
-func (b *sessionStorage) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.StreamRef, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
+func (b *sessionStorage) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.Domain, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
 	if _, err := b.header(ctx, b.d.q, "read", id); err != nil {
 		return nil, false, err
 	}
@@ -198,7 +198,7 @@ func (b *sessionStorage) ReadSegmentStream(ctx context.Context, id session.Segme
 	if limit > 0 && limit < math.MaxInt32-1 {
 		want = int32(limit) + 1 //nolint:gosec // G115: bounded above
 	}
-	rows, err := b.d.q.SegmentStreamCommits(ctx, db.SegmentStreamCommitsParams{Segment: string(id), Domain: stream.Domain, StreamID: stream.ID, Seq: int64(from), Limit: want}) //nolint:gosec // G115: seq values fit int64
+	rows, err := b.d.q.SegmentStreamCommits(ctx, db.SegmentStreamCommitsParams{Segment: string(id), Domain: stream.Name, StreamID: stream.Id, Seq: int64(from), Limit: want}) //nolint:gosec // G115: seq values fit int64
 	if err != nil {
 		return nil, false, err
 	}
@@ -276,7 +276,7 @@ func (b *sessionStorage) Index(ctx context.Context, id session.SegmentID) (sessi
 		e := session.IndexEntry{CommitID: session.CommitID(r.CommitID), Seq: session.CommitSeq(r.Seq)} //nolint:gosec // G115: seq stored from a uint64
 		for next < len(counts) && counts[next].Seq == r.Seq {
 			c := &counts[next]
-			e.Streams = append(e.Streams, session.StreamCount{Stream: session.StreamRef{Domain: c.Domain, ID: c.StreamID}, Events: uint32(c.Events)}) //nolint:gosec // G115: a batch holds far fewer than MaxUint32 events
+			e.Streams = append(e.Streams, session.StreamCount{Domain: session.Domain{Name: c.Domain, Id: c.StreamID}, Events: uint32(c.Events)}) //nolint:gosec // G115: a batch holds far fewer than MaxUint32 events
 			next++
 		}
 		idx.Entries = append(idx.Entries, e)
@@ -310,11 +310,11 @@ func (b *sessionStorage) Summarize(ctx context.Context, id session.SegmentID) (s
 
 // StreamHead sums the stream's rows of the segment (SES-REP-3): one index
 // range, whatever the segment's length.
-func (b *sessionStorage) StreamHead(ctx context.Context, id session.SegmentID, stream session.StreamRef, before session.CommitSeq) (session.StreamSeq, error) {
+func (b *sessionStorage) StreamHead(ctx context.Context, id session.SegmentID, stream session.Domain, before session.CommitSeq) (session.StreamSeq, error) {
 	if _, err := b.header(ctx, b.d.q, "stream_head", id); err != nil {
 		return 0, err
 	}
-	n, err := b.d.q.SegmentStreamHead(ctx, db.SegmentStreamHeadParams{Segment: string(id), Domain: stream.Domain, StreamID: stream.ID, Seq: int64(before)}) //nolint:gosec // G115: seq values fit int64
+	n, err := b.d.q.SegmentStreamHead(ctx, db.SegmentStreamHeadParams{Segment: string(id), Domain: stream.Name, StreamID: stream.Id, Seq: int64(before)}) //nolint:gosec // G115: seq values fit int64
 	if err != nil {
 		return 0, err
 	}
@@ -366,7 +366,7 @@ func (b *sessionStorage) Append(ctx context.Context, lease session.Lease, id ses
 		// The index rows are written with the body (SES-REP-5): one per
 		// stream the commit wrote, so Index and StreamHead decode nothing.
 		for _, sc := range session.IndexEntryOf(&c).Streams {
-			if err := q.InsertSegmentCommitStream(ctx, db.InsertSegmentCommitStreamParams{Segment: string(id), Seq: int64(c.Seq), Domain: sc.Stream.Domain, StreamID: sc.Stream.ID, Events: int64(sc.Events)}); err != nil { //nolint:gosec // G115: seq values fit int64
+			if err := q.InsertSegmentCommitStream(ctx, db.InsertSegmentCommitStreamParams{Segment: string(id), Seq: int64(c.Seq), Domain: sc.Domain.Name, StreamID: sc.Domain.Id, Events: int64(sc.Events)}); err != nil { //nolint:gosec // G115: seq values fit int64
 				return err
 			}
 		}

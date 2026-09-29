@@ -253,7 +253,7 @@ func (w *Worker) transition(lease executionstore.Lease, typ executionstore.Event
 		if !executionstore.LegalTransition(state.State, to) {
 			return nil, fmt.Errorf("%w: %s from %s", executionstore.ErrStateConflict, typ, state.State)
 		}
-		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s", uint64(lease.Epoch), state.State)), Events: []executionstore.Event{w.event(typ, nil)}}, nil
+		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s", uint64(lease.Epoch), state.State)), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(typ, nil)}}}}, nil
 	}
 }
 
@@ -307,10 +307,10 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if ref == "" {
 		return errors.New("executor: backend prepared an empty execution ref")
 	}
-	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{
+	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{
 		w.event(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: a}),
 		w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: ExecutionRef{Provider: route.Provider, Ref: ref}}),
-	}}
+	}}}}
 	err = w.store.Append(ctx, executionstore.Lease{}, key, c)
 	switch {
 	case err == nil:
@@ -385,9 +385,9 @@ func (w *Worker) opened(ctx context.Context, state *executionstore.Execution, di
 // the tombstone stands, whether written now or earlier; otherwise the live
 // state of the acceptance that won.
 func (w *Worker) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
-	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AbortCommitID(key), Events: []executionstore.Event{
+	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AbortCommitID(key), Batches: []executionstore.EventBatch{{Events: []executionstore.Event{
 		w.event(executionstore.EventExecutionAborted, executionstore.Aborted{Reason: "closed by its controller before acceptance"}),
-	}}
+	}}}}
 	err := w.store.Append(ctx, executionstore.Lease{}, key, c)
 	if err != nil && !errors.Is(err, executionstore.ErrAlreadyApplied) && !errors.Is(err, executionstore.ErrConflict) {
 		return effect.Attachment{}, err
@@ -445,7 +445,7 @@ func (w *Worker) Acknowledge(ctx context.Context, key effect.AssignmentKey) erro
 			return nil, nil // nothing was served, nothing to collect
 		}
 		return &executionstore.Commit{CommitID: executionstore.AcknowledgeCommitID(key),
-			Events: []executionstore.Event{w.event(executionstore.EventOutcomeAcknowledged, nil)}}, nil
+			Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(executionstore.EventOutcomeAcknowledged, nil)}}}}, nil
 	})
 }
 
@@ -482,7 +482,7 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 // race for one identity and the loser reads the winner's Outcome.
 func (w *Worker) settlement(key effect.AssignmentKey, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus) *executionstore.Commit {
 	return &executionstore.Commit{CommitID: executionstore.SettleCommitID(key),
-		Events: []executionstore.Event{w.event(executionstore.EventExecutionSettled, executionstore.Settled{State: state, Outcome: *outcome})}}
+		Batches: []executionstore.EventBatch{{Events: []executionstore.Event{w.event(executionstore.EventExecutionSettled, executionstore.Settled{State: state, Outcome: *outcome})}}}}
 }
 
 // settled records that key reached a terminal state in the ledger: the

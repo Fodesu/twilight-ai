@@ -62,7 +62,7 @@ type CommitPage struct {
 // stream as the chosen lineage sees it, starting at 0 for the first event.
 type StreamReadRequest struct {
 	SessionID SessionID
-	Stream    StreamRef
+	Domain    Domain
 	Lineage   StreamLineage
 	From      StreamSeq
 	Limit     uint32 // 0 = unlimited
@@ -72,7 +72,7 @@ type StreamReadRequest struct {
 // read time; HasMore reports whether events beyond the returned ones exist.
 type StreamPage struct {
 	Header  SegmentHeader
-	Stream  StreamRef
+	Domain  Domain
 	Events  []Event
 	Head    Head
 	HasMore bool
@@ -189,6 +189,6 @@ type Handle interface {
 	// stream it ever closed in a projection. Inherited segments are not
 	// counted whatever lineage the stream's domain declared: the index is
 	// the tip segment's own (SES-FRK-5).
-	StreamHead(StreamRef) (StreamSeq, bool)
+	StreamHead(Domain) (StreamSeq, bool)
 	Close(context.Context) error
 }

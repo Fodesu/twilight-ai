@@ -65,7 +65,7 @@ func cacheModule(c *applyCounter) extension.ModuleDescriptor {
 		}
 	}
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k", Streams: noteStreams(),
-		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+		Events:      []extension.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
 		Projections: []extension.ProjectionDefinition{mk(alphaID), mk(betaID)}}
 }
 
@@ -414,7 +414,7 @@ func TestAuthoritativeEntryMustVerify(t *testing.T) {
 		}
 	}
 	registry, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k", Streams: noteStreams(),
-		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+		Events:      []extension.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
 		Projections: []extension.ProjectionDefinition{mk(alphaID, true), mk(betaID, false)}})
 	if err != nil {
 		t.Fatal(err)

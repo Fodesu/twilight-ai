@@ -25,7 +25,7 @@ type ledgerHandle struct {
 	// streams caches the tip's head of each stream the handle was asked
 	// about, read from the backend once below the handle's head and
 	// advanced by this handle's own Appends (SES-REP-3).
-	streams map[StreamRef]StreamSeq
+	streams map[Domain]StreamSeq
 	// failed is set once an Append's durable outcome is unknown (SES-APP-1):
 	// the handle then answers nothing about the ledger, because what reached
 	// storage is exactly what it cannot know. The caller reopens.
@@ -96,7 +96,7 @@ func (w *ledgerHandle) Committed(id CommitID) (bool, error) {
 // the handle has been asked about; w.mu is held.
 func (w *ledgerHandle) countStreams(c *Commit) {
 	for i := range c.Batches {
-		stream := c.Batches[i].Stream
+		stream := c.Batches[i].Domain
 		if _, known := w.streams[stream]; known {
 			w.streams[stream] += StreamSeq(len(c.Batches[i].Events))
 		}
@@ -107,7 +107,7 @@ func (w *ledgerHandle) countStreams(c *Commit) {
 // index the first time it is asked about a stream, and advances the cached
 // value with each Append (SES-REP-3, SES-FRK-5); the bound keeps a
 // superseded handle from seeing its successor's streams.
-func (w *ledgerHandle) StreamHead(stream StreamRef) (StreamSeq, bool) {
+func (w *ledgerHandle) StreamHead(stream Domain) (StreamSeq, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.failed != nil {

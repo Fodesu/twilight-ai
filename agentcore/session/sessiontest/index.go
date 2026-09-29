@@ -72,7 +72,7 @@ func testIndex(t *testing.T, f Fixture) {
 			if c, ok, err := w.LookupCommit("c3"); err != nil || !ok || c.Seq != c3.Seq {
 				t.Fatalf("lookup c3 = %+v, %v, %v", c, ok, err)
 			}
-			if _, err := w.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.StreamBatch{batch(chatStream(), "twilight/x/z", `{}`)}}); !session.IsCode(err, session.ErrConflict) {
+			if _, err := w.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.EventBatch{batch(chatStream(), "twilight/x/z", `{}`)}}); !session.IsCode(err, session.ErrConflict) {
 				t.Fatalf("duplicate CommitID after index cut = %v, want conflict", err)
 			}
 			page, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})

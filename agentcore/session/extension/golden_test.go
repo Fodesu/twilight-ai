@@ -21,7 +21,7 @@ func TestEncodeWireGolden(t *testing.T) {
 		Streams: []extension.StreamDefinition{{Domain: "gold", Lineage: session.LineageSession}},
 		Events: []extension.EventDefinition{{
 			Type:   "goldsrc/gold/sample",
-			Stream: "gold",
+			Domain: "gold",
 			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[goldenPayload]{}},
 		}},
 	})

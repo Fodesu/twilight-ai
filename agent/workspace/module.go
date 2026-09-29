@@ -125,19 +125,19 @@ var Module = extension.ModuleDescriptor{
 	ID:      ModuleID,
 	Streams: []extension.StreamDefinition{streamDefinition},
 	Events: []extension.EventDefinition{
-		{Type: TypeBound, Stream: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[BoundPayload]{Check: func(p *BoundPayload) error {
+		{Type: TypeBound, Domain: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[BoundPayload]{Check: func(p *BoundPayload) error {
 			if p.Workspace == "" || p.Scope == "" {
 				return errors.New("workspace bound requires workspace and scope")
 			}
 			return nil
 		}}}},
-		{Type: TypeUnbound, Stream: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[UnboundPayload]{Check: func(p *UnboundPayload) error {
+		{Type: TypeUnbound, Domain: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[UnboundPayload]{Check: func(p *UnboundPayload) error {
 			if p.Scope == "" {
 				return errors.New("workspace unbound requires scope")
 			}
 			return nil
 		}}}},
-		{Type: TypeSnapshotted, Stream: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[SnapshottedPayload]{Check: func(p *SnapshottedPayload) error {
+		{Type: TypeSnapshotted, Domain: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[SnapshottedPayload]{Check: func(p *SnapshottedPayload) error {
 			if p.Workspace == "" || p.Snapshot == "" || p.Scope == "" {
 				return errors.New("workspace snapshotted requires workspace, snapshot and scope")
 			}
@@ -243,7 +243,7 @@ func (c *Commands) commit(ctx context.Context, w writer.Writer, decide func(writ
 		if !write {
 			return nil, nil
 		}
-		return &writer.SemanticGroup{CommitID: id, Batches: []writer.TypedBatch{{Stream: Stream, Events: []writer.TypedEvent{ev}}}}, nil
+		return &writer.SemanticGroup{CommitID: id, Batches: []writer.TypedBatch{{Domain: Stream, Events: []writer.TypedEvent{ev}}}}, nil
 	})
 	if err != nil {
 		return err

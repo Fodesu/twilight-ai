@@ -22,7 +22,7 @@ func (d *DB) SeedSegmentCommits(ctx context.Context, segment session.SegmentID, 
 		}
 		rows = append(rows, []any{string(segment), int64(c.Seq), string(c.CommitID), string(body)}) //nolint:gosec // G115: seq values fit int64
 		for _, sc := range session.IndexEntryOf(c).Streams {
-			streamRows = append(streamRows, []any{string(segment), int64(c.Seq), sc.Stream.Domain, sc.Stream.ID, int64(sc.Events)}) //nolint:gosec // G115: seq values fit int64
+			streamRows = append(streamRows, []any{string(segment), int64(c.Seq), sc.Domain.Name, sc.Domain.Id, int64(sc.Events)}) //nolint:gosec // G115: seq values fit int64
 		}
 	}
 	if _, err := d.pool.CopyFrom(ctx, pgx.Identifier{"session_commits"}, []string{"segment", "seq", "commit_id", "body"}, pgx.CopyFromRows(rows)); err != nil {

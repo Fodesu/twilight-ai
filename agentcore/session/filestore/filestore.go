@@ -210,7 +210,7 @@ func (s *Store) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
 
 // ReadSegmentStream is ReadSegment narrowed to the commits whose index
 // entry counts events of stream (SES-REP-2/5).
-func (s *Store) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.StreamRef, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
+func (s *Store) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.Domain, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
@@ -245,9 +245,9 @@ func (s *Store) ReadSegmentStream(ctx context.Context, id session.SegmentID, str
 	return out, false, nil
 }
 
-func countsStream(e *session.IndexEntry, stream session.StreamRef) bool {
+func countsStream(e *session.IndexEntry, stream session.Domain) bool {
 	for _, sc := range e.Streams {
-		if sc.Stream == stream && sc.Events > 0 {
+		if sc.Domain == stream && sc.Events > 0 {
 			return true
 		}
 	}

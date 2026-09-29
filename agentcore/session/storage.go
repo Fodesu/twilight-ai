@@ -20,7 +20,7 @@ type SegmentStore interface {
 	// most limit of them (0 = unlimited), and whether more follow
 	// (SES-REP-2). The adapter narrows by the CommitIndex's stream counts
 	// (SES-REP-5).
-	ReadSegmentStream(ctx context.Context, id SegmentID, stream StreamRef, from CommitSeq, limit uint32) ([]Commit, bool, error)
+	ReadSegmentStream(ctx context.Context, id SegmentID, stream Domain, from CommitSeq, limit uint32) ([]Commit, bool, error)
 	// Locate reports whether the segment holds CommitID as its own commit,
 	// and at which Seq, from the CommitIndex alone (SES-REP-3/5);
 	// LookupCommit reads the commit (SES-REP-4).
@@ -29,7 +29,7 @@ type SegmentStore interface {
 	// StreamHead returns the number of events the segment's own commits
 	// with Seq below before wrote to stream, from the CommitIndex alone
 	// (SES-REP-3).
-	StreamHead(ctx context.Context, id SegmentID, stream StreamRef, before CommitSeq) (StreamSeq, error)
+	StreamHead(ctx context.Context, id SegmentID, stream Domain, before CommitSeq) (StreamSeq, error)
 	// Summarize returns the summary of the segment's CommitIndex as the
 	// adapter keeps it, and the segment's head (SES-REP-5): what Open
 	// checks the index by, without the entries.

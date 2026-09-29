@@ -29,6 +29,7 @@ import (
 
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -46,7 +47,7 @@ const DefaultDepth = 3
 
 // Module is the extension slot the provenance lives under in the child
 // segment's creation record (SES-WIR-5).
-var Module = session.ModuleKey{Source: extension.SourceTwilight, ID: "spawn"}
+var Module = ledger.ModuleKey{Source: extension.SourceTwilight, ID: "spawn"}
 
 // Mode selects where the child's history starts.
 type Mode string
@@ -120,12 +121,12 @@ func DecodeArguments(args run.CanonicalJSON) (Arguments, error) {
 }
 
 // Extension builds the segment extension slot that records prov.
-func Extension(prov Provenance) (session.Extensions, error) {
+func Extension(prov Provenance) (ledger.Extensions, error) {
 	raw, err := json.Marshal(prov)
 	if err != nil {
 		return nil, err
 	}
-	return session.Extensions{Module: session.RawValue(raw)}, nil
+	return ledger.Extensions{Module: ledger.RawValue(raw)}, nil
 }
 
 // ProvenanceFromHeader decodes the spawn record from a segment's creation
