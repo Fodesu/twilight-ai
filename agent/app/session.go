@@ -109,13 +109,9 @@ type Session struct {
 	sid  session.SessionID
 	opts SessionOptions
 	rt   *rt.SessionRuntime
-
-	// loops bounds the Session's service goroutines (the inbox applier and
-	// the idle release); loopsCancel ends them and Close waits for them
-	// before releasing the runtime's background tasks and the ownership.
-	loops       sync.WaitGroup
-	loopsCtx    context.Context
-	loopsCancel context.CancelFunc
+	// host is the Session's process-local lifetime: its service loops and
+	// background tasks; Close ends them before releasing the ownership.
+	host *host
 	// inboxWake wakes the applier; inboxMu serializes applier passes.
 	inboxWake chan struct{}
 	inboxMu   sync.Mutex
@@ -146,12 +142,12 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 		Writer: h.Writer(), Driver: a.Driver, Turns: a.Turns, Chatlog: a.Chatlog, Projections: a.Projections,
 		Preset: opts.Preset, NewTurnID: opts.NewTurnID,
 		RouteRetries: opts.RouteRetries, DrainBudget: opts.DrainBudget,
-		OnQuiescent: s.quiescentPolicies, OnBackgroundFailure: s.backgroundFailed,
 	})
 	if err != nil {
 		_ = h.Close(context.WithoutCancel(ctx))
 		return nil, err
 	}
+	s.host = newHost()
 	app.track(s)
 	// A binding inherited from the fork parent is settled by this Session's
 	// policy before anything runs in it.
@@ -159,7 +155,6 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 		_ = s.Close(context.WithoutCancel(ctx))
 		return nil, err
 	}
-	s.loopsCtx, s.loopsCancel = context.WithCancel(context.Background())
 	// Commands left while no one owned the Session are applied before
 	// anything else this owner does.
 	s.startInbox(ctx)
@@ -183,9 +178,10 @@ func (s *Session) ref(turnID turn.TurnID) turn.TurnRef {
 	return turn.TurnRef{SessionID: s.sid, TurnID: turnID}
 }
 
-// Wait blocks until every background drive Submit has started so far has
-// finished, or ctx ends. It does not cancel anything; Close does.
-func (s *Session) Wait(ctx context.Context) error { return s.rt.Wait(ctx) }
+// Wait blocks until every background task started so far -- the drives
+// Submit started, the snapshots a settlement started -- has finished, or
+// ctx ends. It does not cancel anything; Close does.
+func (s *Session) Wait(ctx context.Context) error { return s.host.wait(ctx) }
 
 // Status reports the active Turn and the Turns awaiting Retry or Settle.
 func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
@@ -208,11 +204,11 @@ func (s *Session) Events(ctx context.Context) <-chan Event { return s.app.Events
 // this call drained after settlement. A settlement that stopped at the
 // DrainBudget returns the Results so far with ErrDrainBudget.
 func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
-	settlements, err := s.rt.Send(ctx, chatlog.NewInputID(), input.Text(text))
-	if settlements == nil {
+	st, err := s.rt.Send(ctx, chatlog.NewInputID(), input.Text(text))
+	if st.Turns == nil {
 		return nil, err
 	}
-	return s.results(ctx, settlements), err
+	return s.settled(ctx, st), err
 }
 
 // Submit submits text under a fresh InputID; see SubmitInput.
@@ -228,7 +224,33 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 // cancels the background drive; a cancelled Turn stays active and resumes
 // on the next open.
 func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) (turn.TurnRef, error) {
-	return s.rt.SubmitAsync(ctx, id, input.Text(text))
+	in, err := s.rt.Submit(ctx, id, input.Text(text))
+	if err != nil {
+		return turn.TurnRef{}, err
+	}
+	ref, absorbed, err := s.rt.RouteInput(ctx, in)
+	if err != nil {
+		return turn.TurnRef{}, err
+	}
+	if absorbed {
+		// A running driver carries the input; nothing to drive here.
+		return ref, nil
+	}
+	s.host.run(func(ctx context.Context) {
+		resp, err := s.rt.Drive(ctx, ref.TurnID)
+		if err != nil {
+			s.backgroundFailed(ref, fmt.Errorf("driving turn %s: %w", ref.TurnID, err))
+			return
+		}
+		st, err := s.rt.Settle(ctx, resp)
+		if err != nil {
+			s.backgroundFailed(ref, fmt.Errorf("settling turn %s: %w", ref.TurnID, err))
+		}
+		if st.Quiescent {
+			s.quiescentPolicies(ctx)
+		}
+	})
+	return ref, nil
 }
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
@@ -253,19 +275,23 @@ func (s *Session) Drain(ctx context.Context) (rt.DriveResult, bool, error) {
 // drains the backlog; ok is false when no Turn is active. A settlement that
 // stopped at the DrainBudget returns the Results so far with ErrDrainBudget.
 func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
-	settlements, ok, err := s.rt.Resume(ctx)
+	st, ok, err := s.rt.Resume(ctx)
 	if !ok {
 		return nil, false, err
 	}
-	return s.results(ctx, settlements), true, err
+	return s.settled(ctx, st), true, err
 }
 
-// results wraps settled drive results with each Turn's reply;
-// materialization failures are reported to Warn and leave Reply empty.
-func (s *Session) results(ctx context.Context, settlements []rt.DriveResult) []Result {
-	out := make([]Result, len(settlements))
-	for i := range settlements {
-		out[i] = s.result(ctx, &settlements[i])
+// settled runs the quiescence policies when the Settlement is quiescent and
+// wraps its drive results with each Turn's reply; materialization failures
+// are reported to Warn and leave Reply empty.
+func (s *Session) settled(ctx context.Context, st rt.Settlement) []Result {
+	if st.Quiescent {
+		s.quiescentPolicies(ctx)
+	}
+	out := make([]Result, len(st.Turns))
+	for i := range st.Turns {
+		out[i] = s.result(ctx, &st.Turns[i])
 	}
 	return out
 }
@@ -284,7 +310,7 @@ func (s *Session) result(ctx context.Context, resp *rt.DriveResult) Result {
 	return r
 }
 
-// quiescentPolicies is the runtime's settlement hook: a settlement that
+// quiescentPolicies runs at a quiescent Settlement: a settlement that
 // drained the backlog snapshots the bound Workspace and runs the automatic
 // compaction policy.
 func (s *Session) quiescentPolicies(ctx context.Context) {
@@ -371,7 +397,7 @@ func (s *Session) maybeSnapshot(context.Context) {
 	if s.app.workspaces == nil || !s.app.workspaces.SnapshotAfterTurn || s.app.snapshots == nil {
 		return
 	}
-	s.rt.Go(func(ctx context.Context) {
+	s.host.run(func(ctx context.Context) {
 		s.snapshotMu.Lock()
 		defer s.snapshotMu.Unlock()
 		_, err := s.SnapshotWorkspace(ctx)
@@ -479,15 +505,11 @@ func (s *Session) maybeCompact(ctx context.Context) {
 }
 
 // Close cancels the Session's service goroutines, waits for them, then
-// cancels the runtime's background drives and waits for them, then releases
-// this Session's ownership; other Sessions of the application stay open. A
-// Turn a cancelled drive left active resumes on the next open.
+// cancels the background drives and waits for them, then releases this
+// Session's ownership; other Sessions of the application stay open. A Turn
+// a cancelled drive left active resumes on the next open.
 func (s *Session) Close(ctx context.Context) error {
 	s.app.untrack(s)
-	if s.loopsCancel != nil {
-		s.loopsCancel()
-	}
-	s.loops.Wait()
-	s.rt.Close()
+	s.host.close()
 	return s.h.Close(ctx)
 }

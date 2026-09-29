@@ -211,23 +211,21 @@ func (s *Session) startInbox(ctx context.Context) {
 	if poll <= 0 {
 		poll = DefaultInboxPoll
 	}
-	s.loops.Add(1)
-	go func() {
-		defer s.loops.Done()
+	s.host.serve(func(ctx context.Context) {
 		ticker := time.NewTicker(poll)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-s.loopsCtx.Done():
+			case <-ctx.Done():
 				return
 			case <-s.inboxWake:
 			case <-ticker.C:
 			}
-			if _, err := s.ApplyPending(s.loopsCtx); err != nil && s.loopsCtx.Err() == nil {
+			if _, err := s.ApplyPending(ctx); err != nil && ctx.Err() == nil {
 				s.app.warn(fmt.Errorf("app: applying the inbox of %s: %w", s.sid, err))
 			}
 		}
-	}()
+	})
 }
 
 // ApplyPending applies the Session's pending commands in Seq order through
@@ -248,7 +246,7 @@ func (s *Session) ApplyPending(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	if len(pending) > 0 {
-		s.rt.Touch()
+		s.host.touch()
 	}
 	n := 0
 	for i := range pending {

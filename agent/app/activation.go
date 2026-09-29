@@ -191,23 +191,21 @@ func (s *Session) startIdleRelease() {
 	if tick < 10*time.Millisecond {
 		tick = 10 * time.Millisecond
 	}
-	s.loops.Add(1)
-	go func() {
-		defer s.loops.Done()
+	s.host.serve(func(ctx context.Context) {
 		ticker := time.NewTicker(tick)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-s.loopsCtx.Done():
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
 			}
-			if s.rt.IdleFor(act.IdleRelease) && s.quiescent(s.loopsCtx) {
+			if s.host.idleFor(act.IdleRelease) && s.quiescent(ctx) {
 				s.app.releaseIdle(s)
 				return
 			}
 		}
-	}()
+	})
 }
 
 // quiescent reports the Session has no active Turn and no pending command.
