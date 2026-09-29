@@ -1,4 +1,4 @@
-package turn
+package preset
 
 import (
 	"errors"
@@ -13,10 +13,20 @@ import (
 )
 
 type (
+	// PresetID names a preset under registration; the PresetRef a Session
+	// records pairs it with the digest of the registered AgentPreset.
+	PresetID string
 	// PromptBuilderRef names the decision component that builds the model
-	// prompt for a Turn (DEC-PMT). It is part of the preset digest.
+	// prompt for a Turn. It is part of the preset digest.
 	PromptBuilderRef string
 )
+
+// PresetRef is the digest-checked reference a Turn's started fact records:
+// the decision identity the Turn runs under, addressable across processes.
+type PresetRef struct {
+	ID     PresetID          `json:"id"`
+	Digest jsonstable.Digest `json:"digest"`
+}
 
 // PublicTool is one tool of an AgentPreset: its ref, frozen definition and
 // response policy. ToolSpecs and the provider-facing tool list both derive
@@ -25,18 +35,18 @@ type PublicTool struct {
 	Ref        run.ToolRef          `json:"ref"`
 	Definition model.ToolDefinition `json:"definition"`
 	Policy     run.ResponsePolicy   `json:"policy"`
-	// Replay is the tool's declared replay policy (RUN-EXE-9); it enters
-	// the preset digest and the frozen ToolSpec. Omitted when unknown.
+	// Replay is the tool's declared replay policy; it enters the preset
+	// digest and the frozen ToolSpec. Omitted when unknown.
 	Replay run.ReplayPolicy `json:"replay,omitempty"`
-	// Placement is the tool's declared placement (RUN-LOP-9); it enters the
-	// preset digest and the frozen ToolSpec. Omitted for process placement.
+	// Placement is the tool's declared placement; it enters the preset
+	// digest and the frozen ToolSpec. Omitted for process placement.
 	Placement run.ToolPlacement `json:"placement,omitempty"`
 }
 
-// AgentPreset is the decision identity a Turn is started under (TRN-SCP-6):
-// every input to the decision layer that must be the same when another
-// process resumes the Turn. The Session records PresetRef{ID, Digest};
-// credentials, clients and tool implementations never enter it.
+// AgentPreset is the decision identity a Turn is started under: every
+// input to the decision layer that must be the same when another process
+// resumes the Turn. The Session records PresetRef{ID, Digest}; credentials,
+// clients and tool implementations never enter it.
 type AgentPreset struct {
 	SchemaVersion uint16       `json:"schemaVersion"`
 	Model         run.ModelRef `json:"model"`
@@ -46,7 +56,7 @@ type AgentPreset struct {
 	Prompt PromptBuilderRef `json:"prompt"`
 	// Scheduling is how the tool calls of one step run: parallel (default) or
 	// sequential, with an optional bound on concurrent workers. It is frozen
-	// onto each ToolStep (RUN-MCH).
+	// onto each ToolStep.
 	Scheduling run.ToolScheduling `json:"scheduling,omitempty"`
 	// MalformedRetries is how many times one model step is retried after a
 	// malformed result before the Run fails; zero fails on the first.
@@ -55,12 +65,13 @@ type AgentPreset struct {
 	SystemPrompt string `json:"systemPrompt,omitempty"`
 }
 
-// PresetDigestDomain is the digest domain of DigestPreset.
-const PresetDigestDomain = "twilight/turn/preset"
+// DigestDomain is the digest domain of DigestPreset. The string is frozen:
+// it pins every PresetRef ever recorded.
+const DigestDomain = "twilight/turn/preset"
 
 // DigestPreset covers the fields that change what the decision layer does
-// for a Turn: SchemaVersion, Model, Tools, Streaming, Prompt, Scheduling and
-// MalformedRetries and SystemPrompt (TRN-PST-1).
+// for a Turn: SchemaVersion, Model, Tools, Streaming, Prompt, Scheduling,
+// MalformedRetries and SystemPrompt.
 func DigestPreset(p *AgentPreset) (jsonstable.Digest, error) {
 	body := struct {
 		SchemaVersion    uint16             `json:"schemaVersion"`
@@ -72,7 +83,7 @@ func DigestPreset(p *AgentPreset) (jsonstable.Digest, error) {
 		MalformedRetries uint8              `json:"malformedRetries,omitempty"`
 		SystemPrompt     string             `json:"systemPrompt,omitempty"`
 	}{p.SchemaVersion, p.Model, p.Tools, p.Streaming, p.Prompt, p.Scheduling, p.MalformedRetries, p.SystemPrompt}
-	raw, err := jsonstable.EncodeTypedPayload(1, PresetDigestDomain, body)
+	raw, err := jsonstable.EncodeTypedPayload(1, DigestDomain, body)
 	if err != nil {
 		return "", err
 	}
@@ -80,28 +91,28 @@ func DigestPreset(p *AgentPreset) (jsonstable.Digest, error) {
 }
 
 // ValidatePreset checks the identity fields a registry must refuse to record
-// without (TRN-PST-2): schema version, model and prompt builder, plus a
-// well-formed Scheduling.
+// without: schema version, model and prompt builder, plus a well-formed
+// Scheduling.
 func ValidatePreset(p *AgentPreset) error {
 	switch {
 	case p.SchemaVersion == 0:
-		return errors.New("turn: preset requires schemaVersion")
+		return errors.New("preset: preset requires schemaVersion")
 	case p.Model == "":
-		return errors.New("turn: preset requires a model")
+		return errors.New("preset: preset requires a model")
 	case p.Prompt == "":
-		return errors.New("turn: preset requires a prompt builder ref")
+		return errors.New("preset: preset requires a prompt builder ref")
 	}
 	if m := p.Scheduling.Mode; m != "" && m != run.ToolScheduleParallel && m != run.ToolScheduleSequential {
-		return fmt.Errorf("turn: preset scheduling mode %q is unknown", m)
+		return fmt.Errorf("preset: preset scheduling mode %q is unknown", m)
 	}
 	if p.Scheduling.MaxParallel < 0 {
-		return errors.New("turn: preset scheduling MaxParallel is negative")
+		return errors.New("preset: preset scheduling MaxParallel is negative")
 	}
 	return nil
 }
 
 // ToolSpecs derives the frozen ToolSpecs and provider definitions of p, in
-// order (DEC-PMT-4).
+// order.
 func (p *AgentPreset) ToolSpecs() ([]run.ToolSpec, []sdk.ToolDefinition, error) {
 	specs := make([]run.ToolSpec, 0, len(p.Tools))
 	defs := make([]sdk.ToolDefinition, 0, len(p.Tools))

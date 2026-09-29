@@ -1,8 +1,11 @@
-// Package runtime is the conversation process of one owned Session: it
-// admits submitted inputs, routes them into Turns, drives the Turns to
-// settlement and keeps draining the submitted backlog until the Session is
-// quiescent. What a reply is and which policies run at quiescence are the
-// host's decisions, hooked in Config.
+// Package runtime is the conversation's execution over the fact and effect
+// layers: the Coordinator commits the Turn protocol's cross-module commands
+// (Turn facts, chatlog deliveries and Run commands in one unit), the
+// quiescence guards judge when a Session admits work that moves the
+// context, and the SessionRuntime admits inputs, routes them into Turns,
+// drives the Turns to settlement and drains the submitted backlog until the
+// Session is quiescent. What a reply is and which policies run at
+// quiescence are the host's decisions, hooked in Config.
 package runtime
 
 import (
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/driver"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -39,7 +43,7 @@ type Config struct {
 	Projections extension.ProjectionReader
 	// Preset is the decision identity every Turn the runtime starts runs
 	// under; required.
-	Preset turn.PresetRef
+	Preset preset.PresetRef
 	// NewTurnID mints TurnIDs for new Turns; nil selects the random default.
 	NewTurnID func() turn.TurnID
 	// RouteRetries bounds how many times one input's route is re-committed
@@ -91,7 +95,7 @@ type SessionRuntime struct {
 	chat   *chatlog.Commands
 	proj   extension.ProjectionReader
 	sid    session.SessionID
-	preset turn.PresetRef
+	preset preset.PresetRef
 	newID  func() turn.TurnID
 
 	routeRetries int

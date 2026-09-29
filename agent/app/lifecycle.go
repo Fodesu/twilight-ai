@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
@@ -106,18 +107,18 @@ func (app *Application) Workspace(ctx context.Context, sid session.SessionID) (w
 // --- presets ------------------------------------------------------------------------
 
 // PresetOption tunes NewPreset and NewPresetFromDefinitions.
-type PresetOption func(*turn.AgentPreset)
+type PresetOption func(*preset.AgentPreset)
 
 // WithPublicTools adds frozen tool definitions to the preset: the way
 // tools that are not implemented in this process (the workspace tools the
 // sandbox backend serves) enter a preset. See WorkspaceTools.
-func WithPublicTools(defs ...turn.PublicTool) PresetOption {
-	return func(p *turn.AgentPreset) { p.Tools = append(p.Tools, defs...) }
+func WithPublicTools(defs ...preset.PublicTool) PresetOption {
+	return func(p *preset.AgentPreset) { p.Tools = append(p.Tools, defs...) }
 }
 
 // WorkspaceTools freezes the workspace tools' definitions for a preset with
 // their workspace placement (APP-WSP-3); nil selects tools.Default().
-func WorkspaceTools(ts []tools.Tool) ([]turn.PublicTool, error) {
+func WorkspaceTools(ts []tools.Tool) ([]preset.PublicTool, error) {
 	if ts == nil {
 		ts = tools.Default()
 	}
@@ -126,64 +127,64 @@ func WorkspaceTools(ts []tools.Tool) ([]turn.PublicTool, error) {
 
 // WithSystemPrompt sets the instruction included in the preset digest.
 func WithSystemPrompt(s string) PresetOption {
-	return func(p *turn.AgentPreset) { p.SystemPrompt = s }
+	return func(p *preset.AgentPreset) { p.SystemPrompt = s }
 }
 
 // WithPrompt selects the decision component used by the preset.
-func WithPrompt(ref turn.PromptBuilderRef) PresetOption {
-	return func(p *turn.AgentPreset) { p.Prompt = ref }
+func WithPrompt(ref preset.PromptBuilderRef) PresetOption {
+	return func(p *preset.AgentPreset) { p.Prompt = ref }
 }
 
 // WithStreaming selects streaming model execution.
 func WithStreaming(on bool) PresetOption {
-	return func(p *turn.AgentPreset) { p.Streaming = on }
+	return func(p *preset.AgentPreset) { p.Streaming = on }
 }
 
 // WithScheduling selects tool scheduling.
 func WithScheduling(s run.ToolScheduling) PresetOption {
-	return func(p *turn.AgentPreset) { p.Scheduling = s }
+	return func(p *preset.AgentPreset) { p.Scheduling = s }
 }
 
 // WithMalformedRetries sets malformed model response retries.
 func WithMalformedRetries(n uint8) PresetOption {
-	return func(p *turn.AgentPreset) { p.MalformedRetries = n }
+	return func(p *preset.AgentPreset) { p.MalformedRetries = n }
 }
 
 // NewPreset constructs the common preset shape. Tool implementations are
 // used only to freeze their public definitions; they are not stored in the
 // preset.
-func NewPreset(model run.ModelRef, impls []loop.ExecutableTool, opts ...PresetOption) (turn.AgentPreset, error) {
-	defs := make([]turn.PublicTool, 0, len(impls))
+func NewPreset(model run.ModelRef, impls []loop.ExecutableTool, opts ...PresetOption) (preset.AgentPreset, error) {
+	defs := make([]preset.PublicTool, 0, len(impls))
 	seen := make(map[run.ToolRef]struct{}, len(impls))
 	for _, tool := range impls {
 		if tool == nil {
-			return turn.AgentPreset{}, errNilTool
+			return preset.AgentPreset{}, errNilTool
 		}
 		if _, ok := seen[tool.Ref()]; ok {
-			return turn.AgentPreset{}, &duplicateToolError{tool.Ref()}
+			return preset.AgentPreset{}, &duplicateToolError{tool.Ref()}
 		}
 		seen[tool.Ref()] = struct{}{}
 		definition, err := sdkconv.FreezeToolDefinition(tool.Definition())
 		if err != nil {
-			return turn.AgentPreset{}, err
+			return preset.AgentPreset{}, err
 		}
-		defs = append(defs, turn.PublicTool{Ref: tool.Ref(), Definition: definition, Policy: tool.ResponsePolicy(), Replay: tool.Replay(), Placement: tool.Placement()})
+		defs = append(defs, preset.PublicTool{Ref: tool.Ref(), Definition: definition, Policy: tool.ResponsePolicy(), Replay: tool.Replay(), Placement: tool.Placement()})
 	}
 	return NewPresetFromDefinitions(model, defs, opts...)
 }
 
 // NewPresetFromDefinitions constructs a preset from already frozen public
 // tool definitions, for an Owner without local tool implementations.
-func NewPresetFromDefinitions(model run.ModelRef, defs []turn.PublicTool, opts ...PresetOption) (turn.AgentPreset, error) {
+func NewPresetFromDefinitions(model run.ModelRef, defs []preset.PublicTool, opts ...PresetOption) (preset.AgentPreset, error) {
 	if model == "" {
-		return turn.AgentPreset{}, errNoModel
+		return preset.AgentPreset{}, errNoModel
 	}
-	p := turn.AgentPreset{SchemaVersion: 1, Model: model, Prompt: prompt.PromptContextV1, Tools: append([]turn.PublicTool(nil), defs...)}
+	p := preset.AgentPreset{SchemaVersion: 1, Model: model, Prompt: prompt.PromptContextV1, Tools: append([]preset.PublicTool(nil), defs...)}
 	for _, opt := range opts {
 		opt(&p)
 	}
-	if err := turn.ValidatePreset(&p); err != nil {
-		return turn.AgentPreset{}, err
+	if err := preset.ValidatePreset(&p); err != nil {
+		return preset.AgentPreset{}, err
 	}
 	return p, nil
 }

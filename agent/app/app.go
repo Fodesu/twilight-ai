@@ -42,7 +42,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // ExecutorMode selects the effect implementation built by Build.
@@ -74,8 +73,8 @@ type ExecutorConfig struct {
 
 // Preset is an authority-side decision identity to register during Build.
 type Preset struct {
-	ID    turn.PresetID
-	Value turn.AgentPreset
+	ID    preset.PresetID
+	Value preset.AgentPreset
 }
 
 // Config contains application assembly choices. It deliberately contains
@@ -225,7 +224,7 @@ type Application struct {
 	resolved   chan struct{}
 
 	mu   sync.RWMutex
-	refs map[turn.PresetID]turn.PresetRef
+	refs map[preset.PresetID]preset.PresetRef
 	// sessions are the Sessions this process has open, by id: the Planner
 	// finds a Session's compaction policy here while its Run is driven
 	// (APP-CKP-1).
@@ -291,7 +290,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		warn = func(error) {}
 	}
 	app := &Application{warn: warn, inbox: c.Inbox, workspaces: c.Workspaces, bindings: workspace.Commands{Now: c.Clock},
-		ownership: c.Ownership, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session),
+		ownership: c.Ownership, refs: make(map[preset.PresetID]preset.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session),
 		activating: make(map[session.SessionID]chan struct{})}
 	app.bg, app.bgCancel = context.WithCancel(context.Background())
 	if c.Activation != nil {
@@ -438,10 +437,10 @@ func (app *Application) fail(sid session.SessionID, err error) {
 }
 
 // RegisterPreset adds or replaces a decision identity after Build.
-func (app *Application) RegisterPreset(id turn.PresetID, p turn.AgentPreset) (turn.PresetRef, error) {
+func (app *Application) RegisterPreset(id preset.PresetID, p preset.AgentPreset) (preset.PresetRef, error) {
 	ref, err := app.Owner.Presets.Register(id, p)
 	if err != nil {
-		return turn.PresetRef{}, err
+		return preset.PresetRef{}, err
 	}
 	app.mu.Lock()
 	app.refs[id] = ref
@@ -450,12 +449,12 @@ func (app *Application) RegisterPreset(id turn.PresetID, p turn.AgentPreset) (tu
 }
 
 // PresetRef returns the digest-checked reference for a registered preset.
-func (app *Application) PresetRef(id turn.PresetID) (turn.PresetRef, error) {
+func (app *Application) PresetRef(id preset.PresetID) (preset.PresetRef, error) {
 	app.mu.RLock()
 	ref, ok := app.refs[id]
 	app.mu.RUnlock()
 	if !ok {
-		return turn.PresetRef{}, fmt.Errorf("app: unknown preset %q", id)
+		return preset.PresetRef{}, fmt.Errorf("app: unknown preset %q", id)
 	}
 	return ref, nil
 }

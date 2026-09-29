@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
@@ -22,7 +23,7 @@ import (
 // SessionOptions tunes OpenSession.
 type SessionOptions struct {
 	// Preset is the decision identity new Turns run under (required).
-	Preset turn.PresetRef
+	Preset preset.PresetRef
 	// NewTurnID mints TurnIDs; nil selects the random default.
 	NewTurnID func() turn.TurnID
 	// ResumeActive resumes a still-active Turn synchronously inside
@@ -452,7 +453,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, erro
 	if err != nil {
 		return "", false, err
 	}
-	id, err := s.a.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, turn.RequireQuiescentRun)
+	id, err := s.a.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, rt.RequireQuiescentRun)
 	if err != nil {
 		return "", false, err
 	}

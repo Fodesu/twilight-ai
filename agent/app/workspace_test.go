@@ -16,6 +16,7 @@ import (
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agent/workspace/workspacetest"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -30,10 +31,10 @@ func shellCall(command string) sdk.ModelResult {
 }
 
 type workspaceHost struct {
-	h      *app.Application
-	preset turn.PresetRef
-	store  *workspacetest.Map
-	root   string
+	h         *app.Application
+	presetRef preset.PresetRef
+	store     *workspacetest.Map
+	root      string
 }
 
 // newWorkspaceHost builds an application with the workspace layer over the
@@ -56,11 +57,11 @@ func newWorkspaceHostWith(t *testing.T, model loop.ModelInvoker, cfg app.Config,
 	if err != nil {
 		t.Fatal(err)
 	}
-	preset, err := h.RegisterPreset("ws", mustPreset("m-1", nil, app.WithSystemPrompt("be brief"), app.WithPublicTools(defs...)))
+	presetRef, err := h.RegisterPreset("ws", mustPreset("m-1", nil, app.WithSystemPrompt("be brief"), app.WithPublicTools(defs...)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &workspaceHost{h: h, preset: preset, store: store, root: root}
+	return &workspaceHost{h: h, presetRef: presetRef, store: store, root: root}
 }
 
 func (w *workspaceHost) open(t *testing.T, sid session.SessionID) *app.Session {
@@ -69,7 +70,7 @@ func (w *workspaceHost) open(t *testing.T, sid session.SessionID) *app.Session {
 	if err := w.h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
-	s, err := w.h.OpenSession(ctx, sid, app.SessionOptions{Preset: w.preset, InboxPoll: time.Hour})
+	s, err := w.h.OpenSession(ctx, sid, app.SessionOptions{Preset: w.presetRef, InboxPoll: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +178,7 @@ func TestForkChildInheritsTheBindingUntilItDecides(t *testing.T) {
 	if err != nil || !b.Bound || b.Workspace != parentWS.ID || !b.InheritedBy("child") || b.InheritedBy("parent") {
 		t.Fatalf("child binding = %+v %v, want the parent's, inherited", b, err)
 	}
-	child, err := w.h.OpenSession(ctx, "child", app.SessionOptions{Preset: w.preset, InboxPoll: time.Hour})
+	child, err := w.h.OpenSession(ctx, "child", app.SessionOptions{Preset: w.presetRef, InboxPoll: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +304,7 @@ func TestForkPoliciesRestoreCloneAllocateNone(t *testing.T) {
 		if _, err := w.h.ForkBeforeTurn(ctx, "parent", second[0].TurnID, name); err != nil {
 			t.Fatal(err)
 		}
-		s, err := w.h.OpenSession(ctx, name, app.SessionOptions{Preset: w.preset, InboxPoll: time.Hour, InheritedWorkspace: policy})
+		s, err := w.h.OpenSession(ctx, name, app.SessionOptions{Preset: w.presetRef, InboxPoll: time.Hour, InheritedWorkspace: policy})
 		if err != nil {
 			t.Fatalf("open %s with policy %s: %v", name, policy, err)
 		}

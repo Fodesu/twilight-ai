@@ -80,7 +80,7 @@ func testStart(t *testing.T, factory Factory) {
 	if resp.Status != turn.TurnActive || resp.RunID != runID || resp.Disposition != "" || resp.End != nil {
 		t.Fatalf("start response = %+v", resp)
 	}
-	plan := turn.PlanDigest("t1", preset.Digest, []chatlog.InputID{"in-1", "in-2"})
+	plan := turn.PlanDigest("t1", presetRef.Digest, []chatlog.InputID{"in-1", "in-2"})
 	group := h.group(session.CommitID(turn.StartOperationDigest(sid, "t1", plan)))
 	if !sameTypes(group, turn.TypeStarted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("start group = %v", eventTypes(group))
@@ -88,7 +88,7 @@ func testStart(t *testing.T, factory Factory) {
 	// The Turn's fact names the one Run that executes it (TRN-SCP-2), and
 	// each delivery names both.
 	started := decode[turn.StartedPayload](t, h.registry, &group[0])
-	if started.TurnID != "t1" || started.RunID != runID || len(started.InputIDs) != 2 || started.Preset != preset {
+	if started.TurnID != "t1" || started.RunID != runID || len(started.InputIDs) != 2 || started.Preset != presetRef {
 		t.Fatalf("started payload = %+v", started)
 	}
 	if d := decode[chatlog.InputDeliveredPayload](t, h.registry, &group[1]); d.TurnID != "t1" || d.RunID != runID {
@@ -418,9 +418,9 @@ func testProjection(t *testing.T, factory Factory) {
 		event  writer.TypedEvent
 	}{
 		{"started twice", "t1", writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: h.now,
-			Value: turn.StartedPayload{TurnID: "t1", RunID: "r-other", Preset: preset}}},
+			Value: turn.StartedPayload{TurnID: "t1", RunID: "r-other", Preset: presetRef}}},
 		{"run named twice", "t9", writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: h.now,
-			Value: turn.StartedPayload{TurnID: "t9", RunID: resp.RunID, Preset: preset}}},
+			Value: turn.StartedPayload{TurnID: "t9", RunID: resp.RunID, Preset: presetRef}}},
 		{"failed for an unknown turn", "ghost", failed("ghost", turn.SettlementFailed)},
 	}
 	for i, tc := range rejects {

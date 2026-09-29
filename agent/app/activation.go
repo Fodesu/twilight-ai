@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // Activation is the ownership model under which a Session is held for
@@ -21,7 +21,7 @@ import (
 // replica.
 type Activation struct {
 	// Preset is the decision identity an activation opens a Session with.
-	Preset turn.PresetID
+	Preset preset.PresetID
 	// Options is the SessionOptions template of an activated Session; its
 	// Preset and ResumeActive are set by the activation.
 	Options SessionOptions

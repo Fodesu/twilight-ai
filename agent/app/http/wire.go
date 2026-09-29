@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/observe"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -57,7 +58,7 @@ func IsCode(err error, code string) bool {
 type OpenRequest struct {
 	// Preset is the PresetID new Turns run under; the owner resolves it to
 	// the registered PresetRef.
-	Preset turn.PresetID `json:"preset"`
+	Preset preset.PresetID `json:"preset"`
 	// InheritedWorkspace is the policy for a binding inherited from the fork
 	// parent (APP-WSP-5): share (default), none, allocate, clone, restore.
 	InheritedWorkspace string `json:"inheritedWorkspace,omitempty"`

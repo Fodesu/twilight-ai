@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/runtime"
@@ -20,7 +21,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
-	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 	"path/filepath"
@@ -121,7 +121,7 @@ func durableContent(t testing.TB) artifact.ContentStore {
 }
 
 // mustPreset builds the one-model AgentPreset the tests register.
-func mustPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...app.PresetOption) turn.AgentPreset {
+func mustPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...app.PresetOption) preset.AgentPreset {
 	p, err := app.NewPreset(model, tools, opts...)
 	if err != nil {
 		panic(err)

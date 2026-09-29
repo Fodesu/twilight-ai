@@ -11,12 +11,12 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 
 	"github.com/felinics/twilight/agent/input"
@@ -25,7 +25,7 @@ import (
 
 // PromptContextV1 names the context prompt builder: the chatlog context projection
 // folded into one provider request (DEC-PMT-1).
-const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-v1"
+const PromptContextV1 preset.PromptBuilderRef = "twilight/decision/prompt/context-v1"
 
 // ContextPromptBuilder is the context-v1 PromptBuilder (DEC-PMT): it reads the
 // chatlog context projection, materializes its entries and assembles the next
@@ -33,7 +33,7 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 // already, including those of earlier attempts of the same Turn (DEC-PMT-6).
 type ContextPromptBuilder struct {
 	Sources decision.Sources
-	Preset  turn.AgentPreset
+	Preset  preset.AgentPreset
 	// InputText extracts the user text of one input payload; nil selects the
 	// v1 shape {"text": ...} (DEC-INP-1).
 	InputText func(run.CanonicalJSON) (string, error)
@@ -48,8 +48,8 @@ type ContextPromptBuilder struct {
 type Preface func(ctx context.Context, sources decision.Sources, sid session.SessionID) (string, error)
 
 // NewContextPromptBuilder is the PromptBuilderFactory of PromptContextV1.
-func NewContextPromptBuilder(preset turn.AgentPreset, sources decision.Sources) loop.PromptBuilder {
-	return &ContextPromptBuilder{Sources: sources, Preset: preset}
+func NewContextPromptBuilder(ap preset.AgentPreset, sources decision.Sources) loop.PromptBuilder {
+	return &ContextPromptBuilder{Sources: sources, Preset: ap}
 }
 
 func (p *ContextPromptBuilder) Build(ctx context.Context, hint plan.PromptInput) (loop.Prompt, error) {
@@ -208,10 +208,10 @@ func DefaultPromptBuilders() *decision.PromptBuilders { return PromptBuildersWit
 
 // PromptBuildersWith is the catalog whose context builder carries preface.
 func PromptBuildersWith(preface Preface) *decision.PromptBuilders {
-	factory := func(preset turn.AgentPreset, sources decision.Sources) loop.PromptBuilder {
+	factory := func(preset preset.AgentPreset, sources decision.Sources) loop.PromptBuilder {
 		return &ContextPromptBuilder{Sources: sources, Preset: preset, Preface: preface}
 	}
-	builders, _ := decision.NewPromptBuilders(map[turn.PromptBuilderRef]decision.PromptBuilderFactory{PromptContextV1: factory})
+	builders, _ := decision.NewPromptBuilders(map[preset.PromptBuilderRef]decision.PromptBuilderFactory{PromptContextV1: factory})
 	return builders
 }
 

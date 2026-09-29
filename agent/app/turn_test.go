@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/driver"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -21,7 +22,7 @@ import (
 
 // setup composes a Host over an in-memory store with one model and one tool,
 // registers the preset and opens a Session whose new Turns are named t2, t3, ...
-func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts app.SessionOptions) (*app.Application, turn.PresetRef, session.SessionID, *app.Session) {
+func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts app.SessionOptions) (*app.Application, preset.PresetRef, session.SessionID, *app.Session) {
 	t.Helper()
 	tools := []loop.ExecutableTool{}
 	if tool != nil {
@@ -32,11 +33,11 @@ func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts app.Sessi
 	if err := h.CreateSession(context.Background(), sid); err != nil {
 		t.Fatal(err)
 	}
-	preset, err := h.RegisterPreset("b1", mustPreset("m-1", tools, app.WithSystemPrompt("be brief")))
+	pref, err := h.RegisterPreset("b1", mustPreset("m-1", tools, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts.Preset = preset
+	opts.Preset = pref
 	next := 2
 	if opts.NewTurnID == nil {
 		opts.NewTurnID = func() turn.TurnID { id := turn.TurnID("t" + string(rune('0'+next))); next++; return id }
@@ -45,7 +46,7 @@ func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts app.Sessi
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h, preset, sid, s
+	return h, pref, sid, s
 }
 
 // An input delivered while a tool call is Executing queues on the Run, is
@@ -55,7 +56,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	h, preset, sid, s := setup(t, model, tool, app.SessionOptions{})
+	h, pref, sid, s := setup(t, model, tool, app.SessionOptions{})
 
 	first, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("what is the weather?"))
 	if err != nil {
@@ -64,7 +65,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan turn.TurnResponse, 1)
 	go func() {
-		resp, err := h.Owner.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset})
+		resp, err := h.Owner.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).
 			var driven driver.DriveResult
@@ -139,13 +140,13 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	h, preset, sid, s := setup(t, model, tool, app.SessionOptions{})
+	h, pref, sid, s := setup(t, model, tool, app.SessionOptions{})
 	first, _ := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("hello"))
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := h.Owner.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset}); err == nil {
+		if _, err := h.Owner.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref}); err == nil {
 			_, _ = h.Owner.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
 		}
 	}()
@@ -211,13 +212,13 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 			{ToolCallID: "c3", ToolName: "approve", Input: sdk.ParseToolArguments(`{}`)},
 		}}}}
 	h := newHost(t, app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool, approval)
-	preset, err := h.RegisterPreset("sequential", mustPreset("m-1", []loop.ExecutableTool{tool, approval},
+	pref, err := h.RegisterPreset("sequential", mustPreset("m-1", []loop.ExecutableTool{tool, approval},
 		app.WithScheduling(run.ToolScheduling{Mode: run.ToolScheduleSequential})))
 	if err != nil {
 		t.Fatal(err)
 	}
 	const sid session.SessionID = "s-stop-mixed"
-	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { return "t2" }})
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref, NewTurnID: func() turn.TurnID { return "t2" }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +227,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	started, err := h.Owner.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: preset})
+	started, err := h.Owner.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: pref})
 	if err != nil {
 		t.Fatal(err)
 	}

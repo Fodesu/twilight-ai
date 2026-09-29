@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
 func TestBuildRemoteApplication(t *testing.T) {
@@ -34,8 +34,8 @@ func TestBuildRemoteApplication(t *testing.T) {
 	}
 }
 
-func mustDigest(p turn.AgentPreset) run.Digest {
-	d, err := turn.DigestPreset(&p)
+func mustDigest(p preset.AgentPreset) run.Digest {
+	d, err := preset.DigestPreset(&p)
 	if err != nil {
 		panic(err)
 	}

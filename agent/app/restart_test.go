@@ -7,6 +7,7 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -34,10 +35,10 @@ func (m *gateModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResul
 // crashMidModel runs process 1 on root until its model call is Executing and
 // returns the request it was sent plus the preset ref; the process is then
 // considered dead (its Send is left blocked and fenced later).
-func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.PresetRef, turn.AgentPreset, sdk.Request, *gateModel, chan error) {
+func crashMidModel(t *testing.T, root string, sid session.SessionID) (preset.PresetRef, preset.AgentPreset, sdk.Request, *gateModel, chan error) {
 	t.Helper()
 	ctx := context.Background()
-	preset := mustPreset("m-1", nil, app.WithSystemPrompt("be brief"))
+	ap := mustPreset("m-1", nil, app.WithSystemPrompt("be brief"))
 	store1, err := filestore.New(root)
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +49,7 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.Prese
 	}
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
 	p1 := newHost(t, app.Config{Store: store1, Content: content1}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
-	presetRef, err := p1.RegisterPreset("a1", preset)
+	presetRef, err := p1.RegisterPreset("a1", ap)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.Prese
 	case err := <-sendErr:
 		t.Fatalf("send returned before the model executed: %v", err)
 	}
-	return presetRef, preset, sent, gate, sendErr
+	return presetRef, ap, sent, gate, sendErr
 }
 
 // Process 2 cannot reattach (a colocated executor died with process 1) and
@@ -78,7 +79,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	const sid session.SessionID = "s-frozen-replan"
-	presetRef, preset, sent, gate, sendErr := crashMidModel(t, root, sid)
+	presetRef, ap, sent, gate, sendErr := crashMidModel(t, root, sid)
 
 	store2, err := filestore.New(root)
 	if err != nil {
@@ -90,7 +91,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	}
 	replan := &scriptedRequests{}
 	p2 := newHost(t, app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
-	if _, err := p2.RegisterPreset("a1", preset); err != nil {
+	if _, err := p2.RegisterPreset("a1", ap); err != nil {
 		t.Fatal(err)
 	}
 	s2, err := p2.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef})
@@ -150,7 +151,7 @@ func TestRestartRedispatchesMissingEffect(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	const sid session.SessionID = "s-frozen-redispatch"
-	presetRef, preset, sent, gate, sendErr := crashMidModel(t, root, sid)
+	presetRef, ap, sent, gate, sendErr := crashMidModel(t, root, sid)
 
 	store2, err := filestore.New(root)
 	if err != nil {
@@ -163,7 +164,7 @@ func TestRestartRedispatchesMissingEffect(t *testing.T) {
 	again := &scriptedRequests{}
 	p2 := newHost(t, app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}, MissingEffects: reconcile.RedispatchMissing},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": again})
-	if _, err := p2.RegisterPreset("a1", preset); err != nil {
+	if _, err := p2.RegisterPreset("a1", ap); err != nil {
 		t.Fatal(err)
 	}
 	s2, err := p2.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef})
@@ -264,7 +265,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	const sid session.SessionID = "s-frozen-reattach"
-	presetRef, preset, _, gate, sendErr := crashMidModel(t, root, sid)
+	presetRef, ap, _, gate, sendErr := crashMidModel(t, root, sid)
 
 	store2, err := filestore.New(root)
 	if err != nil {
@@ -279,7 +280,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p2.RegisterPreset("a1", preset); err != nil {
+	if _, err := p2.RegisterPreset("a1", ap); err != nil {
 		t.Fatal(err)
 	}
 	openCtx, cancelOpen := context.WithCancel(ctx)
@@ -393,7 +394,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 			ctx := context.Background()
 			root := t.TempDir()
 			const sid session.SessionID = "close-recovery"
-			ref, preset, _, gate, sendErr := crashMidModel(t, root, sid)
+			ref, ap, _, gate, sendErr := crashMidModel(t, root, sid)
 			t.Cleanup(func() {
 				close(gate.release)
 				<-sendErr
@@ -411,7 +412,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.RegisterPreset("a1", preset); err != nil {
+			if _, err := h.RegisterPreset("a1", ap); err != nil {
 				t.Fatal(err)
 			}
 			s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: ref})

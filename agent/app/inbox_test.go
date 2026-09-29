@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/inbox"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -36,18 +37,18 @@ func (f *resolveFails) Resolve(ctx context.Context, sid session.SessionID, seq u
 
 // inboxHost builds an application with an inbox; the Session is created but
 // not opened, so commands can be left for its next owner.
-func inboxHost(t *testing.T, store inbox.Store, model loop.ModelInvoker, tools ...loop.ExecutableTool) (*app.Application, turn.PresetRef, session.SessionID) {
+func inboxHost(t *testing.T, store inbox.Store, model loop.ModelInvoker, tools ...loop.ExecutableTool) (*app.Application, preset.PresetRef, session.SessionID) {
 	t.Helper()
 	h := newHost(t, app.Config{Inbox: store}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tools...)
 	const sid session.SessionID = "s-inbox"
 	if err := h.CreateSession(context.Background(), sid); err != nil {
 		t.Fatal(err)
 	}
-	preset, err := h.RegisterPreset("b1", mustPreset("m-1", tools, app.WithSystemPrompt("be brief")))
+	pref, err := h.RegisterPreset("b1", mustPreset("m-1", tools, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h, preset, sid
+	return h, pref, sid
 }
 
 func enqueue(t *testing.T, h *app.Application, sid session.SessionID, id string, kind inbox.Kind, payload any) inbox.Entry {
@@ -80,7 +81,7 @@ func await(t *testing.T, h *app.Application, sid session.SessionID, id string) i
 func TestInboxSubmitAppliedOnOpen(t *testing.T) {
 	ctx := context.Background()
 	store := sqlitetest.Open(t).Inbox()
-	h, preset, sid := inboxHost(t, store, &scriptedRequests{})
+	h, pref, sid := inboxHost(t, store, &scriptedRequests{})
 	if sids, err := h.PendingSessions(ctx, 0); err != nil || len(sids) != 0 {
 		t.Fatalf("pending sessions before enqueue = %v %v", sids, err)
 	}
@@ -88,7 +89,7 @@ func TestInboxSubmitAppliedOnOpen(t *testing.T) {
 	if sids, err := h.PendingSessions(ctx, 0); err != nil || len(sids) != 1 || sids[0] != sid {
 		t.Fatalf("pending sessions = %v %v, want the session with the command", sids, err)
 	}
-	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, InboxPoll: time.Hour})
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref, InboxPoll: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,8 +127,8 @@ func TestInboxSubmitAppliedOnOpen(t *testing.T) {
 func TestInboxStopAndRejections(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
-	h, preset, sid := inboxHost(t, sqlitetest.Open(t).Inbox(), &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}, tool)
-	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, InboxPoll: time.Hour})
+	h, pref, sid := inboxHost(t, sqlitetest.Open(t).Inbox(), &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}, tool)
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref, InboxPoll: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,9 +174,9 @@ func TestInboxStopAndRejections(t *testing.T) {
 func TestInboxReplayAfterCrashBeforeResolve(t *testing.T) {
 	ctx := context.Background()
 	store := &resolveFails{Store: sqlitetest.Open(t).Inbox(), armed: true}
-	h, preset, sid := inboxHost(t, store, &scriptedRequests{})
+	h, pref, sid := inboxHost(t, store, &scriptedRequests{})
 	enqueue(t, h, sid, "c1", app.CommandSubmit, app.SubmitCommand{InputID: "in-1", Text: "hello"})
-	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, InboxPoll: time.Hour})
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref, InboxPoll: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

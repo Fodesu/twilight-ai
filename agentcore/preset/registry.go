@@ -1,7 +1,6 @@
-// Package preset is the authority-side registry of decision identities
-// (PST): an AgentPreset in, a digest-checked PresetRef out. It never
-// holds a model client or a tool implementation; those live behind the
-// effect port.
+// Package preset is the authority-side registry of decision identities:
+// an AgentPreset in, a digest-checked PresetRef out. It never holds a model
+// client or a tool implementation; those live behind the effect port.
 package preset
 
 import (
@@ -9,44 +8,41 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
-// Registry registers presets and resolves PresetRefs (PST-1).
+// Registry registers presets and resolves PresetRefs.
 type Registry interface {
-	Register(turn.PresetID, turn.AgentPreset) (turn.PresetRef, error)
-	Resolve(turn.PresetRef) (turn.AgentPreset, error)
+	Register(PresetID, AgentPreset) (PresetRef, error)
+	Resolve(PresetRef) (AgentPreset, error)
 }
 
-// ErrUnavailable reports a PresetRef this process cannot resolve
-// (PST-2).
+// ErrUnavailable reports a PresetRef this process cannot resolve.
 var ErrUnavailable = errors.New("preset: preset_unavailable")
 
 // Memory is the in-memory Registry.
 type Memory struct {
 	mu    sync.RWMutex
-	byRef map[turn.PresetRef]turn.AgentPreset
+	byRef map[PresetRef]AgentPreset
 }
 
 // NewMemory returns an empty in-memory Registry.
-func NewMemory() *Memory { return &Memory{byRef: make(map[turn.PresetRef]turn.AgentPreset)} }
+func NewMemory() *Memory { return &Memory{byRef: make(map[PresetRef]AgentPreset)} }
 
-// Register validates and retains an immutable preset version (TRN-PST-2).
+// Register validates and retains an immutable preset version.
 // Re-registration under the same ID retains previous digest-addressed
 // versions.
-func (r *Memory) Register(id turn.PresetID, p turn.AgentPreset) (turn.PresetRef, error) {
+func (r *Memory) Register(id PresetID, p AgentPreset) (PresetRef, error) {
 	if id == "" {
-		return turn.PresetRef{}, errors.New("preset: register requires a preset id")
+		return PresetRef{}, errors.New("preset: register requires a preset id")
 	}
-	if err := turn.ValidatePreset(&p); err != nil {
-		return turn.PresetRef{}, err
+	if err := ValidatePreset(&p); err != nil {
+		return PresetRef{}, err
 	}
-	digest, err := turn.DigestPreset(&p)
+	digest, err := DigestPreset(&p)
 	if err != nil {
-		return turn.PresetRef{}, err
+		return PresetRef{}, err
 	}
-	ref := turn.PresetRef{ID: id, Digest: digest}
+	ref := PresetRef{ID: id, Digest: digest}
 	r.mu.Lock()
 	r.byRef[ref] = clone(p)
 	r.mu.Unlock()
@@ -54,25 +50,25 @@ func (r *Memory) Register(id turn.PresetID, p turn.AgentPreset) (turn.PresetRef,
 }
 
 // Resolve returns the AgentPreset when the ref's digest matches the
-// registered one (TRN-PST-2).
-func (r *Memory) Resolve(ref turn.PresetRef) (turn.AgentPreset, error) {
+// registered one.
+func (r *Memory) Resolve(ref PresetRef) (AgentPreset, error) {
 	r.mu.RLock()
 	p, ok := r.byRef[ref]
 	r.mu.RUnlock()
 	if !ok {
-		return turn.AgentPreset{}, fmt.Errorf("%w: unknown preset %s", ErrUnavailable, ref.ID)
+		return AgentPreset{}, fmt.Errorf("%w: unknown preset %s", ErrUnavailable, ref.ID)
 	}
-	digest, err := turn.DigestPreset(&p)
+	digest, err := DigestPreset(&p)
 	if err != nil {
-		return turn.AgentPreset{}, err
+		return AgentPreset{}, err
 	}
 	if digest != ref.Digest {
-		return turn.AgentPreset{}, fmt.Errorf("%w: preset %s digest mismatch", ErrUnavailable, ref.ID)
+		return AgentPreset{}, fmt.Errorf("%w: preset %s digest mismatch", ErrUnavailable, ref.ID)
 	}
 	return clone(p), nil
 }
 
-func clone(p turn.AgentPreset) turn.AgentPreset {
+func clone(p AgentPreset) AgentPreset {
 	p.Tools = slices.Clone(p.Tools)
 	for i := range p.Tools {
 		if cache := p.Tools[i].Definition.CacheControl; cache != nil {

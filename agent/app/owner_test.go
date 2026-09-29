@@ -193,18 +193,18 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 // Older Turns keep resolving their recorded decision identity (PST-2).
 func TestPresetVersionsRemainAvailable(t *testing.T) {
 	presets := preset.NewMemory()
-	preset := mustPreset("m-1", nil, app.WithSystemPrompt("original"))
-	preset.Tools = []turn.PublicTool{{Ref: "tool", Definition: model.ToolDefinition{
+	ap := mustPreset("m-1", nil, app.WithSystemPrompt("original"))
+	ap.Tools = []preset.PublicTool{{Ref: "tool", Definition: model.ToolDefinition{
 		Name: "tool", Parameters: run.MustParseCanonicalJSON(`{}`), CacheControl: &model.CacheControl{Type: "ephemeral"},
 	}}}
-	ref, err := presets.Register("p", preset)
+	ref, err := presets.Register("p", ap)
 	if err != nil {
 		t.Fatal(err)
 	}
-	preset.SystemPrompt = "updated"
-	preset.Tools[0].Definition.Name = "updated_tool"
-	preset.Tools[0].Definition.CacheControl.Type = "updated"
-	newRef, err := presets.Register("p", preset)
+	ap.SystemPrompt = "updated"
+	ap.Tools[0].Definition.Name = "updated_tool"
+	ap.Tools[0].Definition.CacheControl.Type = "updated"
+	newRef, err := presets.Register("p", ap)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,10 +225,10 @@ func TestPresetVersionsRemainAvailable(t *testing.T) {
 	if err != nil || current.SystemPrompt != "updated" {
 		t.Fatalf("updated preset = %+v, %v", current, err)
 	}
-	if _, err := presets.Resolve(turn.PresetRef{ID: "missing", Digest: ref.Digest}); err == nil {
+	if _, err := presets.Resolve(preset.PresetRef{ID: "missing", Digest: ref.Digest}); err == nil {
 		t.Fatal("unknown preset resolved")
 	}
-	if _, err := presets.Resolve(turn.PresetRef{ID: ref.ID, Digest: "unknown"}); err == nil {
+	if _, err := presets.Resolve(preset.PresetRef{ID: ref.ID, Digest: "unknown"}); err == nil {
 		t.Fatal("unknown digest resolved")
 	}
 }

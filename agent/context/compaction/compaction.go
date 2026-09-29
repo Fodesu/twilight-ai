@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agent/input"
 	"strings"
 
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -22,7 +23,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -110,7 +110,7 @@ func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 // it the same way. A crash while it generates writes nothing.
 type Summarizer struct {
 	// ResolvePreset returns the AgentPreset a PresetRef names.
-	ResolvePreset func(turn.PresetRef) (turn.AgentPreset, error)
+	ResolvePreset func(preset.PresetRef) (preset.AgentPreset, error)
 	// Content stores frozen request bodies.
 	Content frozen.Store
 	// Executor performs the model effect.
@@ -122,12 +122,12 @@ type Summarizer struct {
 }
 
 // Summarize renders entries and asks the preset's model for the summary.
-func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, presetRef turn.PresetRef, entries []chatlog.Materialized) (string, error) {
-	preset, err := s.ResolvePreset(presetRef)
+func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, presetRef preset.PresetRef, entries []chatlog.Materialized) (string, error) {
+	ap, err := s.ResolvePreset(presetRef)
 	if err != nil {
 		return "", err
 	}
-	store, err := sdkconv.FreezeModelRequest(sdk.Request{Model: string(preset.Model), Messages: []sdk.Message{
+	store, err := sdkconv.FreezeModelRequest(sdk.Request{Model: string(ap.Model), Messages: []sdk.Message{
 		sdk.SystemMessage(CompactorSystemPrompt),
 		sdk.UserMessage(renderTranscript(entries)),
 	}})
@@ -147,7 +147,7 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	}
 	a := effect.Assignment{Session: run.Scope(sid), RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
 		Effect: run.EffectID(randomHex(16)),
-		Body:   effect.ModelAssignment{Model: preset.Model, Request: &store, RequestDigest: digest}}
+		Body:   effect.ModelAssignment{Model: ap.Model, Request: &store, RequestDigest: digest}}
 	if err := s.Executor.Dispatch(ctx, a); err != nil {
 		return "", err
 	}

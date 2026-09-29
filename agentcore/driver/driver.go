@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -39,9 +40,9 @@ type DriveResult struct {
 	AlreadyDriving bool
 }
 
-// Presets resolves a PresetRef to its immutable AgentPreset (PST-2).
+// Presets resolves a PresetRef to its immutable AgentPreset.
 type Presets interface {
-	Resolve(turn.PresetRef) (turn.AgentPreset, error)
+	Resolve(preset.PresetRef) (preset.AgentPreset, error)
 }
 
 // Driver is the execution orchestrator over the fact and effect layers
@@ -99,7 +100,7 @@ type Driver struct {
 	Watcher *effect.Watcher
 
 	mu       sync.Mutex
-	loops    map[turn.PresetRef]*loop.Loop
+	loops    map[preset.PresetRef]*loop.Loop
 	recovery map[session.SessionID]*recoveryLifetime
 	// answering are the ResponseIDs a Responder is working on.
 	answering map[run.ResponseID]struct{}
@@ -133,7 +134,7 @@ type Planner interface {
 
 // New returns a Driver with no Loops built and no Sessions open.
 func New() *Driver {
-	return &Driver{loops: make(map[turn.PresetRef]*loop.Loop), recovery: make(map[session.SessionID]*recoveryLifetime), answering: make(map[run.ResponseID]struct{})}
+	return &Driver{loops: make(map[preset.PresetRef]*loop.Loop), recovery: make(map[session.SessionID]*recoveryLifetime), answering: make(map[run.ResponseID]struct{})}
 }
 
 func (d *Driver) fail(sid session.SessionID, err error) {
@@ -145,8 +146,8 @@ func (d *Driver) fail(sid session.SessionID, err error) {
 // loopFor returns the Loop that drives Runs of one AgentPreset. A Loop binds
 // the preset's prompt builder and settings to the shared Executor; it is
 // built once per PresetRef (DRV-2, RUN-CMT-6).
-func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
-	preset, err := d.Presets.Resolve(ref)
+func (d *Driver) loopFor(ref preset.PresetRef) (*loop.Loop, error) {
+	ap, err := d.Presets.Resolve(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -155,13 +156,13 @@ func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 	if l, ok := d.loops[ref]; ok {
 		return l, nil
 	}
-	builder, err := d.Decisions.Resolve(preset, d.Sources)
+	builder, err := d.Decisions.Resolve(ap, d.Sources)
 	if err != nil {
 		return nil, err
 	}
 	settings := loop.Settings{
-		Scheduling:       preset.Scheduling,
-		MalformedRetries: preset.MalformedRetries,
+		Scheduling:       ap.Scheduling,
+		MalformedRetries: ap.MalformedRetries,
 		TargetResolver:   d.Targets,
 		Dispatch:         d.Dispatch,
 		Watcher:          d.watcher(),

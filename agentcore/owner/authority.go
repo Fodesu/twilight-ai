@@ -18,12 +18,14 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
+	"github.com/felinics/twilight/agentcore/history"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -108,7 +110,7 @@ type Owner struct {
 	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
 	Runs *runmod.SessionRunStore
 	// Turns commits the Turn protocol and reads Turn status.
-	Turns    *turn.Coordinator
+	Turns    *rt.Coordinator
 	Driver   *driver.Driver
 	Presets  preset.Registry
 	Executor effect.ExecutionPort
@@ -119,8 +121,8 @@ type Owner struct {
 	Content chatlog.ContentResolver
 	// Chatlog commits the chatlog's own facts (APP-INP-1, APP-CKP-1).
 	Chatlog *chatlog.Commands
-	// History answers fork-boundary questions (OWN-FRK-2, SPN-5).
-	History turn.History
+	// History answers fork-boundary questions.
+	History history.History
 	Clock   func() time.Time
 
 	mu   sync.Mutex
@@ -196,10 +198,10 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	content := runmod.NewContent(fz)
 	a := &Owner{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
-		Turns:   &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
+		Turns:   &rt.Coordinator{Projections: projections, Runs: runs, Now: now},
 		Presets: presets, Executor: p.Executor, Frozen: fz, Projections: projections, Content: content,
 		Chatlog: &chatlog.Commands{Now: now},
-		History: turn.History{Store: store, Registry: registry, Projections: projections},
+		History: history.History{Store: store, Registry: registry, Projections: projections},
 		Clock:   now,
 		open:    make(map[session.SessionID]*openSession),
 	}

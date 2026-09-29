@@ -1,24 +1,26 @@
 // Package turntest is the Store-parameterized conformance suite of the Turn
-// module (agent-turn.md section 8). The Coordinator is pure protocol, so the
-// suite assembles Writers, a Runtime and a Coordinator over the Store under
-// test and drives Runs step by step through Runtime commits: no Loop, driver,
-// model or tool stub is involved.
+// module. The Coordinator is pure protocol, so the suite assembles Writers,
+// a Runtime and a Coordinator over the Store under test and drives Runs step
+// by step through Runtime commits: no Loop, driver, model or tool stub is
+// involved.
 package turntest
 
 import (
 	"context"
 	"fmt"
-	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"testing"
 	"time"
 
+	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -38,7 +40,7 @@ type Factory func(t testing.TB) Fixture
 
 const sid session.SessionID = "turn-conformance"
 
-var preset = turn.PresetRef{ID: "p-1", Digest: "sha256:p-1"}
+var presetRef = preset.PresetRef{ID: "p-1", Digest: "sha256:p-1"}
 
 // harness is one owner process: Writers, Runtime and Coordinator over the
 // Store. now is the clock every event is stamped with; tests move it to show
@@ -55,7 +57,7 @@ type harness struct {
 	seq      int
 	writers  writer.Writers
 	rt       *runmod.SessionRunStore
-	c        *turn.Coordinator
+	c        *rt.Coordinator
 }
 
 func newHarness(t testing.TB, f Fixture) *harness {
@@ -79,17 +81,17 @@ func (h *harness) open() {
 	h.t.Helper()
 	clock := func() time.Time { return time.UnixMilli(h.now) }
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
-	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: h.registry, Store: h.store, Frozen: h.frozen, Now: clock})
+	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: h.registry, Store: h.store, Frozen: h.frozen, Now: clock})
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	h.rt = rt
-	h.c = &turn.Coordinator{Projections: extension.NewProjectionReader(h.store, h.registry, nil), Runs: rt, Now: clock}
+	h.rt = runs
+	h.c = &rt.Coordinator{Projections: extension.NewProjectionReader(h.store, h.registry, nil), Runs: runs, Now: clock}
 }
 
 // takeover opens a new owner process and returns the superseded Coordinator
 // and its Writer, so a test can observe their fencing.
-func (h *harness) takeover() (*turn.Coordinator, writer.Writer) {
+func (h *harness) takeover() (*rt.Coordinator, writer.Writer) {
 	h.t.Helper()
 	old, oldWriter := h.c, h.writer()
 	h.open()
@@ -170,7 +172,7 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 }
 
 func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) turn.StartRequest {
-	return turn.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: preset}
+	return turn.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: presetRef}
 }
 
 // start submits ids and starts turnID with them.

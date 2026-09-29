@@ -19,11 +19,11 @@ import (
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/notice"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
-	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -90,14 +90,14 @@ func Route(b executor.ExecutionBackend) executor.Route {
 
 // PublicTools are the preset entries of workspace tools: frozen definition,
 // policies and the workspace placement.
-func PublicTools(ts []tools.Tool) ([]turn.PublicTool, error) {
-	out := make([]turn.PublicTool, 0, len(ts))
+func PublicTools(ts []tools.Tool) ([]preset.PublicTool, error) {
+	out := make([]preset.PublicTool, 0, len(ts))
 	for _, t := range ts {
 		def, err := sdkconv.FreezeToolDefinition(t.Definition())
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, turn.PublicTool{Ref: t.Ref(), Definition: def, Policy: t.ResponsePolicy(), Replay: t.Replay(), Placement: run.PlacementWorkspace})
+		out = append(out, preset.PublicTool{Ref: t.Ref(), Definition: def, Policy: t.ResponsePolicy(), Replay: t.Replay(), Placement: run.PlacementWorkspace})
 	}
 	return out, nil
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agentcore/executor"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -80,12 +81,12 @@ func TestSpawnRunsChildSessionAndReturnsReply(t *testing.T) {
 	}}
 	store, content := filestoretest.Store(t), durableContent(t)
 	h := newHost(t, app.Config{Store: store, Content: content, Spawn: &spawn.Options{}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
+	pref, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	n := 0
-	parent, err := h.OpenSession(ctx, "parent", app.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { n++; return turn.TurnID("p" + string(rune('0'+n))) }})
+	parent, err := h.OpenSession(ctx, "parent", app.SessionOptions{Preset: pref, NewTurnID: func() turn.TurnID { n++; return turn.TurnID("p" + string(rune('0'+n))) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +172,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 	// takes the parent over, finds its spawn call waiting for the
 	// Responder's answer, and continues the same child from its durable
 	// state (SPN-4); no execution record is involved.
-	open := func(model loop.ModelInvoker, takeover bool) (*app.Application, *app.Session, turn.PresetRef) {
+	open := func(model loop.ModelInvoker, takeover bool) (*app.Application, *app.Session, preset.PresetRef) {
 		t.Helper()
 		store, err := filestore.New(root)
 		if err != nil {
@@ -198,15 +199,15 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		t.Cleanup(func() { _ = records.Close() })
 		cfg.Executions = records.Executions()
 		h := newHost(t, cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-		preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
+		pref, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { return "p1" }})
+		s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref, NewTurnID: func() turn.TurnID { return "p1" }})
 		if err != nil {
 			t.Fatal(err)
 		}
-		return h, s, preset
+		return h, s, pref
 	}
 
 	gate := &gatedModel{answers: []sdk.ModelResult{spawnCall(`{"task":"dig deeper"}`)}, started: make(chan struct{}, 1), release: make(chan struct{})}
@@ -282,7 +283,7 @@ func TestSpawnValidation(t *testing.T) {
 			store := filestoretest.Store(t)
 			opts := spawn.Options{MaxDepth: tc.maxDepth}
 			h := newHost(t, app.Config{Store: store, Content: durableContent(t), Spawn: &opts}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-			preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{opts.ExecutableTool()}))
+			pref, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{opts.ExecutableTool()}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -298,7 +299,7 @@ func TestSpawnValidation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset})
+			s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref})
 			if err != nil {
 				t.Fatal(err)
 			}

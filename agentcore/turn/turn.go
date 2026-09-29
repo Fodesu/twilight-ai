@@ -1,8 +1,9 @@
-// Package turn is the first-party Turn module:
-// the logical turn, mid-turn input delivery and settlement. Which Run
-// executes which attempt of a Turn is the attempt module's fact
-// (agent/session/attempt); attempt outcomes are the Run's own run_ended
-// fact. The surface joins the three and writes no derived copy of them.
+// Package turn is the Turn module: the logical Turn's own facts
+// (started, failed, superseded), the identity derivations that name them,
+// the protocol vocabulary operated on them and the surface that projects
+// Turn state from the Session's facts. Which Run executes a Turn and where
+// an input was delivered are other modules' facts; the surface joins them
+// and writes no derived copy.
 package turn
 
 import (
@@ -10,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -28,7 +30,7 @@ const (
 // lineage, so a fork continues its parent's Turns.
 var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Key: streamKey, Lineage: session.LineageSession}
 
-// streamKey binds a turn event to its Turn's stream (EXT-STR-1).
+// streamKey binds a turn event to its Turn's stream.
 func streamKey(value any) (string, error) {
 	switch p := value.(type) {
 	case StartedPayload:
@@ -44,19 +46,11 @@ func streamKey(value any) (string, error) {
 // Stream is the logical stream of one Turn's events.
 func Stream(turnID TurnID) session.StreamRef { return streamDefinition.Ref(string(turnID)) }
 
-type (
-	TurnID   string
-	PresetID string
-)
+type TurnID string
 
 type TurnRef struct {
 	SessionID session.SessionID
 	TurnID    TurnID
-}
-
-type PresetRef struct {
-	ID     PresetID          `json:"id"`
-	Digest jsonstable.Digest `json:"digest"`
 }
 
 type Settlement string
@@ -67,10 +61,9 @@ const (
 	SettlementStopped   Settlement = "stopped"
 )
 
-// EventTypes (TRN-EVT-1): the Turn domain's own decisions. Neither the
-// binding of an attempt to its Run (twilight/attempt/started) nor an
-// attempt's end (twilight/run/run_ended) is among them: the surface folds
-// both from the modules that own them.
+// EventTypes are the Turn domain's own decisions. A Run's end
+// (twilight/run/run_ended) is not among them: the surface folds it from
+// the run module that owns it.
 const (
 	TypeStarted    session.EventType = "twilight/turn/started"
 	TypeFailed     session.EventType = "twilight/turn/failed"
@@ -81,7 +74,7 @@ type StartedPayload struct {
 	TurnID   TurnID            `json:"turnId"`
 	RunID    run.RunID         `json:"runId"`
 	InputIDs []chatlog.InputID `json:"inputIds,omitempty"`
-	Preset   PresetRef         `json:"preset"`
+	Preset   preset.PresetRef  `json:"preset"`
 }
 
 type FailedPayload struct {
@@ -96,41 +89,43 @@ type SupersededPayload struct {
 	ReplacementTurnID TurnID `json:"replacementTurnId"`
 }
 
-// --- identity derivations (TRN-ID) ----------------------------------------------
+// --- identity derivations -------------------------------------------------------
 
 func digestOf(domain string, parts ...string) jsonstable.Digest {
 	raw, _ := jsonstable.EncodeTypedPayload(1, domain, parts)
 	return jsonstable.DigestBytes(raw)
 }
 
-// PlanDigest is TRN-ID-2.
-func PlanDigest(turnID TurnID, preset jsonstable.Digest, inputs []chatlog.InputID) jsonstable.Digest {
+// PlanDigest names the Turn plan a Start commits: the Turn, the preset
+// digest and the ordered input IDs.
+func PlanDigest(turnID TurnID, presetDigest jsonstable.Digest, inputs []chatlog.InputID) jsonstable.Digest {
 	parts := make([]string, 0, 2+len(inputs))
-	parts = append(parts, string(turnID), string(preset))
+	parts = append(parts, string(turnID), string(presetDigest))
 	for _, id := range inputs {
 		parts = append(parts, string(id))
 	}
 	return digestOf("twilight/turn/plan", parts...)
 }
 
-// StartOperationDigest is TRN-ID-3; it is the Start commit's CommitID.
+// StartOperationDigest is the Start commit's CommitID.
 func StartOperationDigest(sid session.SessionID, turnID TurnID, plan jsonstable.Digest) jsonstable.Digest {
 	return digestOf("twilight/turn/start-operation", string(sid), string(turnID), string(plan))
 }
 
-// DeriveRunID is TRN-ID-4.
+// DeriveRunID names the one Run that executes a Turn.
 func DeriveRunID(sid session.SessionID, turnID TurnID) run.RunID {
 	return run.RunID(digestOf("twilight/turn/run", string(sid), string(turnID)))
 }
 
+// CancelCommandID names the Run cancellation a Stop commits beside the
+// Turn's failed settlement.
 func CancelCommandID(sid session.SessionID, turnID TurnID, runID run.RunID) run.CommandID {
 	return run.CommandID(digestOf("twilight/turn/cancel-run", string(sid), string(turnID), string(runID), string(run.ReasonCancelled)))
 }
 
 // --- module -----------------------------------------------------------------------
 
-// Version is the payload version the turn module writes every event with
-// (EXT-REG-2).
+// Version is the payload version the turn module writes every event with.
 const Version extension.PayloadVersion = 1
 
 func def[T any](typ session.EventType, check func(*T) error) extension.EventDefinition {
@@ -138,9 +133,9 @@ func def[T any](typ session.EventType, check func(*T) error) extension.EventDefi
 		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[T]{Check: check}}}
 }
 
-// Module declares the turn events, the surface projection and the Requires of
-// TRN-SCP-1: attempt (started, which binds a Run to a Turn), run (run_ended,
-// which settles the attempt) and chatlog (input_delivered).
+// Module declares the turn events, the surface projection and the Requires
+// of the Turn's scope: run (run_ended, which settles the Turn's Run) and
+// chatlog (input_delivered, which extends the Turn's inputs).
 var Module = extension.ModuleDescriptor{
 	Source:  extension.SourceTwilight,
 	ID:      ModuleID,

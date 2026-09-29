@@ -19,11 +19,11 @@ import (
 	wshttp "github.com/felinics/twilight/agent/workspace/http"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // Config is the owner service's document.
@@ -70,7 +70,7 @@ type Config struct {
 // Activation is the owner's activation model (APP-ACT).
 type Activation struct {
 	// Preset is the decision identity an activation opens with.
-	Preset turn.PresetID `json:"preset"`
+	Preset preset.PresetID `json:"preset"`
 	// IdleRelease is the quiescence after which ownership is released;
 	// zero keeps activated Sessions open.
 	IdleRelease config.Duration `json:"idleRelease,omitempty"`
@@ -89,9 +89,9 @@ type Filestore struct {
 
 // Preset is one decision identity of the document.
 type Preset struct {
-	ID           turn.PresetID `json:"id"`
-	Model        run.ModelRef  `json:"model"`
-	SystemPrompt string        `json:"systemPrompt,omitempty"`
+	ID           preset.PresetID `json:"id"`
+	Model        run.ModelRef    `json:"model"`
+	SystemPrompt string          `json:"systemPrompt,omitempty"`
 	// WorkspaceTools adds the workspace tool set (APP-WSP-3).
 	WorkspaceTools bool `json:"workspaceTools,omitempty"`
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -25,7 +26,7 @@ type Options struct {
 	// Presets resolves the optional preset name in the arguments to the
 	// PresetRef the child runs under. Nil allows no name: the child runs
 	// under the parent Turn's preset.
-	Presets func(name string) (turn.PresetRef, error)
+	Presets func(name string) (preset.PresetRef, error)
 	// MaxDepth bounds nesting: a Session at this depth cannot spawn. Zero
 	// selects DefaultDepth.
 	MaxDepth int
@@ -111,7 +112,7 @@ func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *driver.W
 	if DepthExceeded(depth, r.opts.depth()) {
 		return run.CanonicalJSON{}, fmt.Errorf("spawn: session %s is at depth %d, the limit", parent, depth)
 	}
-	preset, err := r.childPreset(ctx, parent, call.Request.RunID, args)
+	pref, err := r.childPreset(ctx, parent, call.Request.RunID, args)
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
@@ -137,7 +138,7 @@ func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *driver.W
 		return run.CanonicalJSON{}, fmt.Errorf("open subagent: %w", err)
 	}
 	defer func() { _ = h.Close(context.WithoutCancel(ctx)) }()
-	turnID, err := r.settle(ctx, h, preset, prov.Arguments.Task)
+	turnID, err := r.settle(ctx, h, pref, prov.Arguments.Task)
 	if err != nil {
 		return run.CanonicalJSON{}, fmt.Errorf("drive subagent: %w", err)
 	}
@@ -244,20 +245,20 @@ func (r *Responder) callingTurn(ctx context.Context, parent session.SessionID, r
 	return turnID, nil
 }
 
-func (r *Responder) childPreset(ctx context.Context, parent session.SessionID, runID run.RunID, args Arguments) (turn.PresetRef, error) {
+func (r *Responder) childPreset(ctx context.Context, parent session.SessionID, runID run.RunID, args Arguments) (preset.PresetRef, error) {
 	if args.Preset != "" {
 		if r.opts.Presets == nil {
-			return turn.PresetRef{}, errors.New("named presets are not configured")
+			return preset.PresetRef{}, errors.New("named presets are not configured")
 		}
 		return r.opts.Presets(args.Preset)
 	}
 	turnID, err := r.callingTurn(ctx, parent, runID)
 	if err != nil {
-		return turn.PresetRef{}, err
+		return preset.PresetRef{}, err
 	}
 	surface, err := turn.ReadSurface(ctx, r.a.Projections, parent)
 	if err != nil {
-		return turn.PresetRef{}, err
+		return preset.PresetRef{}, err
 	}
 	return surface.Turns[turnID].Preset, nil
 }
@@ -267,7 +268,7 @@ func (r *Responder) childPreset(ctx context.Context, parent session.SessionID, r
 // an input awaiting delivery, an active Turn, or a Turn that settled before
 // the parent learned of it. A child runs exactly one Turn per task: the
 // submitted backlog is the task itself, so there is no draining loop.
-func (r *Responder) settle(ctx context.Context, h *owner.Handle, preset turn.PresetRef, task string) (turn.TurnID, error) {
+func (r *Responder) settle(ctx context.Context, h *owner.Handle, pref preset.PresetRef, task string) (turn.TurnID, error) {
 	turns, err := turn.ReadSurface(ctx, r.a.Projections, h.ID())
 	if err != nil {
 		return "", err
@@ -284,7 +285,7 @@ func (r *Responder) settle(ctx context.Context, h *owner.Handle, preset turn.Pre
 		for i, in := range pending {
 			inputs[i] = run.AgentInput{ID: run.InputID(in.ID), Digest: in.Digest}
 		}
-		return r.startAndDrive(ctx, h, preset, inputs)
+		return r.startAndDrive(ctx, h, pref, inputs)
 	}
 	if last, found := newestInput(&chat); found {
 		var body struct {
@@ -298,12 +299,12 @@ func (r *Responder) settle(ctx context.Context, h *owner.Handle, preset turn.Pre
 	if err != nil {
 		return "", err
 	}
-	return r.startAndDrive(ctx, h, preset, []run.AgentInput{in})
+	return r.startAndDrive(ctx, h, pref, []run.AgentInput{in})
 }
 
-func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, preset turn.PresetRef, inputs []run.AgentInput) (turn.TurnID, error) {
+func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, pref preset.PresetRef, inputs []run.AgentInput) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turn.NewTurnID()}
-	if _, err := r.a.Turns.Start(ctx, h.Writer(), turn.StartRequest{Ref: ref, Inputs: inputs, Preset: preset}); err != nil {
+	if _, err := r.a.Turns.Start(ctx, h.Writer(), turn.StartRequest{Ref: ref, Inputs: inputs, Preset: pref}); err != nil {
 		return "", err
 	}
 	return r.driveTurn(ctx, h, ref.TurnID)

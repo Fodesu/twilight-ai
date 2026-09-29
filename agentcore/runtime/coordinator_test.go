@@ -1,8 +1,11 @@
-package turn
+package runtime
 
 import (
 	"context"
+	"testing"
+
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -11,16 +14,16 @@ import (
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"testing"
+	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // The Coordinator is pure protocol: Start, Deliver and Status commit and read
-// without any driver, registry or Loop in the assembly. The Run stays Open
-// until a host drives it (DRV-1).
+// without any driver or Loop in the assembly. The Run stays Open until a
+// host drives it.
 func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-protocol"
-	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, Module)
+	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,24 +66,24 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 		return run.AgentInput{ID: run.InputID(id), Digest: d}
 	}
 
-	ref := TurnRef{SessionID: sid, TurnID: "t1"}
-	preset := PresetRef{ID: "p1", Digest: "sha256:p1"}
-	start := StartRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-1")}, Preset: preset}
+	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
+	p := preset.PresetRef{ID: "p1", Digest: "sha256:p1"}
+	start := turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-1")}, Preset: p}
 	resp, err := c.Start(ctx, w, start)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if resp.Status != TurnActive || resp.RunID == "" || resp.Disposition != "" {
+	if resp.Status != turn.TurnActive || resp.RunID == "" || resp.Disposition != "" {
 		t.Fatalf("start response = %+v, want active with no disposition", resp)
 	}
 	if again, err := c.Start(ctx, w, start); err != nil || again.RunID != resp.RunID {
 		t.Fatalf("start replay = %+v %v", again, err)
 	}
-	if _, err := c.Deliver(ctx, w, DeliverRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-2")}}); err != nil {
+	if _, err := c.Deliver(ctx, w, turn.DeliverRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-2")}}); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
 	status, err := c.Status(ctx, ref)
-	if err != nil || status.Status != TurnActive || status.RunID != resp.RunID {
+	if err != nil || status.Status != turn.TurnActive || status.RunID != resp.RunID {
 		t.Fatalf("status = %+v %v", status, err)
 	}
 	snap, err := runs.Bind(w).Load(ctx, resp.RunID)

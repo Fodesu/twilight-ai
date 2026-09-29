@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -201,7 +202,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	var turnEvents []writer.TypedEvent
 	if attempt == 1 {
 		turnEvents = append(turnEvents, writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
-			Value: turn.StartedPayload{TurnID: turnID, RunID: runID, InputIDs: ids, Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}})
+			Value: turn.StartedPayload{TurnID: turnID, RunID: runID, InputIDs: ids, Preset: preset.PresetRef{ID: "b", Digest: "sha256:b"}}})
 	}
 	var chatEvents []writer.TypedEvent
 	if attempt == 1 {

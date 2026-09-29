@@ -3,6 +3,7 @@ package turn
 import (
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -26,10 +27,9 @@ type TurnView struct {
 	TurnID   TurnID            `json:"turnId"`
 	Status   TurnStatus        `json:"status"`
 	InputIDs []chatlog.InputID `json:"inputIds,omitempty"`
-	Preset   PresetRef         `json:"preset"`
-	// RunID is the one Run that executes this Turn (TRN-SCP-2); End is its
-	// terminal result from twilight/run/run_ended, nil while the Run is
-	// open.
+	Preset   preset.PresetRef  `json:"preset"`
+	// RunID is the one Run that executes this Turn; End is its terminal
+	// result from twilight/run/run_ended, nil while the Run is open.
 	RunID run.RunID     `json:"runId"`
 	End   *run.RunEnded `json:"end,omitempty"`
 	// Settlement is the Turn's own settlement fact, when one was written
@@ -163,13 +163,10 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 	return s, nil
 }
 
-// applyRun settles the attempt a run_ended fact ends (TRN-PRJ-1): a
-// completed Run completes the Turn; any other end leaves the Turn
-// attempt_failed until Retry, Stop or Settle decide. A Run owned by no Turn
-// of this Session is not ours.
-// applyRun settles the Turn a Run executes (TRN-PRJ-1): completed when the
-// Run completed, failed otherwise; a Stop already settled it as stopped in
-// the same commit and the end is only recorded.
+// applyRun settles the Turn a Run executes: completed when the Run
+// completed, failed otherwise; a Stop already settled it as stopped in the
+// same commit and the end is only recorded. A Run owned by no Turn of this
+// Session is not ours.
 func (s TurnSurface) applyRun(ev runmod.Event) (any, error) {
 	ended, ok := ev.Fact.(run.RunEnded)
 	if !ok {

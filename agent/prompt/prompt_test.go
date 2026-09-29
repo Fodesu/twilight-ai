@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -19,7 +20,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // fixedSource serves one Context state at one head, the way an Owner or
@@ -67,8 +67,8 @@ func sources(state chatlog.Context, head session.Head, content fixedContent) dec
 	return decision.Sources{Projections: fixedSource{state: state, head: head}, Content: content}
 }
 
-func preset() turn.AgentPreset {
-	return turn.AgentPreset{SchemaVersion: 1, Model: "m-1", Prompt: prompt.PromptContextV1, SystemPrompt: "be brief"}
+func testPreset() preset.AgentPreset {
+	return preset.AgentPreset{SchemaVersion: 1, Model: "m-1", Prompt: prompt.PromptContextV1, SystemPrompt: "be brief"}
 }
 
 func entries() (chatlog.Context, fixedContent) {
@@ -91,7 +91,7 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	var prompts []loop.Prompt
 	for i := 0; i < 2; i++ {
 		builders := prompt.DefaultPromptBuilders() // a fresh process builds its own registry
-		builder, err := builders.Resolve(preset(), src)
+		builder, err := builders.Resolve(testPreset(), src)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,18 +108,18 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 		t.Fatalf("prompt = %+v", prompts[0])
 	}
 
-	p := preset()
+	p := testPreset()
 	p.Prompt = "x/builder"
 	if _, err := prompt.DefaultPromptBuilders().Resolve(p, src); !errors.Is(err, decision.ErrUnknownPromptBuilder) {
 		t.Fatalf("unknown builder: err = %v, want %v", err, decision.ErrUnknownPromptBuilder)
 	}
 	var none *decision.PromptBuilders
-	if _, err := none.Resolve(preset(), src); err == nil {
+	if _, err := none.Resolve(testPreset(), src); err == nil {
 		t.Fatal("nil registry resolved")
 	}
 	// A body the frozen store lost fails the build; the projection itself is
 	// unaffected (CHT-MAT-1).
-	if _, err := prompt.NewContextPromptBuilder(preset(), sources(state, session.Head{}, fixedContent{})).Build(context.Background(), input); !errors.Is(err, frozen.ErrMissing) {
+	if _, err := prompt.NewContextPromptBuilder(testPreset(), sources(state, session.Head{}, fixedContent{})).Build(context.Background(), input); !errors.Is(err, frozen.ErrMissing) {
 		t.Fatalf("missing body: err = %v", err)
 	}
 }
@@ -175,13 +175,13 @@ func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
 		{"interleaved summary", []chatlog.Entry{call, summary, result}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := prompt.NewContextPromptBuilder(preset(), sources(chatlog.Context{Entries: tc.entries}, session.Head{}, content))
+			builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: tc.entries}, session.Head{}, content))
 			if _, err := builder.Build(context.Background(), plan.PromptInput{Scope: "s"}); err == nil {
 				t.Fatal("unpaired history produced a provider request")
 			}
 		})
 	}
-	builder := prompt.NewContextPromptBuilder(preset(), sources(chatlog.Context{Entries: []chatlog.Entry{call, input, result}}, session.Head{}, content))
+	builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: []chatlog.Entry{call, input, result}}, session.Head{}, content))
 	prompt, err := builder.Build(context.Background(), plan.PromptInput{Scope: "s"})
 	if err != nil {
 		t.Fatal(err)

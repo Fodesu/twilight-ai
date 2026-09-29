@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -608,7 +609,7 @@ func testIsolation(t *testing.T, factory Factory) {
 	h.mustApply(writer.SemanticGroup{CommitID: "turn-noise", Batches: []writer.TypedBatch{{
 		Stream: turn.Stream("t9"),
 		Events: []writer.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
-			Value: turn.StartedPayload{TurnID: "t9", RunID: "r9", Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}}},
+			Value: turn.StartedPayload{TurnID: "t9", RunID: "r9", Preset: preset.PresetRef{ID: "b", Digest: "sha256:b"}}}},
 	}}})
 	if h.load("r1").Position != p1 {
 		t.Fatal("r2, chatlog or turn writes moved r1")
