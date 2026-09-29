@@ -68,7 +68,7 @@ func sources(state chatlog.Context, head session.Head, content fixedContent) dec
 }
 
 func testPreset() preset.AgentPreset {
-	return preset.AgentPreset{SchemaVersion: 1, Model: "m-1", Prompt: prompt.PromptContextV1, SystemPrompt: "be brief"}
+	return preset.AgentPreset{Model: "m-1", Prompt: prompt.PromptContextV1, SystemPrompt: "be brief"}
 }
 
 func entries() (chatlog.Context, fixedContent) {

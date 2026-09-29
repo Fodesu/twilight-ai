@@ -135,11 +135,6 @@ func WithPrompt(ref preset.PromptBuilderRef) PresetOption {
 	return func(p *preset.AgentPreset) { p.Prompt = ref }
 }
 
-// WithStreaming selects streaming model execution.
-func WithStreaming(on bool) PresetOption {
-	return func(p *preset.AgentPreset) { p.Streaming = on }
-}
-
 // WithScheduling selects tool scheduling.
 func WithScheduling(s run.ToolScheduling) PresetOption {
 	return func(p *preset.AgentPreset) { p.Scheduling = s }
@@ -179,7 +174,7 @@ func NewPresetFromDefinitions(model run.ModelRef, defs []preset.PublicTool, opts
 	if model == "" {
 		return preset.AgentPreset{}, errNoModel
 	}
-	p := preset.AgentPreset{SchemaVersion: 1, Model: model, Prompt: prompt.PromptContextV1, Tools: append([]preset.PublicTool(nil), defs...)}
+	p := preset.AgentPreset{Model: model, Prompt: prompt.PromptContextV1, Tools: append([]preset.PublicTool(nil), defs...)}
 	for _, opt := range opts {
 		opt(&p)
 	}

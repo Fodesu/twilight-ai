@@ -46,12 +46,11 @@ type PublicTool struct {
 // AgentPreset is the decision identity a Turn is started under: every
 // input to the decision layer that must be the same when another process
 // resumes the Turn. The Session records PresetRef{ID, Digest}; credentials,
-// clients and tool implementations never enter it.
+// clients and tool implementations never enter it. Streaming is not part of
+// the identity: it is an execution-side observation choice of the backend.
 type AgentPreset struct {
-	SchemaVersion uint16       `json:"schemaVersion"`
-	Model         run.ModelRef `json:"model"`
-	Tools         []PublicTool `json:"tools,omitempty"`
-	Streaming     bool         `json:"streaming,omitempty"`
+	Model run.ModelRef `json:"model"`
+	Tools []PublicTool `json:"tools,omitempty"`
 	// Prompt names the decision component resolved on the Owner side.
 	Prompt PromptBuilderRef `json:"prompt"`
 	// Scheduling is how the tool calls of one step run: parallel (default) or
@@ -70,19 +69,17 @@ type AgentPreset struct {
 const DigestDomain = "twilight/turn/preset"
 
 // DigestPreset covers the fields that change what the decision layer does
-// for a Turn: SchemaVersion, Model, Tools, Streaming, Prompt, Scheduling,
-// MalformedRetries and SystemPrompt.
+// for a Turn: Model, Tools, Prompt, Scheduling, MalformedRetries and
+// SystemPrompt.
 func DigestPreset(p *AgentPreset) (jsonstable.Digest, error) {
 	body := struct {
-		SchemaVersion    uint16             `json:"schemaVersion"`
 		Model            run.ModelRef       `json:"model"`
 		Tools            []PublicTool       `json:"tools,omitempty"`
-		Streaming        bool               `json:"streaming,omitempty"`
 		Prompt           PromptBuilderRef   `json:"prompt"`
 		Scheduling       run.ToolScheduling `json:"scheduling,omitempty"`
 		MalformedRetries uint8              `json:"malformedRetries,omitempty"`
 		SystemPrompt     string             `json:"systemPrompt,omitempty"`
-	}{p.SchemaVersion, p.Model, p.Tools, p.Streaming, p.Prompt, p.Scheduling, p.MalformedRetries, p.SystemPrompt}
+	}{p.Model, p.Tools, p.Prompt, p.Scheduling, p.MalformedRetries, p.SystemPrompt}
 	raw, err := jsonstable.EncodeTypedPayload(1, DigestDomain, body)
 	if err != nil {
 		return "", err
@@ -91,12 +88,9 @@ func DigestPreset(p *AgentPreset) (jsonstable.Digest, error) {
 }
 
 // ValidatePreset checks the identity fields a registry must refuse to record
-// without: schema version, model and prompt builder, plus a well-formed
-// Scheduling.
+// without: model and prompt builder, plus a well-formed Scheduling.
 func ValidatePreset(p *AgentPreset) error {
 	switch {
-	case p.SchemaVersion == 0:
-		return errors.New("preset: preset requires schemaVersion")
 	case p.Model == "":
 		return errors.New("preset: preset requires a model")
 	case p.Prompt == "":
