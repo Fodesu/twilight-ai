@@ -256,7 +256,7 @@ func TestValidateRefusals(t *testing.T) {
 		t.Fatalf("start without a target = %v, want a definite rejection", err)
 	}
 	// PublicTools carry the workspace placement into presets.
-	public, err := sandbox.PublicTools(tools.Default())
+	public, err := sandbox.ToolContracts(tools.Default())
 	if err != nil || len(public) != 4 || public[0].Placement != run.PlacementWorkspace || public[0].Ref != tools.ShellRef {
 		t.Fatalf("public tools = %+v %v", public, err)
 	}

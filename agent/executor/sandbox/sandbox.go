@@ -89,16 +89,16 @@ func Route(b executor.ExecutionBackend) executor.Route {
 	return executor.Route{Provider: Provider, Backend: b, Match: executor.MatchTool(run.PlacementWorkspace)}
 }
 
-// PublicTools are the preset entries of workspace tools: frozen definition,
+// ToolContracts are the preset entries of workspace tools: frozen definition,
 // policies and the workspace placement.
-func PublicTools(ts []tools.Tool) ([]preset.PublicTool, error) {
-	out := make([]preset.PublicTool, 0, len(ts))
+func ToolContracts(ts []tools.Tool) ([]preset.ToolContract, error) {
+	out := make([]preset.ToolContract, 0, len(ts))
 	for _, t := range ts {
 		def, err := sdkconv.FreezeToolDefinition(t.Definition())
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, preset.PublicTool{Ref: t.Ref(), Definition: def, Policy: t.ResponsePolicy(), Replay: t.Replay(), Placement: run.PlacementWorkspace})
+		out = append(out, preset.ToolContract{Ref: t.Ref(), Definition: def, Policy: t.ResponsePolicy(), Replay: t.Replay(), Placement: run.PlacementWorkspace})
 	}
 	return out, nil
 }

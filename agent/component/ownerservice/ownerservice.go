@@ -212,7 +212,7 @@ func presetsOf(defs []Preset) ([]app.Preset, error) {
 			if err != nil {
 				return nil, err
 			}
-			opts = append(opts, app.WithPublicTools(defs...))
+			opts = append(opts, app.WithTools(defs...))
 		}
 		p, err := app.NewPreset(d.Model, nil, opts...)
 		if err != nil {

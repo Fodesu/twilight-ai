@@ -57,7 +57,7 @@ func newWorkspaceHostWith(t *testing.T, model executorlocal.ModelInvoker, cfg ap
 	if err != nil {
 		t.Fatal(err)
 	}
-	presetRef, err := h.RegisterPreset("ws", mustPreset("m-1", nil, app.WithSystemPrompt("be brief"), app.WithPublicTools(defs...)))
+	presetRef, err := h.RegisterPreset("ws", mustPreset("m-1", nil, app.WithSystemPrompt("be brief"), app.WithTools(defs...)))
 	if err != nil {
 		t.Fatal(err)
 	}

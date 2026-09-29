@@ -5,6 +5,8 @@ import (
 
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
+	"github.com/felinics/twilight/agentcore/run/schema"
 
 	"github.com/felinics/twilight/sdk"
 )
@@ -40,4 +42,26 @@ type Input struct {
 	RunID      run.RunID
 	SourceStep run.StepID
 	Inputs     []run.AgentInput
+}
+
+// ToolSpecs freezes the preset's tool contracts into what each side of the
+// boundary needs: the run.ToolSpec the Run persists (definition digest,
+// policy, replay and placement declarations) and the provider-facing
+// definition of the model request, in contract order.
+func ToolSpecs(tools []preset.ToolContract) ([]run.ToolSpec, []sdk.ToolDefinition, error) {
+	specs := make([]run.ToolSpec, 0, len(tools))
+	defs := make([]sdk.ToolDefinition, 0, len(tools))
+	for _, t := range tools {
+		d, err := schema.Canonical().DigestToolDefinition(t.Definition)
+		if err != nil {
+			return nil, nil, err
+		}
+		specs = append(specs, run.ToolSpec{Ref: t.Ref, Name: t.Definition.Name, DefinitionDigest: d, Policy: t.Policy, Replay: t.Replay, Placement: t.Placement})
+		def_, err := sdkconv.ToolDefinition(t.Definition)
+		if err != nil {
+			return nil, nil, err
+		}
+		defs = append(defs, def_)
+	}
+	return specs, defs, nil
 }

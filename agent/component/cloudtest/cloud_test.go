@@ -281,7 +281,7 @@ func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activ
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	preset, err := app.NewPreset("m-1", nil, app.WithSystemPrompt("be brief"), app.WithPublicTools(defs...))
+	preset, err := app.NewPreset("m-1", nil, app.WithSystemPrompt("be brief"), app.WithTools(defs...))
 	if err != nil {
 		c.t.Fatal(err)
 	}

@@ -7,9 +7,6 @@ import (
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
-	"github.com/felinics/twilight/agentcore/run/schema"
-	"github.com/felinics/twilight/sdk"
 )
 
 type (
@@ -28,10 +25,12 @@ type PresetRef struct {
 	Digest jsonstable.Digest `json:"digest"`
 }
 
-// PublicTool is one tool of an AgentPreset: its ref, frozen definition and
-// response policy. ToolSpecs and the provider-facing tool list both derive
-// from it.
-type PublicTool struct {
+// ToolContract is one tool of an AgentPreset, frozen as a unit: the
+// definition the model sees, the response policy the agent waits under,
+// and the replay and placement declarations the executor acts on. Each
+// attribute answers a different layer; the contract freezes them together
+// because a Turn must resume under all four unchanged.
+type ToolContract struct {
 	Ref        run.ToolRef          `json:"ref"`
 	Definition model.ToolDefinition `json:"definition"`
 	Policy     run.ResponsePolicy   `json:"policy"`
@@ -49,8 +48,8 @@ type PublicTool struct {
 // clients and tool implementations never enter it. Streaming is not part of
 // the identity: it is an execution-side observation choice of the backend.
 type AgentPreset struct {
-	Model run.ModelRef `json:"model"`
-	Tools []PublicTool `json:"tools,omitempty"`
+	Model run.ModelRef   `json:"model"`
+	Tools []ToolContract `json:"tools,omitempty"`
 	// PromptBuilder names the decision component resolved on the Owner side.
 	PromptBuilder PromptBuilderRef `json:"promptBuilder"`
 	// Scheduling is how the tool calls of one step run: parallel (default) or
@@ -74,7 +73,7 @@ const DigestDomain = "twilight/turn/preset"
 func DigestPreset(p *AgentPreset) (jsonstable.Digest, error) {
 	body := struct {
 		Model            run.ModelRef       `json:"model"`
-		Tools            []PublicTool       `json:"tools,omitempty"`
+		Tools            []ToolContract     `json:"tools,omitempty"`
 		PromptBuilder    PromptBuilderRef   `json:"promptBuilder"`
 		Scheduling       run.ToolScheduling `json:"scheduling,omitempty"`
 		MalformedRetries uint8              `json:"malformedRetries,omitempty"`
@@ -103,24 +102,4 @@ func ValidatePreset(p *AgentPreset) error {
 		return errors.New("preset: preset scheduling MaxParallel is negative")
 	}
 	return nil
-}
-
-// ToolSpecs derives the frozen ToolSpecs and provider definitions of p, in
-// order.
-func (p *AgentPreset) ToolSpecs() ([]run.ToolSpec, []sdk.ToolDefinition, error) {
-	specs := make([]run.ToolSpec, 0, len(p.Tools))
-	defs := make([]sdk.ToolDefinition, 0, len(p.Tools))
-	for _, t := range p.Tools {
-		d, err := schema.Canonical().DigestToolDefinition(t.Definition)
-		if err != nil {
-			return nil, nil, err
-		}
-		specs = append(specs, run.ToolSpec{Ref: t.Ref, Name: t.Definition.Name, DefinitionDigest: d, Policy: t.Policy, Replay: t.Replay, Placement: t.Placement})
-		def_, err := sdkconv.ToolDefinition(t.Definition)
-		if err != nil {
-			return nil, nil, err
-		}
-		defs = append(defs, def_)
-	}
-	return specs, defs, nil
 }

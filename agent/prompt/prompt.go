@@ -86,7 +86,7 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint decision.Input) (
 	if err != nil {
 		return decision.Prompt{}, err
 	}
-	specs, defs, err := p.Preset.ToolSpecs()
+	specs, defs, err := decision.ToolSpecs(p.Preset.Tools)
 	if err != nil {
 		return decision.Prompt{}, err
 	}

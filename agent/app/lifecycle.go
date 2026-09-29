@@ -109,20 +109,20 @@ func (app *Application) Workspace(ctx context.Context, sid session.SessionID) (w
 // PresetOption tunes NewPreset and NewPresetFromDefinitions.
 type PresetOption func(*preset.AgentPreset)
 
-// WithPublicTools adds frozen tool definitions to the preset: the way
+// WithTools adds frozen tool contracts to the preset: the way
 // tools that are not implemented in this process (the workspace tools the
 // sandbox backend serves) enter a preset. See WorkspaceTools.
-func WithPublicTools(defs ...preset.PublicTool) PresetOption {
+func WithTools(defs ...preset.ToolContract) PresetOption {
 	return func(p *preset.AgentPreset) { p.Tools = append(p.Tools, defs...) }
 }
 
 // WorkspaceTools freezes the workspace tools' definitions for a preset with
 // their workspace placement (APP-WSP-3); nil selects tools.Default().
-func WorkspaceTools(ts []tools.Tool) ([]preset.PublicTool, error) {
+func WorkspaceTools(ts []tools.Tool) ([]preset.ToolContract, error) {
 	if ts == nil {
 		ts = tools.Default()
 	}
-	return sandbox.PublicTools(ts)
+	return sandbox.ToolContracts(ts)
 }
 
 // WithSystemPrompt sets the instruction included in the preset digest.
@@ -149,7 +149,7 @@ func WithMalformedRetries(n uint8) PresetOption {
 // used only to freeze their public definitions; they are not stored in the
 // preset.
 func NewPreset(model run.ModelRef, impls []local.ExecutableTool, opts ...PresetOption) (preset.AgentPreset, error) {
-	defs := make([]preset.PublicTool, 0, len(impls))
+	defs := make([]preset.ToolContract, 0, len(impls))
 	seen := make(map[run.ToolRef]struct{}, len(impls))
 	for _, tool := range impls {
 		if tool == nil {
@@ -163,18 +163,18 @@ func NewPreset(model run.ModelRef, impls []local.ExecutableTool, opts ...PresetO
 		if err != nil {
 			return preset.AgentPreset{}, err
 		}
-		defs = append(defs, preset.PublicTool{Ref: tool.Ref(), Definition: definition, Policy: tool.ResponsePolicy(), Replay: tool.Replay(), Placement: tool.Placement()})
+		defs = append(defs, preset.ToolContract{Ref: tool.Ref(), Definition: definition, Policy: tool.ResponsePolicy(), Replay: tool.Replay(), Placement: tool.Placement()})
 	}
 	return NewPresetFromDefinitions(model, defs, opts...)
 }
 
 // NewPresetFromDefinitions constructs a preset from already frozen public
 // tool definitions, for an Owner without local tool implementations.
-func NewPresetFromDefinitions(model run.ModelRef, defs []preset.PublicTool, opts ...PresetOption) (preset.AgentPreset, error) {
+func NewPresetFromDefinitions(model run.ModelRef, defs []preset.ToolContract, opts ...PresetOption) (preset.AgentPreset, error) {
 	if model == "" {
 		return preset.AgentPreset{}, errNoModel
 	}
-	p := preset.AgentPreset{Model: model, PromptBuilder: prompt.PromptContextV1, Tools: append([]preset.PublicTool(nil), defs...)}
+	p := preset.AgentPreset{Model: model, PromptBuilder: prompt.PromptContextV1, Tools: append([]preset.ToolContract(nil), defs...)}
 	for _, opt := range opts {
 		opt(&p)
 	}

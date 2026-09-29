@@ -194,7 +194,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 func TestPresetVersionsRemainAvailable(t *testing.T) {
 	presets := preset.NewMemory()
 	ap := mustPreset("m-1", nil, app.WithSystemPrompt("original"))
-	ap.Tools = []preset.PublicTool{{Ref: "tool", Definition: model.ToolDefinition{
+	ap.Tools = []preset.ToolContract{{Ref: "tool", Definition: model.ToolDefinition{
 		Name: "tool", Parameters: run.MustParseCanonicalJSON(`{}`), CacheControl: &model.CacheControl{Type: "ephemeral"},
 	}}}
 	ref, err := presets.Register("p", ap)
