@@ -37,7 +37,7 @@ func ValidateDomain(d Domain) error {
 		}
 		return nil
 	}
-	if err := validIdentity("domain name", d.Name); err != nil {
+	if err := ValidIdentity("domain name", d.Name); err != nil {
 		return err
 	}
 	if strings.Contains(d.Name, "/") {
@@ -46,7 +46,7 @@ func ValidateDomain(d Domain) error {
 	if d.Id == "" {
 		return nil
 	}
-	return validIdentity("domain ID", d.Id)
+	return ValidIdentity("domain ID", d.Id)
 }
 
 // EventBatch is the ordered slice of one commit that belongs to one domain.
@@ -79,25 +79,6 @@ func (p Position) Less(q Position) bool {
 // only; CommitSeq is the canonical order.
 type StreamSeq uint64
 
-// StreamLineage is how a stream read crosses a fork. A fork's path includes
-// a prefix of the parent's commits. A stream's owning writer declares which
-// of the two histories its streams are, and a read names that mode. The
-// ledger applies the mode it is given and does not know which one a domain
-// declared.
-type StreamLineage string
-
-// ValidateStreamLineage checks that a read names one of the two modes.
-func ValidateStreamLineage(l StreamLineage) error {
-	switch l {
-	case LineageSession, LineageSegment:
-		return nil
-	case "":
-		return errors.New("stream lineage is empty")
-	default:
-		return fmt.Errorf("unknown stream lineage %q", l)
-	}
-}
-
 // ValidateStreamRef checks a domain as a stream attribution: ledger-valid
 // and not empty. The empty domain is the unpartitioned ledger's group, not
 // a stream; which domains a writer owns and which ID an event binds to are
@@ -108,14 +89,3 @@ func ValidateStreamRef(r Domain) error {
 	}
 	return ValidateDomain(r)
 }
-
-const (
-	// LineageSession reads the stream as the host's semantic history: the
-	// inherited prefix stitched before the tip's own commits, so a fork
-	// continues the stream at the next event after that prefix.
-	LineageSession StreamLineage = "session"
-	// LineageSegment reads the stream as execution history of the part that
-	// wrote it: the tip's own commits only, so a fork or a new tip starts
-	// the stream empty.
-	LineageSegment StreamLineage = "segment"
-)

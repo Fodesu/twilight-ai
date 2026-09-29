@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -48,7 +49,7 @@ type harness struct {
 	t         testing.TB
 	ctx       context.Context
 	store     session.Store
-	registry  *ledger.Registry
+	registry  *module.Registry
 	frozen    frozen.Store
 	bindings  artifact.BindingStore
 	retention artifact.RetentionLedger
@@ -61,7 +62,7 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := ledger.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
+	registry, err := module.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +278,7 @@ func sameTypes(got []ledger.Event, want ...ledger.EventType) bool {
 	return true
 }
 
-func decode[T any](t testing.TB, registry *ledger.Registry, event *ledger.Event) T {
+func decode[T any](t testing.TB, registry *module.Registry, event *ledger.Event) T {
 	t.Helper()
 	d, err := registry.Decode(*event)
 	if err != nil {

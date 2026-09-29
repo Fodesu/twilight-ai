@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
 const (
-	SurfaceProjectionID ledger.ProjectionID = "twilight/chatlog/surface"
-	ContextProjectionID ledger.ProjectionID = "twilight/chatlog/context"
+	SurfaceProjectionID module.ProjectionID = "twilight/chatlog/surface"
+	ContextProjectionID module.ProjectionID = "twilight/chatlog/context"
 )
 
 type InputStatus string
@@ -118,18 +119,18 @@ var chatlogConsumes = func() []ledger.EventType {
 	return out
 }()
 
-var SurfaceProjection = ledger.ProjectionDefinition{
+var SurfaceProjection = module.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: chatlogConsumes,
 	// Assistant and tool_result entries are projected from run facts
 	// (CHT-SCP-1); a fork inherits that conversation content (EXT-PRJ-8).
-	Inherits:      ledger.InheritAll,
+	Inherits:      module.InheritAll,
 	Authoritative: true,
 	Initial: func() (any, error) {
 		return Surface{}, nil
 	},
 	Apply:      applySurface,
-	StateCodec: ledger.JSONStateCodec[Surface]{},
+	StateCodec: module.JSONStateCodec[Surface]{},
 }
 
 // applySurface is copy-on-write: the Surface value is copied, every table is
@@ -138,7 +139,7 @@ var SurfaceProjection = ledger.ProjectionDefinition{
 // Every position an entry carries is the ledger Position of the event that
 // produced it (EXT-PRJ-1): the projection keeps no counter and a snapshot
 // restores without rescanning.
-func applySurface(state any, e ledger.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
+func applySurface(state any, e module.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	s, ok := state.(Surface)
 	if !ok {
 		return nil, fmt.Errorf("chatlog surface: state is %T", state)
@@ -411,16 +412,16 @@ type Context struct {
 	Runs        map[run.RunID]RunOwner        `json:"runs,omitempty"`
 }
 
-var ContextProjection = ledger.ProjectionDefinition{
+var ContextProjection = module.ProjectionDefinition{
 	ID: ContextProjectionID, Version: 1,
 	Consumes:      chatlogConsumes,
-	Inherits:      ledger.InheritAll,
+	Inherits:      module.InheritAll,
 	Authoritative: true,
 	Initial: func() (any, error) {
 		return Context{Pending: map[InputID]Input{}, Superseded: map[ToolResultID]ToolResultID{}, Runs: map[run.RunID]RunOwner{}}, nil
 	},
 	Apply:      applyContext,
-	StateCodec: ledger.JSONStateCodec[Context]{},
+	StateCodec: module.JSONStateCodec[Context]{},
 }
 
 // applyContext is copy-on-write like applySurface: Entries and Compactions
@@ -428,7 +429,7 @@ var ContextProjection = ledger.ProjectionDefinition{
 // element the previous state still holds, and a map is copied only by the
 // event that writes it. Entry positions are the ledger Positions of the
 // events that produced them.
-func applyContext(state any, e ledger.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
+func applyContext(state any, e module.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	c, ok := state.(Context)
 	if !ok {
 		return nil, fmt.Errorf("chatlog context: state is %T", state)
@@ -614,11 +615,11 @@ func selectRetained(base []Entry, pairs []EntryDigestPair) ([]Entry, error) {
 }
 
 // ContextFold folds decoded chatlog and run events into entries (CHT-CTX-1).
-func ContextFold(events []ledger.DecodedEvent) ([]Entry, error) {
+func ContextFold(events []module.DecodedEvent) ([]Entry, error) {
 	state, _ := ContextProjection.Initial()
 	for i := range events {
 		e := &events[i]
-		if e.Unknown || (e.Module != ledger.TwilightModule(ModuleID) && e.Module != ledger.TwilightModule(runmod.ModuleID)) {
+		if e.Unknown || (e.Module != module.TwilightModule(ModuleID) && e.Module != module.TwilightModule(runmod.ModuleID)) {
 			return nil, errors.New("chatlog: context fold requires decoded chatlog or run events")
 		}
 		next, err := applyContext(state, *e)

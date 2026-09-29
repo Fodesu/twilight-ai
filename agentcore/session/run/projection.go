@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/run/wire"
 )
 
-const MachineProjectionID ledger.ProjectionID = "twilight/run/machine"
+const MachineProjectionID module.ProjectionID = "twilight/run/machine"
 
 // Machine is the twilight/run/machine projection state (RUN-CMT-2): every
 // non-terminal Run of the Session with its last event position and schema.
@@ -50,7 +51,7 @@ func (m Machine) snapshot(runID run.RunID) (store.Snapshot, bool) {
 }
 
 // Apply folds one decoded run event (RUN-MCH-3 via Protocol.Evolve).
-func (m Machine) Apply(e ledger.DecodedEvent) (Machine, error) { //nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
+func (m Machine) Apply(e module.DecodedEvent) (Machine, error) { //nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
 	ev, ok := e.Value.(Event)
 	if !ok {
 		return m, fmt.Errorf("run machine: unexpected %T", e.Value)
@@ -149,11 +150,11 @@ func (machineCodec) Decode(wr jsonstable.Value) (any, error) {
 }
 
 // MachineProjection consumes every twilight/run/ event.
-var MachineProjection = ledger.ProjectionDefinition{
+var MachineProjection = module.ProjectionDefinition{
 	ID: MachineProjectionID, Version: 1,
 	Consumes: AllTypes(), Authoritative: true,
 	Initial: func() (any, error) { return newMachine(), nil },
-	Apply: func(state any, e ledger.DecodedEvent) (any, error) {
+	Apply: func(state any, e module.DecodedEvent) (any, error) {
 		m, ok := state.(Machine)
 		if !ok {
 			return nil, fmt.Errorf("run machine: state is %T", state)
@@ -169,7 +170,7 @@ var _ ledger.EventType = Prefix
 // Writer: every projection at the deployment's interval, except the machine
 // projection, whose entry the SessionRunStore refreshes itself through SnapshotPolicy
 // and which must never be cached mid-step (RUN-CMT-2). every is the interval in
-// commits; zero or less takes ledger.DefaultCacheEvery.
-func WriterCachePolicy(every ledger.CommitSeq) ledger.CachePolicy {
-	return ledger.CacheEvery(every).Exclude(MachineProjectionID)
+// commits; zero or less takes module.DefaultCacheEvery.
+func WriterCachePolicy(every ledger.CommitSeq) module.CachePolicy {
+	return module.CacheEvery(every).Exclude(MachineProjectionID)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"runtime"
@@ -18,18 +19,18 @@ type countPayload struct {
 	Text string `json:"text"`
 }
 
-func countModule() ledger.ModuleDescriptor {
+func countModule() module.ModuleDescriptor {
 	typ := tpfx("q") + "row"
-	return ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "q", Streams: noteStreams(),
-		Events: []ledger.EventDefinition{{Type: typ, Domain: noteDomain,
-			Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[countPayload]{}}}},
-		Projections: []ledger.ProjectionDefinition{{
-			ID: ledger.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []ledger.EventType{typ},
+	return module.ModuleDescriptor{Source: module.SourceTwilight, ID: "q", Streams: noteStreams(),
+		Events: []module.EventDefinition{{Type: typ, Domain: noteDomain,
+			Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[countPayload]{}}}},
+		Projections: []module.ProjectionDefinition{{
+			ID: module.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return countState{}, nil },
-			Apply: func(state any, _ ledger.DecodedEvent) (any, error) {
+			Apply: func(state any, _ module.DecodedEvent) (any, error) {
 				return countState{N: state.(countState).N + 1}, nil
 			},
-			StateCodec: ledger.JSONStateCodec[countState]{},
+			StateCodec: module.JSONStateCodec[countState]{},
 		}}}
 }
 
@@ -62,7 +63,7 @@ func retainedOnReopen(t *testing.T, commits int) uint64 {
 	t.Helper()
 	ctx := context.Background()
 	store := filestoretest.Store(t)
-	reg, err := ledger.BuildRegistry(countModule())
+	reg, err := module.BuildRegistry(countModule())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,12 +15,13 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
-const ModuleID ledger.ModuleID = "chatlog"
+const ModuleID module.ModuleID = "chatlog"
 
 type (
 	TurnID       string
@@ -104,7 +105,7 @@ func (ps *Parts) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	var wires []partWire
-	if err := ledger.StrictDecode(val, &wires); err != nil {
+	if err := module.StrictDecode(val, &wires); err != nil {
 		return err
 	}
 	out := make(Parts, 0, len(wires))
@@ -468,7 +469,7 @@ func checkSummary(p *SummaryPayload) error {
 
 // PartsExtractor returns the BindingIDs of ReferenceParts in appearance
 // order (CHT-COD-2).
-var PartsExtractor ledger.BindingExtractor = ledger.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
+var PartsExtractor module.BindingExtractor = module.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
 	p, ok := val.(SummaryPayload)
 	if !ok {
 		return nil, fmt.Errorf("parts extractor: unexpected %T", val)
@@ -484,7 +485,7 @@ var PartsExtractor ledger.BindingExtractor = ledger.BindingExtractorFunc(func(va
 
 // supersededExtractor names the frozen output a success supersession
 // carries, under the run module's frozen Binding derivation.
-var supersededExtractor ledger.BindingExtractor = ledger.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
+var supersededExtractor module.BindingExtractor = module.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
 	p, ok := val.(ToolResultSupersededPayload)
 	if !ok {
 		return nil, fmt.Errorf("superseded extractor: unexpected %T", val)
@@ -495,15 +496,15 @@ var supersededExtractor ledger.BindingExtractor = ledger.BindingExtractorFunc(fu
 	return []artifact.BindingID{runmod.FrozenBindingID(p.OutputDigest)}, nil
 })
 
-var partsBinding = ledger.BindingReferenceDefinition{
+var partsBinding = module.BindingReferenceDefinition{
 	Extractor:          PartsExtractor,
-	Cardinality:        ledger.Cardinality{Min: 0},
+	Cardinality:        module.Cardinality{Min: 0},
 	RequiredDurability: artifact.EventBound,
 }
 
-var supersededBinding = ledger.BindingReferenceDefinition{
+var supersededBinding = module.BindingReferenceDefinition{
 	Extractor:          supersededExtractor,
-	Cardinality:        ledger.Cardinality{Min: 0},
+	Cardinality:        module.Cardinality{Min: 0},
 	AllowedSchemes:     []artifact.Scheme{artifact.SchemeCAS},
 	RequiredDurability: artifact.EventBound,
 }
@@ -514,16 +515,16 @@ const StreamDomain = "chatlog"
 
 // Version is the payload version the chatlog writes every event with
 // (EXT-REG-2); older versions keep their codecs beside it.
-const Version ledger.PayloadVersion = 1
+const Version module.PayloadVersion = 1
 
-var streamDefinition = ledger.StreamDefinition{Domain: StreamDomain, Lineage: ledger.LineageSession}
+var streamDefinition = module.StreamDefinition{Domain: StreamDomain, Inheritance: module.Inherited}
 
 // Stream is the chatlog's logical stream.
 var Stream = streamDefinition.Ref("")
 
-func def[T any](typ ledger.EventType, check func(*T) error, bindings ...ledger.BindingReferenceDefinition) ledger.EventDefinition {
-	return ledger.EventDefinition{Type: typ, Domain: StreamDomain,
-		Codecs:   map[ledger.PayloadVersion]ledger.PayloadCodec{Version: ledger.JSONCodec[T]{Check: check}},
+func def[T any](typ ledger.EventType, check func(*T) error, bindings ...module.BindingReferenceDefinition) module.EventDefinition {
+	return module.EventDefinition{Type: typ, Domain: StreamDomain,
+		Codecs:   map[module.PayloadVersion]module.PayloadCodec{Version: module.JSONCodec[T]{Check: check}},
 		Bindings: bindings}
 }
 
@@ -533,21 +534,21 @@ func def[T any](typ ledger.EventType, check func(*T) error, bindings ...ledger.B
 // run_ended to forget the Run's Turn.
 var consumedRunFacts = []string{"model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed", "run_ended"}
 
-func runRequirement() ledger.ModuleRequirement {
+func runRequirement() module.ModuleRequirement {
 	events := make([]ledger.EventType, 0, len(consumedRunFacts))
 	for _, name := range consumedRunFacts {
 		events = append(events, runmod.Type(name))
 	}
-	return ledger.ModuleRequirement{Source: ledger.SourceTwilight, Module: runmod.ModuleID, Events: events}
+	return module.ModuleRequirement{Source: module.SourceTwilight, Module: runmod.ModuleID, Events: events}
 }
 
 // Module is the chatlog ModuleDescriptor (CHT-SCP-1: Requires run facts).
-var Module = ledger.ModuleDescriptor{
-	Source:   ledger.SourceTwilight,
+var Module = module.ModuleDescriptor{
+	Source:   module.SourceTwilight,
 	ID:       ModuleID,
-	Streams:  []ledger.StreamDefinition{streamDefinition},
-	Requires: []ledger.ModuleRequirement{runRequirement()},
-	Events: []ledger.EventDefinition{
+	Streams:  []module.StreamDefinition{streamDefinition},
+	Requires: []module.ModuleRequirement{runRequirement()},
+	Events: []module.EventDefinition{
 		def[InputSubmittedPayload](TypeInputSubmitted, func(p *InputSubmittedPayload) error {
 			if p.InputID == "" || p.Content.IsZero() {
 				return errors.New("input_submitted requires inputId and content")
@@ -567,5 +568,5 @@ var Module = ledger.ModuleDescriptor{
 		def[CompactionCreatedPayload](TypeCompactionCreated, checkCompactionCreated),
 		def[CompactionInvalidatedPayload](TypeCompactionInvalidated, checkCompactionInvalidated),
 	},
-	Projections: []ledger.ProjectionDefinition{SurfaceProjection, ContextProjection},
+	Projections: []module.ProjectionDefinition{SurfaceProjection, ContextProjection},
 }

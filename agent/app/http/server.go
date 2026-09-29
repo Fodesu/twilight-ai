@@ -371,7 +371,7 @@ func (s *Server) fork(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	parent := sid(r)
-	var header ledger.SegmentHeader
+	var header session.SegmentHeader
 	var err error
 	if req.BeforeTurn != "" {
 		header, err = s.App.ForkBeforeTurn(r.Context(), parent, req.BeforeTurn, req.Child)

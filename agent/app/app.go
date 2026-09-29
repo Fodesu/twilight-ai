@@ -27,6 +27,7 @@ import (
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -117,7 +118,7 @@ type Config struct {
 	TargetResolver loop.TargetResolver
 	// Modules are application modules registered after the first-party four
 	// (EXT-APP).
-	Modules []ledger.ModuleDescriptor
+	Modules []module.ModuleDescriptor
 	// Observers are notified of every applied group besides the event stream.
 	Observers []writer.CommitObserver
 	Clock     func() time.Time
@@ -320,7 +321,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		if c.Workspaces.Store == nil {
 			return nil, errors.New("app: Workspaces requires a workspace Store")
 		}
-		c.Modules = append([]ledger.ModuleDescriptor{workspace.Module}, c.Modules...)
+		c.Modules = append([]module.ModuleDescriptor{workspace.Module}, c.Modules...)
 		if c.TargetResolver == nil {
 			resolver = &workspace.Resolver{}
 			c.TargetResolver = resolver

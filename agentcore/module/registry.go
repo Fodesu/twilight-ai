@@ -1,10 +1,18 @@
-package ledger
+// Package module is the framework the ledger's writers declare themselves
+// through: a module names its event types with versioned codecs, the
+// stream domains it owns and how each reads across a parent edge, the
+// projections it folds and the modules it requires. The Registry checks
+// the declarations against one another and is the one place events are
+// encoded, decoded and folded; trust is a property of how a module reached
+// the Registry, never of what its descriptor says.
+package module
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"strings"
 	"unicode/utf8"
 )
@@ -41,7 +49,7 @@ type PayloadVersion uint16
 // EventDefinition declares one event type, the codec of every version it was
 // ever written under, and the version new payloads are written with.
 type EventDefinition struct {
-	Type   EventType
+	Type   ledger.EventType
 	Codecs map[PayloadVersion]PayloadCodec
 	// Version is the PayloadVersion Encode writes; zero selects the highest
 	// key of Codecs. It must name one of them.
@@ -70,10 +78,10 @@ type StreamDefinition struct {
 	// (EXT-STR-1). The binding is a property of the module's Go values, not
 	// of a payload field name.
 	Key StreamKey
-	// Lineage is how a fork reads the domain (SES-FRK-5):
-	// LineageSession for state the child Session continues, LineageSegment
+	// Inheritance is how a child segment reads the domain:
+	// Inherited for state the child continues, Own
 	// for history that stays with the segment that wrote it.
-	Lineage StreamLineage
+	Inheritance Inheritance
 }
 
 // StreamKey names the stream a typed event value belongs to; it fails for a
@@ -84,8 +92,8 @@ type StreamKey func(value any) (string, error)
 func (d StreamDefinition) Keyed() bool { return d.Key != nil }
 
 // Ref names one stream of the domain; id is empty for a singleton.
-func (d StreamDefinition) Ref(id string) Domain {
-	return Domain{Name: d.Domain, Id: id}
+func (d StreamDefinition) Ref(id string) ledger.Domain {
+	return ledger.Domain{Name: d.Domain, Id: id}
 }
 
 // ModuleRequirement declares that a module consumes another module's events
@@ -95,7 +103,7 @@ func (d StreamDefinition) Ref(id string) Domain {
 type ModuleRequirement struct {
 	Source SourceID
 	Module ModuleID
-	Events []EventType
+	Events []ledger.EventType
 }
 
 // Key is the identity the requirement points at.
@@ -119,11 +127,11 @@ func (m *ModuleDescriptor) Key() ModuleKey { return ModuleKey{Source: m.Source, 
 // the logical stream the fold read the event from; Decode alone cannot know
 // it, so folds set it after decoding.
 type DecodedEvent struct {
-	Domain Domain
+	Domain ledger.Domain
 	// Position is the event's ledger position; a fold fills it, a bare Decode
 	// leaves it zero.
-	Position Position
-	Event    Event
+	Position ledger.Position
+	Event    ledger.Event
 	Module   ModuleKey
 	Version  PayloadVersion
 	Value    any
@@ -134,7 +142,7 @@ type DecodedEvent struct {
 type Registry struct {
 	modules     map[ModuleKey]ModuleDescriptor
 	streams     map[string]streamEntry
-	events      map[EventType]eventEntry
+	events      map[ledger.EventType]eventEntry
 	projections map[projectionKey]projectionEntry
 }
 
@@ -195,41 +203,41 @@ func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry
 	for i := range extensions {
 		m := &extensions[i]
 		if m.Source == SourceTwilight {
-			return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("extension module %q claims the %s source", m.ID, SourceTwilight)}
+			return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("extension module %q claims the %s source", m.ID, SourceTwilight)}
 		}
 		for _, p := range m.Projections {
 			if p.Authoritative {
-				return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("projection %q of extension %s/%s declares Authoritative; only trusted core modules may", p.ID, m.Source, m.ID)}
+				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("projection %q of extension %s/%s declares Authoritative; only trusted core modules may", p.ID, m.Source, m.ID)}
 			}
 		}
 		modules = append(modules, *m)
 	}
 	r := &Registry{
 		modules: make(map[ModuleKey]ModuleDescriptor), streams: make(map[string]streamEntry),
-		events: make(map[EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
+		events: make(map[ledger.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
 	for i := range modules {
 		m := &modules[i]
 		if err := validSegment("source", string(m.Source)); err != nil {
-			return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("module %q: %v", m.ID, err)}
+			return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module %q: %v", m.ID, err)}
 		}
 		if err := validSegment("module id", string(m.ID)); err != nil {
-			return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("source %q: %v", m.Source, err)}
+			return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("source %q: %v", m.Source, err)}
 		}
 		key := m.Key()
 		if _, dup := r.modules[key]; dup {
-			return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("duplicate module %s/%s", key.Source, key.ID)}
+			return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("duplicate module %s/%s", key.Source, key.ID)}
 		}
 		r.modules[key] = *m
 		for _, sd := range m.Streams {
-			if err := ValidateStreamRef(Domain{Name: sd.Domain}); err != nil {
-				return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("module %s/%s: %v", key.Source, key.ID, err)}
+			if err := ledger.ValidateStreamRef(ledger.Domain{Name: sd.Domain}); err != nil {
+				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module %s/%s: %v", key.Source, key.ID, err)}
 			}
 			if prev, dup := r.streams[sd.Domain]; dup {
-				return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("duplicate stream domain %q: declared by %s/%s and %s/%s",
+				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("duplicate stream domain %q: declared by %s/%s and %s/%s",
 					sd.Domain, prev.module.Source, prev.module.ID, key.Source, key.ID)}
 			}
-			if err := ValidateStreamLineage(sd.Lineage); err != nil {
-				return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("stream domain %q: %v", sd.Domain, err)}
+			if err := ValidateInheritance(sd.Inheritance); err != nil {
+				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("stream domain %q: %v", sd.Domain, err)}
 			}
 			r.streams[sd.Domain] = streamEntry{module: key, def: sd}
 		}
@@ -240,17 +248,17 @@ func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry
 		}
 		for _, p := range m.Projections {
 			if p.ID == "" || p.Version == 0 || p.Initial == nil || p.Apply == nil || p.StateCodec == nil {
-				return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("projection %q is incomplete", p.ID)}
+				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("projection %q is incomplete", p.ID)}
 			}
 			// Refusing commits is a capability of trusted core modules, not
 			// something a descriptor declares for itself (EXT-PRJ-9); the
 			// extension path above already refused it, this guards the map.
 			if p.Authoritative && !trusted[key] {
-				return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("projection %q of module %s/%s declares Authoritative without trust", p.ID, m.Source, m.ID)}
+				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("projection %q of module %s/%s declares Authoritative without trust", p.ID, m.Source, m.ID)}
 			}
 			k := projectionKey{p.ID, p.Version}
 			if _, dup := r.projections[k]; dup {
-				return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("duplicate projection %q v%d", p.ID, p.Version)}
+				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("duplicate projection %q v%d", p.ID, p.Version)}
 			}
 			r.projections[k] = projectionEntry{module: key, def: p}
 		}
@@ -269,24 +277,24 @@ func (r *Registry) checkRequirements() error {
 	visit = func(key ModuleKey) error {
 		switch state[key] {
 		case 1:
-			return &Error{Code: CodeInvalid, Detail: fmt.Sprintf("module requirement cycle through %s/%s", key.Source, key.ID)}
+			return &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module requirement cycle through %s/%s", key.Source, key.ID)}
 		case 2:
 			return nil
 		}
 		state[key] = 1
 		for _, req := range r.modules[key].Requires {
 			if req.Source == "" {
-				return &Error{Code: CodeInvalid, Detail: fmt.Sprintf("module %s/%s: requirement on %q has no source", key.Source, key.ID, req.Module)}
+				return &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module %s/%s: requirement on %q has no source", key.Source, key.ID, req.Module)}
 			}
 			depKey := req.Key()
 			dep, ok := r.modules[depKey]
 			if !ok {
-				return &Error{Code: CodeInvalid, Detail: fmt.Sprintf("module %s/%s requires unregistered module %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
+				return &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module %s/%s requires unregistered module %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
 			}
 			for _, typ := range req.Events {
 				entry, ok := r.events[typ]
 				if !ok || entry.module != dep.Key() {
-					return &Error{Code: CodeInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s requires event not owned by %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
+					return &ledger.Error{Code: ledger.CodeInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s requires event not owned by %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
 				}
 			}
 			if err := visit(depKey); err != nil {
@@ -307,10 +315,10 @@ func (r *Registry) checkRequirements() error {
 		for _, typ := range p.def.Consumes {
 			entry, ok := r.events[typ]
 			if !ok {
-				return &Error{Code: CodeInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes unregistered event", k.id)}
+				return &ledger.Error{Code: ledger.CodeInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes unregistered event", k.id)}
 			}
 			if _, inScope := scope[entry.module]; !inScope {
-				return &Error{Code: CodeInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes event of module %s/%s outside its Requires", k.id, entry.module.Source, entry.module.ID)}
+				return &ledger.Error{Code: ledger.CodeInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes event of module %s/%s outside its Requires", k.id, entry.module.Source, entry.module.ID)}
 			}
 		}
 	}
@@ -334,35 +342,35 @@ func (r *Registry) scopeOf(key ModuleKey) map[ModuleKey]struct{} {
 func (r *Registry) registerEvent(m *ModuleDescriptor, key ModuleKey, def EventDefinition) error {
 	prefix := ModulePrefix(m.Source, m.ID)
 	if !strings.HasPrefix(string(def.Type), string(prefix)) || len(def.Type) == len(prefix) {
-		return &Error{Code: CodeInvalid, Type: def.Type, Detail: fmt.Sprintf("event type is not under module %s/%s", key.Source, key.ID)}
+		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: fmt.Sprintf("event type is not under module %s/%s", key.Source, key.ID)}
 	}
 	if _, dup := r.events[def.Type]; dup {
-		return &Error{Code: CodeInvalid, Type: def.Type, Detail: "duplicate event type"}
+		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "duplicate event type"}
 	}
 	if len(def.Codecs) == 0 {
-		return &Error{Code: CodeInvalid, Type: def.Type, Detail: "no codec for any payload version"}
+		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "no codec for any payload version"}
 	}
 	for v, codec := range def.Codecs {
 		if v == 0 || codec == nil {
-			return &Error{Code: CodeInvalid, Type: def.Type, Detail: "nil codec or zero payload version"}
+			return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "nil codec or zero payload version"}
 		}
 		if def.Version == 0 || v > def.Version && !explicitVersion(m.Events, def.Type) {
 			def.Version = max(def.Version, v)
 		}
 	}
 	if def.Codecs[def.Version] == nil {
-		return &Error{Code: CodeInvalid, Type: def.Type, Detail: fmt.Sprintf("write version %d has no codec", def.Version)}
+		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: fmt.Sprintf("write version %d has no codec", def.Version)}
 	}
 	if def.Domain == "" {
-		return &Error{Code: CodeInvalid, Type: def.Type, Detail: "event declares no stream domain"}
+		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "event declares no stream domain"}
 	}
 	if se, declared := r.streams[def.Domain]; !declared || se.module != key {
-		return &Error{Code: CodeInvalid, Type: def.Type,
+		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type,
 			Detail: fmt.Sprintf("event names stream domain %q, which module %s/%s does not declare", def.Domain, key.Source, key.ID)}
 	}
 	for _, b := range def.Bindings {
 		if err := b.validate(); err != nil {
-			return &Error{Code: CodeInvalid, Type: def.Type, Detail: err.Error()}
+			return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: err.Error()}
 		}
 	}
 	r.events[def.Type] = eventEntry{module: key, def: def}
@@ -371,7 +379,7 @@ func (r *Registry) registerEvent(m *ModuleDescriptor, key ModuleKey, def EventDe
 
 // explicitVersion reports whether the module declared a write Version for
 // typ, in which case Build leaves it alone.
-func explicitVersion(events []EventDefinition, typ EventType) bool {
+func explicitVersion(events []EventDefinition, typ ledger.EventType) bool {
 	for i := range events {
 		if events[i].Type == typ {
 			return events[i].Version != 0
@@ -380,7 +388,7 @@ func explicitVersion(events []EventDefinition, typ EventType) bool {
 	return false
 }
 
-func (r *Registry) LookupEvent(typ EventType) (ModuleKey, EventDefinition, bool) {
+func (r *Registry) LookupEvent(typ ledger.EventType) (ModuleKey, EventDefinition, bool) {
 	e, ok := r.events[typ]
 	return e.module, e.def, ok
 }
@@ -394,7 +402,7 @@ func (r *Registry) LookupStream(domain string) (ModuleKey, StreamDefinition, boo
 
 // ModuleOf names the module an EventType belongs to by its
 // <source>/<module>/ prefix; false when the prefix names no registered module.
-func (r *Registry) ModuleOf(typ EventType) (ModuleKey, bool) {
+func (r *Registry) ModuleOf(typ ledger.EventType) (ModuleKey, bool) {
 	parts := strings.SplitN(string(typ), "/", 3)
 	if len(parts) == 3 {
 		key := ModuleKey{Source: SourceID(parts[0]), ID: ModuleID(parts[1])}
@@ -420,28 +428,28 @@ func (r *Registry) Projections() []ProjectionDefinition {
 }
 
 // ModulePrefix is the EventType prefix of one module: <source>/<module>/.
-func ModulePrefix(source SourceID, id ModuleID) EventType {
-	return EventType(fmt.Sprintf("%s/%s/", source, id))
+func ModulePrefix(source SourceID, id ModuleID) ledger.EventType {
+	return ledger.EventType(fmt.Sprintf("%s/%s/", source, id))
 }
 
 // Encode validates value, encodes it with the codec of the event type's
 // write Version and records that Version as the payload's `v` (EXT-REG-2).
-func (r *Registry) Encode(typ EventType, value any) (jsonstable.Value, error) {
+func (r *Registry) Encode(typ ledger.EventType, value any) (jsonstable.Value, error) {
 	_, def, ok := r.LookupEvent(typ)
 	if !ok {
-		return jsonstable.Value{}, &Error{Code: CodeUnknownEvent, Type: typ}
+		return jsonstable.Value{}, &ledger.Error{Code: ledger.CodeUnknownEvent, Type: typ}
 	}
 	codec := def.Codecs[def.Version]
 	if err := codec.Validate(value); err != nil {
-		return jsonstable.Value{}, &Error{Code: CodeCodec, Type: typ, Detail: err.Error()}
+		return jsonstable.Value{}, &ledger.Error{Code: ledger.CodeCodec, Type: typ, Detail: err.Error()}
 	}
 	body, err := codec.Encode(value)
 	if err != nil {
-		return jsonstable.Value{}, &Error{Code: CodeCodec, Type: typ, Detail: err.Error()}
+		return jsonstable.Value{}, &ledger.Error{Code: ledger.CodeCodec, Type: typ, Detail: err.Error()}
 	}
 	wire, err := addVersion(body, def.Version)
 	if err != nil {
-		return jsonstable.Value{}, &Error{Code: CodeCodec, Type: typ, Detail: err.Error()}
+		return jsonstable.Value{}, &ledger.Error{Code: ledger.CodeCodec, Type: typ, Detail: err.Error()}
 	}
 	// The canonical Encode/Decode/Encode round trip is a module test
 	// obligation (EXT-COD-1), not re-verified per Encode.
@@ -450,7 +458,7 @@ func (r *Registry) Encode(typ EventType, value any) (jsonstable.Value, error) {
 
 // Decode selects the codec by (EventType, v). Unknown types or versions are
 // returned as Unknown with the raw payload retained (EXT-REG-3).
-func (r *Registry) Decode(e Event) (DecodedEvent, error) {
+func (r *Registry) Decode(e ledger.Event) (DecodedEvent, error) {
 	out := DecodedEvent{Event: e}
 	module, def, ok := r.LookupEvent(e.Type)
 	if !ok {
@@ -461,7 +469,7 @@ func (r *Registry) Decode(e Event) (DecodedEvent, error) {
 	out.Module = module
 	body, v, err := splitVersion(e.Payload)
 	if err != nil {
-		return out, &Error{Code: CodeCodec, Type: e.Type, Detail: err.Error()}
+		return out, &ledger.Error{Code: ledger.CodeCodec, Type: e.Type, Detail: err.Error()}
 	}
 	out.Version = v
 	codec := def.Codecs[v]
@@ -471,7 +479,7 @@ func (r *Registry) Decode(e Event) (DecodedEvent, error) {
 	}
 	value, err := codec.Decode(body)
 	if err != nil {
-		return out, &Error{Code: CodeCodec, Type: e.Type, Detail: err.Error()}
+		return out, &ledger.Error{Code: ledger.CodeCodec, Type: e.Type, Detail: err.Error()}
 	}
 	out.Value = value
 	return out, nil
@@ -575,45 +583,3 @@ func StrictDecode(wire jsonstable.Value, dst any) error {
 }
 
 // --- errors -------------------------------------------------------------------
-
-type ErrorCode string
-
-const (
-	CodeInvalid       ErrorCode = "invalid"
-	CodeUnknownEvent  ErrorCode = "unknown_event"
-	CodeCodec         ErrorCode = "codec"
-	CodeBinding       ErrorCode = "binding"
-	CodeConflict      ErrorCode = "conflict"
-	CodeOwnershipLost ErrorCode = "ownership_lost"
-	// CodeProjectionUnhealthy: a derived projection failed to fold a commit
-	// the Writer applied; its state is frozen at the last good commit until
-	// the Writer reopens and rebuilds it (EXT-PRJ-9).
-	CodeProjectionUnhealthy ErrorCode = "projection_unhealthy"
-	// CodeUnknownOutcome: an Append failed in a way that leaves what reached
-	// the log unknown (an IO error, or the kernel's ErrHandleFailed). The
-	// Writer's head and projections may no longer match the log, so it fails
-	// closed; the host reopens and replays (EXT-WRT-4).
-	CodeUnknownOutcome ErrorCode = "unknown_outcome"
-)
-
-type Error struct {
-	Code   ErrorCode
-	Type   EventType
-	Detail string
-}
-
-func (e *Error) Error() string {
-	s := "ledger: " + string(e.Code)
-	if e.Type != "" {
-		s += " " + string(e.Type)
-	}
-	if e.Detail != "" {
-		s += ": " + e.Detail
-	}
-	return s
-}
-
-func (e *Error) Is(target error) bool {
-	t, ok := target.(*Error)
-	return ok && t.Code == e.Code
-}

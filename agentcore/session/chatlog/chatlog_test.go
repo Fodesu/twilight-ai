@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -13,9 +14,9 @@ import (
 	"testing"
 )
 
-func registry(t *testing.T) *ledger.Registry {
+func registry(t *testing.T) *module.Registry {
 	t.Helper()
-	r, err := ledger.BuildRegistry(runmod.Module, Module)
+	r, err := module.BuildRegistry(runmod.Module, Module)
 	if err != nil {
 		t.Fatal(err)
 	}

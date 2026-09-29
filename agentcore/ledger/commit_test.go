@@ -7,11 +7,6 @@ import (
 	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
-// rootHeader builds a root segment header with identity id.
-func rootHeader(id string) SegmentHeader {
-	return SegmentHeader{ID: SegmentID(id)}
-}
-
 func oneEventBatch(stream Domain, typ, payload string) EventBatch {
 	return EventBatch{Domain: stream, Events: []Event{
 		{Type: EventType(typ), RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(payload)},
@@ -120,35 +115,6 @@ func TestValidateCommit(t *testing.T) {
 				t.Fatalf("ValidateCommit = %v, want %q", err, tc.want)
 			}
 		})
-	}
-}
-
-func TestValidateHeader(t *testing.T) {
-	cases := []struct {
-		name string
-		h    SegmentHeader
-		ok   bool
-	}{
-		{"root", rootHeader("seg"), true},
-		{"child", SegmentHeader{ID: "child", Parent: &CommitRef{Segment: "seg", Seq: 3}}, true},
-		{"missing id", SegmentHeader{}, false},
-		{"edge without segment", SegmentHeader{ID: "child", Parent: &CommitRef{Seq: 3}}, false},
-		{"extension key without ID", SegmentHeader{ID: "seg", Ext: Extensions{{Source: "twilight"}: RawValue(`1`)}}, false},
-		{"extension is not JSON", SegmentHeader{ID: "seg", Ext: Extensions{{Source: "twilight", ID: "run"}: RawValue(`{`)}}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.h.Validate()
-			if (err == nil) != tc.ok {
-				t.Fatalf("ValidateHeader = %v, want ok=%v", err, tc.ok)
-			}
-		})
-	}
-	if seed := rootHeader("seg").Seed(); seed != (Head{}) {
-		t.Fatalf("root seed = %+v", seed)
-	}
-	if seed := (SegmentHeader{ID: "c", Parent: &CommitRef{Segment: "seg", Seq: 3}}).Seed(); seed != (Head{Next: 4}) {
-		t.Fatalf("child seed = %+v", seed)
 	}
 }
 

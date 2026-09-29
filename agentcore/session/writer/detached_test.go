@@ -3,6 +3,7 @@ package writer
 import (
 	"context"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"testing"
 )
 
@@ -17,12 +18,12 @@ type nestedState struct {
 func TestProjectionReadsAreDetached(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	module := noteModule("nested")
-	id := ledger.ProjectionID(string(tpfx("nested")) + "state")
-	module.Projections = []ledger.ProjectionDefinition{{
+	mod := noteModule("nested")
+	id := module.ProjectionID(string(tpfx("nested")) + "state")
+	mod.Projections = []module.ProjectionDefinition{{
 		ID: id, Version: 1, Consumes: []ledger.EventType{tpfx("nested") + "note"},
 		Initial: func() (any, error) { return nestedState{Entries: map[string][]*nestedEntry{}}, nil },
-		Apply: func(state any, event ledger.DecodedEvent) (any, error) {
+		Apply: func(state any, event module.DecodedEvent) (any, error) {
 			s := state.(nestedState)
 			entries := make(map[string][]*nestedEntry, len(s.Entries)+1)
 			for key, value := range s.Entries {
@@ -32,10 +33,10 @@ func TestProjectionReadsAreDetached(t *testing.T) {
 			entries[text] = []*nestedEntry{{Values: []string{text}}}
 			return nestedState{Entries: entries}, nil
 		},
-		StateCodec: ledger.JSONStateCodec[nestedState]{},
+		StateCodec: module.JSONStateCodec[nestedState]{},
 	}}
 	var err error
-	f.registry, err = ledger.BuildRegistry(module)
+	f.registry, err = module.BuildRegistry(mod)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"strings"
 	"testing"
@@ -35,13 +36,13 @@ func (withdrawnV1) Decode(w jsonstable.Value) (any, error) {
 // next version and still decodes the old wire to the current fact.
 func TestFactCodecHistoryDecodesEveryVersion(t *testing.T) {
 	const name = "model_step_withdrawn"
-	codecs, current := factCodecs(name, map[ledger.PayloadVersion]ledger.PayloadCodec{1: withdrawnV1{}})
+	codecs, current := factCodecs(name, map[module.PayloadVersion]module.PayloadCodec{1: withdrawnV1{}})
 	if current != 2 || len(codecs) != 2 {
 		t.Fatalf("history = %d codecs at version %d, want 2 at 2", len(codecs), current)
 	}
-	module := ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: ModuleID,
-		Streams: []ledger.StreamDefinition{streamDefinition}, Events: []ledger.EventDefinition{eventDefinition(name, codecs, current)}}
-	reg, err := ledger.BuildRegistry(module)
+	mod := module.ModuleDescriptor{Source: module.SourceTwilight, ID: ModuleID,
+		Streams: []module.StreamDefinition{streamDefinition}, Events: []module.EventDefinition{eventDefinition(name, codecs, current)}}
+	reg, err := module.BuildRegistry(mod)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func TestFactCodecHistoryDecodesEveryVersion(t *testing.T) {
 	cases := []struct {
 		name    string
 		payload string
-		version ledger.PayloadVersion
+		version module.PayloadVersion
 	}{
 		{"superseded wire", `{"runId":"r1","step":"s1","v":1}`, 1},
 		{"current wire", wire.String(), 2},
@@ -88,5 +89,5 @@ func TestFactCodecHistoryMustBeContiguous(t *testing.T) {
 			t.Fatal("a history without version 1 built")
 		}
 	}()
-	factCodecs("model_step_withdrawn", map[ledger.PayloadVersion]ledger.PayloadCodec{2: withdrawnV1{}})
+	factCodecs("model_step_withdrawn", map[module.PayloadVersion]module.PayloadCodec{2: withdrawnV1{}})
 }

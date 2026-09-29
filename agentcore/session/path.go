@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 )
 
 // Span is one segment's contribution on a session path. From is the first
 // stitched CommitSeq it contributes. End is closed for every span except
 // the last, which stays open: that span is the session's only append target.
 type Span struct {
-	Segment ledger.SegmentID `json:"segment"`
+	Segment SegmentID        `json:"segment"`
 	From    ledger.CommitSeq `json:"from"`
 	End     Bound            `json:"end"`
 }
@@ -24,11 +25,11 @@ type Path []Span
 // Validate checks the path shape against tip: the last span names tip and
 // is open, earlier spans are closed, segments are unique, and each span
 // starts where the previous one stopped.
-func (p Path) Validate(tip ledger.SegmentID) error {
+func (p Path) Validate(tip SegmentID) error {
 	if len(p) == 0 {
 		return fmt.Errorf("empty path")
 	}
-	seen := make(map[ledger.SegmentID]struct{}, len(p))
+	seen := make(map[SegmentID]struct{}, len(p))
 	for i, span := range p {
 		if span.Segment == "" {
 			return fmt.Errorf("span %d: empty segment", i)
@@ -65,9 +66,9 @@ func (p Path) Validate(tip ledger.SegmentID) error {
 // Branch copies the prefix of p through the span that contains seq, closes
 // that span at seq, and appends an open span for next. Spans after that one
 // are dropped. p is unchanged. The returned edge is the parent pointer of next.
-func (p Path) Branch(seq ledger.CommitSeq, next ledger.SegmentID) (Path, ledger.CommitRef, error) {
+func (p Path) Branch(seq ledger.CommitSeq, next SegmentID) (Path, CommitRef, error) {
 	if len(p) == 0 {
-		return nil, ledger.CommitRef{}, fmt.Errorf("empty path")
+		return nil, CommitRef{}, fmt.Errorf("empty path")
 	}
 	for i := range p {
 		span := p[i]
@@ -78,9 +79,9 @@ func (p Path) Branch(seq ledger.CommitSeq, next ledger.SegmentID) (Path, ledger.
 		copy(out, p[:i])
 		out[i] = Span{Segment: span.Segment, From: span.From, End: ThroughBound(seq)}
 		out[i+1] = Span{Segment: next, From: seq + 1, End: OpenBound()}
-		return out, ledger.CommitRef{Segment: span.Segment, Seq: seq}, nil
+		return out, CommitRef{Segment: span.Segment, Seq: seq}, nil
 	}
-	return nil, ledger.CommitRef{}, fmt.Errorf("commit %d is outside the path", seq)
+	return nil, CommitRef{}, fmt.Errorf("commit %d is outside the path", seq)
 }
 
 // MaxBound is the retention bound of the ends that still name a segment:
@@ -151,7 +152,7 @@ type LoadedPath struct {
 // range it contributes. A closed end stops at End.Through. The tip's end
 // is open and contributes through its live head.
 type LoadedSpan struct {
-	Segment ledger.Segment
+	Segment Segment
 	// From is the first stitched CommitSeq the segment contributes.
 	From ledger.CommitSeq
 	// End is the last stitched CommitSeq it contributes. The tip's End is
@@ -160,10 +161,10 @@ type LoadedSpan struct {
 }
 
 // Tip is the segment the Session appends to.
-func (a *LoadedPath) Tip() ledger.Segment { return a.Segments[len(a.Segments)-1].Segment }
+func (a *LoadedPath) Tip() Segment { return a.Segments[len(a.Segments)-1].Segment }
 
 // Header is the tip's creation record: the Session's public header.
-func (a *LoadedPath) Header() ledger.SegmentHeader { return a.Tip().Header }
+func (a *LoadedPath) Header() SegmentHeader { return a.Tip().Header }
 
 // At returns the loaded span that contributes seq.
 func (a *LoadedPath) At(seq ledger.CommitSeq) (LoadedSpan, bool) {
@@ -179,9 +180,9 @@ func (a *LoadedPath) At(seq ledger.CommitSeq) (LoadedSpan, bool) {
 // to the root. It is the fallback for a root stored before paths were
 // written. Each segment contributes from its seed through the child edge's
 // seq; the tip stays open.
-func loadPathFromEdges(ctx context.Context, store SegmentStore, tip ledger.SegmentID) (*LoadedPath, error) {
-	var chain []ledger.Segment
-	seen := map[ledger.SegmentID]bool{}
+func loadPathFromEdges(ctx context.Context, store SegmentStore, tip SegmentID) (*LoadedPath, error) {
+	var chain []Segment
+	seen := map[SegmentID]bool{}
 	for id := tip; ; {
 		if seen[id] {
 			return nil, &Error{Code: ErrCorrupt, Operation: "path", Detail: fmt.Sprintf("segment %s is its own ancestor", id)}
@@ -267,14 +268,14 @@ func (a *LoadedPath) Read(ctx context.Context, store SegmentStore, from ledger.C
 }
 
 // ReadStream returns, in stitched order, the commits of the loaded path that
-// carry a batch of stream: every segment's under LineageSession, the tip's
-// own under LineageSegment (SES-FRK-5). Each segment is read through
+// carry a batch of stream: every segment's under Inherited, the tip's own
+// under Own. Each segment is read through
 // SegmentStore.ReadSegmentStream within the range it contributes.
-func (a *LoadedPath) ReadStream(ctx context.Context, store SegmentStore, stream ledger.Domain, lineage ledger.StreamLineage) ([]ledger.Commit, error) {
+func (a *LoadedPath) ReadStream(ctx context.Context, store SegmentStore, stream ledger.Domain, lineage module.Inheritance) ([]ledger.Commit, error) {
 	var out []ledger.Commit
 	tip := len(a.Segments) - 1
 	first := 0
-	if lineage == ledger.LineageSegment {
+	if lineage == module.Own {
 		first = tip
 	}
 	for i := first; i <= tip; i++ {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
@@ -22,7 +23,7 @@ import (
 func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-protocol"
-	registry, err := ledger.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
+	registry, err := module.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

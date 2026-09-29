@@ -1,9 +1,10 @@
-package ledger
+package module
 
 import (
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"strings"
 	"testing"
 )
@@ -26,12 +27,12 @@ var refsExtractor = BindingExtractorFunc(func(value any) ([]artifact.BindingID, 
 })
 
 // tpfx is the first-party prefix of a test module.
-func tpfx(id ModuleID) EventType { return ModulePrefix(SourceTwilight, id) }
+func tpfx(id ModuleID) ledger.EventType { return ModulePrefix(SourceTwilight, id) }
 
 // ownStream declares one singleton, session-lineage domain: the shape of a
 // module that writes one stream per Session.
 func ownStream(domain string) []StreamDefinition {
-	return []StreamDefinition{{Domain: domain, Lineage: LineageSession}}
+	return []StreamDefinition{{Domain: domain, Inheritance: Inherited}}
 }
 
 func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
@@ -43,7 +44,7 @@ func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
 			{Type: tpfx(id) + "hint", Domain: string(id), Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []ProjectionDefinition{{
-			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []EventType{typ},
+			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return noteState{}, nil },
 			Apply: func(state any, e DecodedEvent) (any, error) {
 				s := state.(noteState)
@@ -64,9 +65,9 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 		"unregistered dependency": {noteModule("a", ModuleRequirement{Source: SourceTwilight, Module: "zzz"})},
 		"cycle":                   {noteModule("a", ModuleRequirement{Source: SourceTwilight, Module: "b"}), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a"})},
 		"event not owned by the dependency": {noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
-			Events: []EventType{tpfx("b") + "note"}})},
+			Events: []ledger.EventType{tpfx("b") + "note"}})},
 		"event outside module": {{Source: SourceTwilight, ID: "a", Events: []EventDefinition{{Type: "twilight/b/x", Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}}}}},
-		"projection outside scope": {noteModule("a"), {Source: SourceTwilight, ID: "b", Projections: []ProjectionDefinition{{ID: "p", Version: 1, Consumes: []EventType{tpfx("a") + "note"},
+		"projection outside scope": {noteModule("a"), {Source: SourceTwilight, ID: "b", Projections: []ProjectionDefinition{{ID: "p", Version: 1, Consumes: []ledger.EventType{tpfx("a") + "note"},
 			Initial: func() (any, error) { return nil, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[noteState]{}}}}},
 	}
 	for name, modules := range cases {
@@ -75,7 +76,7 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 		}
 	}
 	if _, err := BuildRegistry(noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
-		Events: []EventType{tpfx("a") + "note"}})); err != nil {
+		Events: []ledger.EventType{tpfx("a") + "note"}})); err != nil {
 		t.Fatalf("valid registry: %v", err)
 	}
 }
@@ -131,11 +132,11 @@ func TestRegistrySchemaVersion(t *testing.T) {
 	if err != nil || wire.String() != `{"text":"hi","v":1}` {
 		t.Fatalf("encode = %s %v", wire, err)
 	}
-	decoded, err := r.Decode(Event{Type: typ, Payload: wire})
+	decoded, err := r.Decode(ledger.Event{Type: typ, Payload: wire})
 	if err != nil || decoded.Unknown || decoded.Value.(notePayload).Text != "hi" {
 		t.Fatalf("decode = %+v %v", decoded, err)
 	}
-	future, err := r.Decode(Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"hi","v":2}`)})
+	future, err := r.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"hi","v":2}`)})
 	if err != nil || !future.Unknown || future.Version != 2 {
 		t.Fatalf("future version = %+v %v", future, err)
 	}
@@ -249,7 +250,7 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	}
 
 	// A row written before the upgrade still decodes, through its own codec.
-	old, err := r.Decode(Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"old","v":1}`)})
+	old, err := r.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"old","v":1}`)})
 	if err != nil {
 		t.Fatalf("decode v1: %v", err)
 	}
@@ -259,13 +260,13 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	if old.Version != 1 || old.Value.(notePayload).Text != "v1:old" {
 		t.Fatalf("v1 row = version %d value %+v: the v1 codec did not run", old.Version, old.Value)
 	}
-	current, err := r.Decode(Event{Type: typ, Payload: wire})
+	current, err := r.Decode(ledger.Event{Type: typ, Payload: wire})
 	if err != nil || current.Unknown || current.Value.(notePayload).Text != "hi" {
 		t.Fatalf("v2 row = %+v %v", current, err)
 	}
 
 	// A version no codec claims is preserved raw rather than reinterpreted.
-	future, err := r.Decode(Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"x","v":3}`)})
+	future, err := r.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"x","v":3}`)})
 	if err != nil || !future.Unknown || future.Version != 3 {
 		t.Fatalf("v3 row = %+v %v, want Unknown v3", future, err)
 	}

@@ -24,7 +24,7 @@ func testLineage(t *testing.T, f Fixture) {
 	for i := 0; i < 4; i++ {
 		a = append(a, appendCommit(t, aw, "a"+string(rune('0'+i)), batch(chatStream(), "twilight/x/a", `{"n":`+string(rune('0'+i))+`}`)))
 	}
-	fork := func(child, parent session.SessionID, at ledger.Commit) ledger.SegmentHeader {
+	fork := func(child, parent session.SessionID, at ledger.Commit) session.SegmentHeader {
 		t.Helper()
 		h, err := forkAt(t, store, child, parent, at.Seq)
 		if err != nil {
@@ -138,9 +138,9 @@ func testLineage(t *testing.T, f Fixture) {
 	// reaches, whatever the caller computed. C's segment is D's parent and
 	// B's is B's tip.
 	if be, ok := store.(interface {
-		RemoveSegment(context.Context, ledger.SegmentID) error
+		RemoveSegment(context.Context, session.SegmentID) error
 	}); ok {
-		for _, seg := range []ledger.SegmentID{segC, segB} {
+		for _, seg := range []session.SegmentID{segC, segB} {
 			if err := be.RemoveSegment(ctx, seg); !session.IsCode(err, session.ErrReferenced) {
 				t.Fatalf("remove reached segment %s = %v, want referenced", seg, err)
 			}
@@ -167,7 +167,7 @@ func testLineage(t *testing.T, f Fixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	removed := map[ledger.SegmentID]bool{}
+	removed := map[session.SegmentID]bool{}
 	for _, id := range report.Removed {
 		removed[id] = true
 	}
@@ -224,7 +224,7 @@ func testSpanBound(t *testing.T, store session.Stores) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	removed := map[ledger.SegmentID]bool{}
+	removed := map[session.SegmentID]bool{}
 	for _, id := range report.Removed {
 		removed[id] = true
 	}

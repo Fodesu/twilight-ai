@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"sync"
 )
 
 type writerSet struct {
 	store     session.Store
-	registry  *ledger.Registry
+	registry  *module.Registry
 	admission Admission
 	opts      session.OpenOptions
 	cfg       WritersConfig
@@ -20,7 +21,7 @@ type writerSet struct {
 
 // NewWriters returns a Writers that opens each Session once and hands out the
 // same Writer afterwards (EXT-WRT-6).
-func NewWriters(store session.Store, registry *ledger.Registry, admission Admission, opts session.OpenOptions, cfg WritersConfig) Writers {
+func NewWriters(store session.Store, registry *module.Registry, admission Admission, opts session.OpenOptions, cfg WritersConfig) Writers {
 	return &writerSet{store: store, registry: registry, admission: admission, opts: opts, cfg: cfg, open: make(map[session.SessionID]Writer)}
 }
 

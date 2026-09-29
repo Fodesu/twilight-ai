@@ -1,9 +1,10 @@
-package ledger
+package module
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/ledger"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
 )
@@ -12,14 +13,14 @@ import (
 type ProjectionDefinition struct {
 	ID         ProjectionID
 	Version    ProjectionVersion
-	Consumes   []EventType
+	Consumes   []ledger.EventType
 	Initial    func() (any, error)
 	Apply      func(any, DecodedEvent) (any, error)
 	StateCodec PayloadCodec
 	// Inherits decides, per logical stream, what the fold takes from the
 	// commits a fork inherits (EXT-PRJ-8). nil follows the lineage each
-	// stream's domain declared: inherited batches of LineageSession domains
-	// are folded and those of LineageSegment domains are skipped, so a
+	// stream's domain declared: inherited batches of Inherited domains
+	// are folded and those of Own domains are skipped, so a
 	// child never interprets its parent's execution history as its own. A
 	// projection whose content lives in another module's segment-lineage
 	// facts declares InheritAll, or names the domains it takes with
@@ -37,14 +38,14 @@ type ProjectionDefinition struct {
 
 // InheritPolicy decides whether a projection folds the batches of one
 // logical stream from a fork's inherited prefix.
-type InheritPolicy func(Domain) bool
+type InheritPolicy func(ledger.Domain) bool
 
 // InheritAll folds every batch of inherited commits.
-func InheritAll(Domain) bool { return true }
+func InheritAll(ledger.Domain) bool { return true }
 
 // InheritStreams folds the listed stream domains of inherited commits.
 func InheritStreams(domains ...string) InheritPolicy {
-	return func(stream Domain) bool {
+	return func(stream ledger.Domain) bool {
 		for _, d := range domains {
 			if stream.Name == d {
 				return true
@@ -57,19 +58,19 @@ func InheritStreams(domains ...string) InheritPolicy {
 // inherits applies the definition's policy; nil follows the lineage the
 // stream's domain declared, and a domain no module declared is not
 // inherited.
-func (r *Registry) inherits(d *ProjectionDefinition, stream Domain) bool {
+func (r *Registry) inherits(d *ProjectionDefinition, stream ledger.Domain) bool {
 	if d.Inherits != nil {
 		return d.Inherits(stream)
 	}
 	_, def, ok := r.LookupStream(stream.Name)
-	return ok && def.Lineage == LineageSession
+	return ok && def.Inheritance == Inherited
 }
 
 // ProjectionScope is a definition bound to its module scope: the modules
 // whose unknown events the fold must not silently skip.
 type ProjectionScope struct {
 	Def      ProjectionDefinition
-	consumes map[EventType]struct{}
+	consumes map[ledger.EventType]struct{}
 	modules  map[ModuleKey]struct{}
 }
 
@@ -79,9 +80,9 @@ type ProjectionScope struct {
 func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionScope, error) {
 	def, module, ok := r.LookupProjection(id, v)
 	if !ok {
-		return nil, &Error{Code: CodeInvalid, Detail: fmt.Sprintf("unknown projection %q v%d", id, v)}
+		return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("unknown projection %q v%d", id, v)}
 	}
-	s := &ProjectionScope{Def: def, consumes: make(map[EventType]struct{}, len(def.Consumes)), modules: r.scopeOf(module)}
+	s := &ProjectionScope{Def: def, consumes: make(map[ledger.EventType]struct{}, len(def.Consumes)), modules: r.scopeOf(module)}
 	for _, t := range def.Consumes {
 		s.consumes[t] = struct{}{}
 	}
@@ -95,19 +96,19 @@ func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionSc
 // Consumes spans modules sees their events wherever the commits placed
 // them. It is pure with respect to the Registry: the same Scope and commits
 // always fold the same.
-func (r *Registry) Fold(s *ProjectionScope, state any, commits []Commit) (any, error) {
-	return r.FoldFrom(s, state, commits, SegmentHeader{})
+func (r *Registry) Fold(s *ProjectionScope, state any, commits []ledger.Commit) (any, error) {
+	return r.FoldFrom(s, state, commits, ledger.Head{})
 }
 
 // FoldFrom folds commits under the inheritance policy of the projection
 // (EXT-PRJ-8): header is the tip segment's header, whose Parent edge marks
 // the inherited prefix; commits at or below Parent.Seq contribute only the
-// batches the policy admits, by default those of LineageSession domains. A
+// batches the policy admits, by default those of Inherited domains. A
 // header without a Parent (a root, or a caller folding tip commits only)
 // inherits nothing and folds everything.
-func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []Commit, header SegmentHeader) (any, error) {
+func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []ledger.Commit, seed ledger.Head) (any, error) {
 	for i := range commits {
-		inherited := header.Parent != nil && commits[i].Seq <= header.Parent.Seq
+		inherited := commits[i].Seq < seed.Next
 		// index numbers every event of the commit in batch order, skipped
 		// batches included, so an event's Position does not depend on the
 		// projection folding it.
@@ -115,12 +116,12 @@ func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []Commit, hea
 		for j := range commits[i].Batches {
 			b := &commits[i].Batches[j]
 			if inherited && !r.inherits(&s.Def, b.Domain) {
-				index += Limit32(uint64(len(b.Events)))
+				index += ledger.Limit32(uint64(len(b.Events)))
 				continue
 			}
 			for _, e := range b.Events {
 				var err error
-				pos := Position{Commit: commits[i].Seq, Index: index}
+				pos := ledger.Position{Commit: commits[i].Seq, Index: index}
 				index++
 				state, err = r.applyEvent(s, state, pos, b.Domain, e)
 				if err != nil {
@@ -132,7 +133,7 @@ func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []Commit, hea
 	return state, nil
 }
 
-func (r *Registry) applyEvent(s *ProjectionScope, state any, pos Position, stream Domain, e Event) (any, error) {
+func (r *Registry) applyEvent(s *ProjectionScope, state any, pos ledger.Position, stream ledger.Domain, e ledger.Event) (any, error) {
 	seq := pos.Commit
 	entry, registered := r.events[e.Type]
 	if _, want := s.consumes[e.Type]; !want {
@@ -144,7 +145,7 @@ func (r *Registry) applyEvent(s *ProjectionScope, state any, pos Position, strea
 			// The registry is the only authority on Ignorable, and an
 			// unregistered type has no entry to consult: an in-scope event
 			// the registry does not know is an error (EXT-PRJ-2).
-			return nil, &Error{Code: CodeUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q: unregistered event of module %s/%s at commit %d", s.Def.ID, module.Source, module.ID, seq)}
+			return nil, &ledger.Error{Code: ledger.CodeUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q: unregistered event of module %s/%s at commit %d", s.Def.ID, module.Source, module.ID, seq)}
 		}
 		return state, nil
 	}
@@ -157,7 +158,7 @@ func (r *Registry) applyEvent(s *ProjectionScope, state any, pos Position, strea
 		if entry.def.Ignorable {
 			return state, nil
 		}
-		return nil, &Error{Code: CodeUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q cannot decode v%d at commit %d", s.Def.ID, decoded.Version, seq)}
+		return nil, &ledger.Error{Code: ledger.CodeUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q cannot decode v%d at commit %d", s.Def.ID, decoded.Version, seq)}
 	}
 	next, err := s.Def.Apply(state, decoded)
 	if err != nil {
@@ -177,21 +178,21 @@ type sealedCheckpoint struct {
 }
 
 // checkpointDigest is the digest an authoritative entry must carry.
-func checkpointDigest(id ProjectionID, v ProjectionVersion, through Head, state jsonstable.Value) jsonstable.Digest {
+func checkpointDigest(id ProjectionID, v ProjectionVersion, through ledger.Head, state jsonstable.Value) jsonstable.Digest {
 	preimage, _ := jsonstable.EncodeTypedPayload(1, checkpointDomain, []string{string(id), fmt.Sprint(uint64(v)), fmt.Sprint(uint64(through.Next)), string(state.Bytes())})
 	return jsonstable.DigestBytes(preimage)
 }
 
 // SealCheckpoint wraps an authoritative projection's encoded state with its
 // digest for the cache (EXT-PRJ-10).
-func SealCheckpoint(id ProjectionID, v ProjectionVersion, through Head, state jsonstable.Value) (jsonstable.Value, error) {
+func SealCheckpoint(id ProjectionID, v ProjectionVersion, through ledger.Head, state jsonstable.Value) (jsonstable.Value, error) {
 	return jsonstable.FromValue(sealedCheckpoint{State: state.Bytes(), Digest: checkpointDigest(id, v, through, state)})
 }
 
 // OpenCheckpoint unwraps a sealed authoritative entry, verifying its digest;
 // ok is false when the entry is not a checkpoint of this projection at
 // through, and the caller treats it as absent.
-func OpenCheckpoint(id ProjectionID, v ProjectionVersion, through Head, sealed jsonstable.Value) (jsonstable.Value, bool) {
+func OpenCheckpoint(id ProjectionID, v ProjectionVersion, through ledger.Head, sealed jsonstable.Value) (jsonstable.Value, bool) {
 	var c sealedCheckpoint
 	if err := json.Unmarshal(sealed.Bytes(), &c); err != nil || len(c.State) == 0 || c.Digest == "" {
 		return jsonstable.Value{}, false
@@ -213,7 +214,7 @@ func OpenCheckpoint(id ProjectionID, v ProjectionVersion, through Head, sealed j
 // the same interval (a deployment wanting none after Close wraps the policy
 // in AtClose). It also bounds the write side: a projection's whole state is
 // saved at most once per this many commits.
-const DefaultCacheEvery CommitSeq = 64
+const DefaultCacheEvery ledger.CommitSeq = 64
 
 // CachePolicy decides whether the Writer refreshes one projection's entry
 // in the projection cache. The Writer asks it after every applied commit,
@@ -227,7 +228,7 @@ const DefaultCacheEvery CommitSeq = 64
 // Writer always uses whatever entry it finds, whoever wrote it, because a
 // stale or hostile entry is rejected when it is validated against the
 // stream.
-type CachePolicy func(id ProjectionID, v ProjectionVersion, head, cached Head, closing bool) bool
+type CachePolicy func(id ProjectionID, v ProjectionVersion, head, cached ledger.Head, closing bool) bool
 
 // CacheEvery refreshes a projection once the head has moved n commits past
 // the entry the cache already covers, at Close as at any other time: the
@@ -236,11 +237,11 @@ type CachePolicy func(id ProjectionID, v ProjectionVersion, head, cached Head, c
 // Close would cost the state's size per Turn (EXT-PRJ-7); a deployment
 // that wants a clean Close to leave nothing to fold wraps the policy in
 // AtClose. n <= 0 means DefaultCacheEvery.
-func CacheEvery(n CommitSeq) CachePolicy {
+func CacheEvery(n ledger.CommitSeq) CachePolicy {
 	if n <= 0 {
 		n = DefaultCacheEvery
 	}
-	return func(_ ProjectionID, _ ProjectionVersion, head, cached Head, _ bool) bool {
+	return func(_ ProjectionID, _ ProjectionVersion, head, cached ledger.Head, _ bool) bool {
 		return head.Next >= cached.Next+n
 	}
 }
@@ -248,7 +249,7 @@ func CacheEvery(n CommitSeq) CachePolicy {
 // AtClose refreshes every entry that lags the head when the Writer closes,
 // and defers to p otherwise.
 func (p CachePolicy) AtClose() CachePolicy {
-	return func(id ProjectionID, v ProjectionVersion, head, cached Head, closing bool) bool {
+	return func(id ProjectionID, v ProjectionVersion, head, cached ledger.Head, closing bool) bool {
 		if closing {
 			return head.Next > cached.Next
 		}
@@ -260,7 +261,7 @@ func (p CachePolicy) AtClose() CachePolicy {
 // assembly uses it for a projection whose owning component refreshes the
 // cache itself at checkpoint points the Writer must not preempt.
 func (p CachePolicy) Exclude(ids ...ProjectionID) CachePolicy {
-	return func(id ProjectionID, v ProjectionVersion, head, cached Head, closing bool) bool {
+	return func(id ProjectionID, v ProjectionVersion, head, cached ledger.Head, closing bool) bool {
 		for _, excluded := range ids {
 			if id == excluded {
 				return false
@@ -268,29 +269,6 @@ func (p CachePolicy) Exclude(ids ...ProjectionID) CachePolicy {
 		}
 		return p(id, v, head, cached, closing)
 	}
-}
-
-// CommitAt reports whether c is the commit through records: the commit at
-// through.Next-1. History is append-only, so the position names the commit;
-// it is the one head-alignment predicate of EXT-PRJ-3, shared by the Writer
-// and the store reader so a cache entry is judged the same way on both
-// paths. The commit is the atomic unit of the ledger: there is no finer
-// boundary to check.
-func CommitAt(c Commit, through Head) bool {
-	return through.Next > 0 && c.Seq == through.Next-1
-}
-
-// OwnBoundary reports whether through is a commit boundary of the tip
-// segment itself: the commit before through.Next is one the tip wrote, not
-// one it inherits. A projection state was folded under the inheritance
-// policy of the tip that was current when it was recorded (EXT-PRJ-8); a
-// fork makes every earlier commit inherited, so an entry ending on an
-// inherited boundary is not started from (EXT-PRJ-3) and the fold restarts
-// from the initial state until the tip holds a commit of its own. It is
-// the second head-alignment predicate of EXT-PRJ-3, shared by the Writer
-// and the store reader like CommitAt.
-func OwnBoundary(header SegmentHeader, through Head) bool {
-	return through.Next > header.Seed().Next
 }
 
 // JSONStateCodec is a StateCodec for projection states that marshal to JSON.

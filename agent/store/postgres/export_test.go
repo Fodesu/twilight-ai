@@ -10,7 +10,7 @@ import (
 
 // SeedSegmentCommits bulk-loads commits into a segment for benchmarks: the
 // rows Append would write, without the per-commit transaction.
-func (d *DB) SeedSegmentCommits(ctx context.Context, segment ledger.SegmentID, commits []ledger.Commit) error {
+func (d *DB) SeedSegmentCommits(ctx context.Context, segment session.SegmentID, commits []ledger.Commit) error {
 	rows := make([][]any, 0, len(commits))
 	var streamRows [][]any
 	for i := range commits {
@@ -32,7 +32,7 @@ func (d *DB) SeedSegmentCommits(ctx context.Context, segment ledger.SegmentID, c
 }
 
 // IndexOf is the backend's Index, exposed for benchmarks.
-func (s *SessionStore) IndexOf(ctx context.Context, segment ledger.SegmentID) (session.CommitIndex, ledger.Head, error) {
+func (s *SessionStore) IndexOf(ctx context.Context, segment session.SegmentID) (session.CommitIndex, ledger.Head, error) {
 	return s.backend.Index(ctx, segment)
 }
 
@@ -42,10 +42,10 @@ func (s *SessionStore) DeleteRecord(ctx context.Context, sid session.SessionID) 
 	return s.backend.DeleteRecord(ctx, sid)
 }
 
-func (s *SessionStore) TruncateSegment(ctx context.Context, id ledger.SegmentID, through ledger.CommitSeq) (ledger.Head, []ledger.CommitID, error) {
+func (s *SessionStore) TruncateSegment(ctx context.Context, id session.SegmentID, through ledger.CommitSeq) (ledger.Head, []ledger.CommitID, error) {
 	return s.backend.TruncateSegment(ctx, id, through)
 }
 
-func (s *SessionStore) CreateSession(ctx context.Context, seg ledger.Segment, rec session.SessionRecord) error {
+func (s *SessionStore) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
 	return s.backend.CreateSession(ctx, seg, rec)
 }

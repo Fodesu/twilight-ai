@@ -3,7 +3,9 @@ package runmod
 import (
 	"errors"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/session"
 	"strings"
 	"testing"
 )
@@ -16,14 +18,14 @@ type guardView struct {
 
 func (guardView) Head() ledger.Head                                 { return ledger.Head{} }
 func (guardView) Epoch() ledger.Epoch                               { return 0 }
-func (guardView) Schema() ledger.PayloadVersion                     { return 1 }
-func (guardView) Header() ledger.SegmentHeader                      { return ledger.SegmentHeader{} }
+func (guardView) Schema() module.PayloadVersion                     { return 1 }
+func (guardView) Header() session.SegmentHeader                     { return session.SegmentHeader{} }
 func (guardView) Committed(ledger.CommitID) (bool, error)           { return false, nil }
 func (guardView) StreamHead(ledger.Domain) (ledger.StreamSeq, bool) { return 0, false }
 func (guardView) LookupCommit(ledger.CommitID) (ledger.Commit, bool, error) {
 	return ledger.Commit{}, false, nil
 }
-func (v guardView) Projection(ledger.ProjectionID, ledger.ProjectionVersion) (any, error) {
+func (v guardView) Projection(module.ProjectionID, module.ProjectionVersion) (any, error) {
 	return v.state, v.err
 }
 

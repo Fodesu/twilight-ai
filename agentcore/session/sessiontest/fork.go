@@ -3,12 +3,13 @@ package sessiontest
 import (
 	"context"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"testing"
 )
 
 // forkAt creates child from the history of parent at commit seq.
-func forkAt(t *testing.T, store session.Store, child, parent session.SessionID, seq ledger.CommitSeq) (ledger.SegmentHeader, error) {
+func forkAt(t *testing.T, store session.Store, child, parent session.SessionID, seq ledger.CommitSeq) (session.SegmentHeader, error) {
 	t.Helper()
 	return store.Create(context.Background(), session.CreateRequest{SessionID: child, CreatedAtUnixMilli: 2,
 		Fork: &session.ForkOrigin{Session: parent, Seq: seq}})
@@ -56,7 +57,7 @@ func testFork(t *testing.T, f Fixture) {
 	}
 	// The edge names the parent's segment, not the parent Session, and the
 	// anchor commit's position.
-	wantEdge := ledger.CommitRef{Segment: parent.ID, Seq: c1.Seq}
+	wantEdge := session.CommitRef{Segment: parent.ID, Seq: c1.Seq}
 	if child.Parent == nil || *child.Parent != wantEdge || child.ID == parent.ID {
 		t.Fatalf("child header = %+v, want edge %+v", child, wantEdge)
 	}
@@ -134,28 +135,28 @@ func testFork(t *testing.T, f Fixture) {
 			t.Fatalf("read from %d limit %d = %s more=%v %v, want %s more=%v", tc.from, tc.limit, ids(p.Commits), p.HasMore, err, tc.want, tc.hasMore)
 		}
 	}
-	// The lineage is the read's (SES-FRK-5). Read with LineageSession, the
+	// The lineage is the read's (SES-FRK-5). Read with Inherited, the
 	// child's chat stream counts the inherited events (c0, c1) before its own
-	// (c3). Read with LineageSegment, the child's r1 holds only c3: the
+	// (c3). Read with Own, the child's r1 holds only c3: the
 	// parent's c1 event is not the child segment's. The same r1 read with
-	// LineageSession stitches c1 before c3.
-	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Lineage: ledger.LineageSession})
+	// Inherited stitches c1 before c3.
+	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Inheritance: module.Inherited})
 	if err != nil || len(sp.Events) != 3 || sp.Events[0].Payload.String() != `{"n":0}` || sp.Events[2].Payload.String() != `{"n":3}` {
 		t.Fatalf("child chat stream = %+v %v", sp.Events, err)
 	}
-	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Lineage: ledger.LineageSession, From: 2})
+	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: chatStream(), Inheritance: module.Inherited, From: 2})
 	if len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
 		t.Fatalf("child chat stream from 2 = %+v", sp.Events)
 	}
-	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Lineage: ledger.LineageSegment})
+	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Inheritance: module.Own})
 	if err != nil || len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
 		t.Fatalf("child run stream = %+v %v, want the child's own event only", sp.Events, err)
 	}
-	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Lineage: ledger.LineageSession})
+	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Domain: runStream("r1"), Inheritance: module.Inherited})
 	if err != nil || len(sp.Events) != 2 || sp.Events[1].Payload.String() != `{"n":3}` {
 		t.Fatalf("child run stream stitched = %+v %v, want c1 then c3", sp.Events, err)
 	}
-	if sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "parent", Domain: runStream("r1"), Lineage: ledger.LineageSegment}); len(sp.Events) != 2 {
+	if sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "parent", Domain: runStream("r1"), Inheritance: module.Own}); len(sp.Events) != 2 {
 		t.Fatalf("parent run stream = %+v, want c1 and c2", sp.Events)
 	}
 

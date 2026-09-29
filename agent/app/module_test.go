@@ -6,6 +6,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
@@ -20,12 +21,12 @@ import (
 // audit notes as its own durable events and folds a trail projection over its
 // notes plus the chatlog inputs it Requires.
 const (
-	auditSource ledger.SourceID     = "example"
-	auditID     ledger.ModuleID     = "audit"
-	auditTrail  ledger.ProjectionID = "example/audit/trail"
+	auditSource module.SourceID     = "example"
+	auditID     module.ModuleID     = "audit"
+	auditTrail  module.ProjectionID = "example/audit/trail"
 )
 
-var auditNoteType = ledger.ModulePrefix(auditSource, auditID) + "note"
+var auditNoteType = module.ModulePrefix(auditSource, auditID) + "note"
 
 type auditNote struct {
 	InputID string `json:"inputId"`
@@ -37,23 +38,23 @@ type auditState struct {
 	Notes  []string `json:"notes"`
 }
 
-var auditModule = ledger.ModuleDescriptor{
+var auditModule = module.ModuleDescriptor{
 	Source: auditSource,
 	ID:     auditID,
-	Requires: []ledger.ModuleRequirement{{
-		Source: ledger.SourceTwilight, Module: chatlog.ModuleID,
+	Requires: []module.ModuleRequirement{{
+		Source: module.SourceTwilight, Module: chatlog.ModuleID,
 		Events: []ledger.EventType{chatlog.TypeInputSubmitted},
 	}},
-	Streams: []ledger.StreamDefinition{{Domain: "audit", Lineage: ledger.LineageSession}},
-	Events: []ledger.EventDefinition{{
+	Streams: []module.StreamDefinition{{Domain: "audit", Inheritance: module.Inherited}},
+	Events: []module.EventDefinition{{
 		Type: auditNoteType, Domain: "audit",
-		Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[auditNote]{}},
+		Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[auditNote]{}},
 	}},
-	Projections: []ledger.ProjectionDefinition{{
+	Projections: []module.ProjectionDefinition{{
 		ID: auditTrail, Version: 1,
 		Consumes: []ledger.EventType{auditNoteType, chatlog.TypeInputSubmitted},
 		Initial:  func() (any, error) { return auditState{}, nil },
-		Apply: func(state any, e ledger.DecodedEvent) (any, error) {
+		Apply: func(state any, e module.DecodedEvent) (any, error) {
 			s := state.(auditState)
 			switch v := e.Value.(type) {
 			case auditNote:
@@ -63,7 +64,7 @@ var auditModule = ledger.ModuleDescriptor{
 			}
 			return s, nil
 		},
-		StateCodec: ledger.JSONStateCodec[auditState]{},
+		StateCodec: module.JSONStateCodec[auditState]{},
 	}},
 }
 
@@ -73,7 +74,7 @@ var auditModule = ledger.ModuleDescriptor{
 // EXT-PRJ-2).
 func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	ctx := context.Background()
-	h := newHost(t, app.Config{Modules: []ledger.ModuleDescriptor{auditModule}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
+	h := newHost(t, app.Config{Modules: []module.ModuleDescriptor{auditModule}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
 	const sid session.SessionID = "s-app"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
@@ -146,7 +147,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 		for _, b := range c.Batches {
 			for _, e := range b.Events {
 				switch {
-				case strings.HasPrefix(string(e.Type), string(ledger.ModulePrefix(auditSource, auditID))):
+				case strings.HasPrefix(string(e.Type), string(module.ModulePrefix(auditSource, auditID))):
 					app++
 				case strings.HasPrefix(string(e.Type), "twilight/"):
 					core++

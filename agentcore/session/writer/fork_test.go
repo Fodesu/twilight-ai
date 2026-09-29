@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"testing"
 )
@@ -60,7 +61,7 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	load := func(w Writer, sid session.SessionID) []string {
-		state, _, err := w.Projections().Load(ctx, sid, ledger.ProjectionID(string(tpfx("a"))+"notes"), 1)
+		state, _, err := w.Projections().Load(ctx, sid, module.ProjectionID(string(tpfx("a"))+"notes"), 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +92,7 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	if got := load(parent, "s"); len(got) != 3 || got[2] != "three" {
 		t.Fatalf("parent projection = %v, want [one two three]", got)
 	}
-	state, head, err := session.NewProjectionReader(f.store, f.registry, nil).Load(ctx, "child", ledger.ProjectionID(string(tpfx("a"))+"notes"), 1)
+	state, head, err := session.NewProjectionReader(f.store, f.registry, nil).Load(ctx, "child", module.ProjectionID(string(tpfx("a"))+"notes"), 1)
 	if err != nil || len(state.(noteState).Notes) != 3 || head.Next != 3 {
 		t.Fatalf("observer = %+v %+v %v", state, head, err)
 	}
@@ -155,7 +156,7 @@ func TestClaimsFollowSegmentsThroughCollect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, _, err := child.Projections().Load(ctx, "child", ledger.ProjectionID(string(tpfx("a"))+"notes"), 1)
+	state, _, err := child.Projections().Load(ctx, "child", module.ProjectionID(string(tpfx("a"))+"notes"), 1)
 	if err != nil || len(state.(noteState).Notes) != 1 || state.(noteState).Notes[0] != "c1" {
 		t.Fatalf("child after deleting the parent = %+v %v", state, err)
 	}

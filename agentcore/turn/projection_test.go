@@ -1,7 +1,7 @@
 package turn
 
 import (
-	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"strings"
@@ -38,7 +38,7 @@ func TestSurfaceSettlesFromRunEnded(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i, ev := range tc.events {
-				if state, err = applySurface(state, ledger.DecodedEvent{Value: ev}); err != nil {
+				if state, err = applySurface(state, module.DecodedEvent{Value: ev}); err != nil {
 					if i != len(tc.events)-1 {
 						t.Fatalf("event %d: %v", i, err)
 					}

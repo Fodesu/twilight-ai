@@ -69,9 +69,9 @@ func TestTruncateObeysLiveSpan(t *testing.T) {
 		t.Fatalf("segment after stale truncate = %+v %v", commits, err)
 	}
 
-	err = store.CreateSession(ctx, ledger.Segment{Header: ledger.SegmentHeader{
+	err = store.CreateSession(ctx, session.Segment{Header: session.SegmentHeader{
 		ID:     "child",
-		Parent: &ledger.CommitRef{Segment: header.ID, Seq: c2.Seq},
+		Parent: &session.CommitRef{Segment: header.ID, Seq: c2.Seq},
 	}}, session.SessionRecord{
 		ID: "ghost", Tip: "child", CreatedAtUnixMilli: 3,
 		Path: session.Path{

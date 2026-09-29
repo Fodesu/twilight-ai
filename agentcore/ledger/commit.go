@@ -80,7 +80,7 @@ func ValidateBatches(batches []EventBatch) error {
 // CommitID and well-formed batches. Seq and duplicate CommitIDs are the
 // store's checks.
 func (c *Commit) Validate() error {
-	if err := validIdentity("CommitID", string(c.CommitID)); err != nil {
+	if err := ValidIdentity("CommitID", string(c.CommitID)); err != nil {
 		return err
 	}
 	return ValidateBatches(c.Batches)
@@ -89,7 +89,7 @@ func (c *Commit) Validate() error {
 // validateEventShape checks the event invariants: a non-empty valid-UTF-8
 // type and a canonical JSON object payload.
 func validateEventShape(typ EventType, payload jsonstable.Value) error {
-	if err := validIdentity("EventType", string(typ)); err != nil {
+	if err := ValidIdentity("EventType", string(typ)); err != nil {
 		return err
 	}
 	if payload.IsZero() {

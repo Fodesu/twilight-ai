@@ -17,6 +17,7 @@ import (
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/history"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -82,14 +83,14 @@ type Ports struct {
 	Observers []writer.CommitObserver
 	// Modules are application modules registered after the first-party four
 	// (EXT-APP).
-	Modules []ledger.ModuleDescriptor
+	Modules []module.ModuleDescriptor
 	// Clock stamps event times; nil selects time.Now.
 	Clock func() time.Time
 	// Cache stores folded projection states; nil asks the Store for a durable
 	// cache and falls back to an in-memory one (APP-MEM-2).
 	Cache session.ProjectionCache
 	// CacheEvery bounds how far a cached projection may fall behind the head;
-	// zero takes ledger.DefaultCacheEvery (EXT-PRJ-7).
+	// zero takes module.DefaultCacheEvery (EXT-PRJ-7).
 	CacheEvery ledger.CommitSeq
 	// Ownership configures how Writers open Sessions.
 	Ownership session.OpenOptions
@@ -107,7 +108,7 @@ type Ports struct {
 type Owner struct {
 	Store     session.Stores
 	Writers   writer.Writers
-	Registry  *ledger.Registry
+	Registry  *module.Registry
 	Admission writer.Admission
 	// Runs is the Run module's Session adapter: the Run core's store bound
 	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
@@ -158,8 +159,8 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	store := p.Store
 	// The first-party four are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
-	registry, err := ledger.BuildRegistryWithExtensions(
-		[]ledger.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
+	registry, err := module.BuildRegistryWithExtensions(
+		[]module.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +255,7 @@ func (a *Owner) Close(ctx context.Context) error {
 
 // CreateSession creates the Session; ext are the segment's module extension
 // slots (nil for none), carried opaquely by the kernel (SES-WIR-5).
-func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, ext ledger.Extensions) error {
+func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, ext module.Extensions) error {
 	_, err := a.Store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Ext: ext})
 	return err
 }
@@ -287,25 +288,25 @@ type ForkRequest struct {
 	At     ledger.CommitSeq
 	Child  session.SessionID
 	// Ext are the child segment's module extension slots (SES-WIR-5).
-	Ext ledger.Extensions
+	Ext module.Extensions
 }
 
 // Fork creates the child Session (SES-FRK-1) and claims the artifacts its
 // inherited prefix references (EXT-WRT-8). The child is not opened.
-func (a *Owner) Fork(ctx context.Context, req ForkRequest) (ledger.SegmentHeader, error) {
+func (a *Owner) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
 	if req.Parent == "" || req.Child == "" {
-		return ledger.SegmentHeader{}, errors.New("owner: fork requires parent and child session ids")
+		return session.SegmentHeader{}, errors.New("owner: fork requires parent and child session ids")
 	}
 	if req.Parent == req.Child {
-		return ledger.SegmentHeader{}, errors.New("owner: a session cannot fork itself")
+		return session.SegmentHeader{}, errors.New("owner: a session cannot fork itself")
 	}
 	// A fork point inside a Turn would hand the child a Turn whose Run is
 	// the parent's execution (SES-FRK-5): semantic history branches only at
 	// quiescent points (OWN-FRK-1).
 	if active, ok, err := a.History.ActiveAt(ctx, req.Parent, req.At); err != nil {
-		return ledger.SegmentHeader{}, err
+		return session.SegmentHeader{}, err
 	} else if ok {
-		return ledger.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: req.Child,
+		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: req.Child,
 			Detail: fmt.Sprintf("turn %s of %s is active at commit %d; fork at a quiescent point", active, req.Parent, req.At)}
 	}
 	return writer.Fork(ctx, a.Store, a.Registry, writer.ForkRequest{
@@ -316,13 +317,13 @@ func (a *Owner) Fork(ctx context.Context, req ForkRequest) (ledger.SegmentHeader
 // ForkBeforeTurn forks Parent at the commit just before turnID started
 // (OWN-FRK-2): the child holds the conversation as it was when that Turn's
 // inputs were still submitted and undelivered.
-func (a *Owner) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (ledger.SegmentHeader, error) {
+func (a *Owner) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	seq, err := a.History.StartCommit(ctx, parent, turnID)
 	if err != nil {
-		return ledger.SegmentHeader{}, err
+		return session.SegmentHeader{}, err
 	}
 	if seq == 0 {
-		return ledger.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
+		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
 			Detail: fmt.Sprintf("turn %s started in the first commit of %s; there is no prefix to fork", turnID, parent)}
 	}
 	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
@@ -364,6 +365,6 @@ func (a *Owner) Collect(ctx context.Context) (session.CollectReport, error) {
 
 // Projection reads any registered projection through the Session's Writer
 // (APP-MEM-1).
-func (a *Owner) Projection(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion) (any, ledger.Head, error) {
+func (a *Owner) Projection(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
 	return a.Projections.Load(ctx, sid, id, v)
 }

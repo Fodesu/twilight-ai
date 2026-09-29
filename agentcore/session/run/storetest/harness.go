@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -60,7 +61,7 @@ type harness struct {
 	ctx      context.Context
 	fixture  Fixture
 	store    session.Store
-	registry *ledger.Registry
+	registry *module.Registry
 	bindings artifact.BindingStore
 	ledger   artifact.RetentionLedger
 	frozen   frozen.Store
@@ -73,7 +74,7 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := ledger.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
+	registry, err := module.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

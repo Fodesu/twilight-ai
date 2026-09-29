@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 )
 
 // bindingRef is one artifact reference an event declares: the BindingID, the
@@ -12,7 +13,7 @@ import (
 // them.
 type bindingRef struct {
 	id    artifact.BindingID
-	decl  *ledger.BindingReferenceDefinition
+	decl  *module.BindingReferenceDefinition
 	where string
 }
 
@@ -32,7 +33,7 @@ func bindingIDs(refs []bindingRef) []artifact.BindingID {
 // each batch's stream attribution against the stream domain its event types
 // declare, extracts the artifact references the events declare and returns
 // the proposal batches. It touches no store.
-func encode(registry *ledger.Registry, group *SemanticGroup) ([]ledger.EventBatch, []bindingRef, string) {
+func encode(registry *module.Registry, group *SemanticGroup) ([]ledger.EventBatch, []bindingRef, string) {
 	batches := make([]ledger.EventBatch, len(group.Batches))
 	var refs []bindingRef
 	for bi, tb := range group.Batches {
@@ -78,7 +79,7 @@ func encode(registry *ledger.Registry, group *SemanticGroup) ([]ledger.EventBatc
 // declaration of the domain the event type names (EXT-STR-1). It returns a
 // human verdict for the commit's detail string; the declarations themselves
 // are validated at BuildRegistry.
-func checkStreamAffinity(stream ledger.Domain, def ledger.StreamDefinition, value any) string {
+func checkStreamAffinity(stream ledger.Domain, def module.StreamDefinition, value any) string {
 	if stream.Name != def.Domain {
 		return fmt.Sprintf("event belongs to stream domain %q but the batch is %s", def.Domain, stream)
 	}

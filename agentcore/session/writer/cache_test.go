@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"sync"
@@ -15,26 +16,26 @@ import (
 // the log again.
 
 const (
-	alphaID = ledger.ProjectionID("twilight/k/alpha")
-	betaID  = ledger.ProjectionID("twilight/k/beta")
+	alphaID = module.ProjectionID("twilight/k/alpha")
+	betaID  = module.ProjectionID("twilight/k/beta")
 )
 
 // applyCounter records how many events each projection folded, which is how a
 // test tells a fold that started from a cache entry from a full one.
 type applyCounter struct {
 	mu    sync.Mutex
-	calls map[ledger.ProjectionID]int
+	calls map[module.ProjectionID]int
 }
 
-func newApplyCounter() *applyCounter { return &applyCounter{calls: map[ledger.ProjectionID]int{}} }
+func newApplyCounter() *applyCounter { return &applyCounter{calls: map[module.ProjectionID]int{}} }
 
-func (c *applyCounter) inc(id ledger.ProjectionID) {
+func (c *applyCounter) inc(id module.ProjectionID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls[id]++
 }
 
-func (c *applyCounter) get(id ledger.ProjectionID) int {
+func (c *applyCounter) get(id module.ProjectionID) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls[id]
@@ -43,34 +44,34 @@ func (c *applyCounter) get(id ledger.ProjectionID) int {
 func (c *applyCounter) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.calls = map[ledger.ProjectionID]int{}
+	c.calls = map[module.ProjectionID]int{}
 }
 
 // cacheModule declares two projections over one event type. alpha stands for a
 // projection the Writer refreshes; beta for one whose owning component does.
-func cacheModule(c *applyCounter) ledger.ModuleDescriptor {
+func cacheModule(c *applyCounter) module.ModuleDescriptor {
 	typ := tpfx("k") + "row"
-	mk := func(id ledger.ProjectionID) ledger.ProjectionDefinition {
-		return ledger.ProjectionDefinition{
+	mk := func(id module.ProjectionID) module.ProjectionDefinition {
+		return module.ProjectionDefinition{
 			ID: id, Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return noteState{}, nil },
-			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
+			Apply: func(state any, e module.DecodedEvent) (any, error) {
 				c.inc(id)
 				s := state.(noteState)
 				s.Notes = append(append([]string(nil), s.Notes...), e.Value.(notePayload).Text)
 				return s, nil
 			},
-			StateCodec: ledger.JSONStateCodec[noteState]{},
+			StateCodec: module.JSONStateCodec[noteState]{},
 		}
 	}
-	return ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "k", Streams: noteStreams(),
-		Events:      []ledger.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[notePayload]{}}}},
-		Projections: []ledger.ProjectionDefinition{mk(alphaID), mk(betaID)}}
+	return module.ModuleDescriptor{Source: module.SourceTwilight, ID: "k", Streams: noteStreams(),
+		Events:      []module.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}}}},
+		Projections: []module.ProjectionDefinition{mk(alphaID), mk(betaID)}}
 }
 
 type cacheFixture struct {
 	store    session.Stores
-	registry *ledger.Registry
+	registry *module.Registry
 	cache    *session.MemoryProjectionCache
 	counter  *applyCounter
 }
@@ -78,7 +79,7 @@ type cacheFixture struct {
 func newCacheFixture(t testing.TB) *cacheFixture {
 	t.Helper()
 	f := &cacheFixture{store: filestoretest.Store(t), cache: session.NewMemoryProjectionCache(), counter: newApplyCounter()}
-	registry, err := ledger.BuildRegistry(cacheModule(f.counter))
+	registry, err := module.BuildRegistry(cacheModule(f.counter))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +119,7 @@ func (f *cacheFixture) commit(t testing.TB, w Writer, id string, texts ...string
 	}
 }
 
-func (f *cacheFixture) notes(t testing.TB, w Writer, id ledger.ProjectionID) []string {
+func (f *cacheFixture) notes(t testing.TB, w Writer, id module.ProjectionID) []string {
 	t.Helper()
 	state, _, err := w.Projections().Load(context.Background(), "s", id, 1)
 	if err != nil {
@@ -141,7 +142,7 @@ func (f *cacheFixture) commits(t *testing.T) []ledger.Commit {
 // encodeState builds the cached form of a projection state.
 func (f *cacheFixture) encodeState(t *testing.T, notes ...string) jsonstable.Value {
 	t.Helper()
-	v, err := ledger.JSONStateCodec[noteState]{}.Encode(noteState{Notes: notes})
+	v, err := module.JSONStateCodec[noteState]{}.Encode(noteState{Notes: notes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,14 +166,14 @@ func sameNotes(got, want []string) bool {
 func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
-	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(0).AtClose()})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: module.CacheEvery(0).AtClose()})
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
 	f.commit(t, w, "c3", "n3")
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []ledger.ProjectionID{alphaID, betaID} {
+	for _, id := range []module.ProjectionID{alphaID, betaID} {
 		_, through, ok, err := f.cache.Load(ctx, "s", id, 1)
 		if err != nil || !ok {
 			t.Fatalf("%s: entry after Close: ok=%v err=%v", id, ok, err)
@@ -183,8 +184,8 @@ func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 	}
 
 	f.counter.reset()
-	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(0).AtClose()})
-	for _, id := range []ledger.ProjectionID{alphaID, betaID} {
+	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: module.CacheEvery(0).AtClose()})
+	for _, id := range []module.ProjectionID{alphaID, betaID} {
 		if n := f.counter.get(id); n != 0 {
 			t.Errorf("%s folded %d events, want 0 when the entry covers the whole log", id, n)
 		}
@@ -199,7 +200,7 @@ func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 func TestWriterResumesOnlyTheUncoveredTail(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
-	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(0).AtClose()})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: module.CacheEvery(0).AtClose()})
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
 	f.commit(t, w, "c3", "n3")
@@ -294,7 +295,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
 	// A policy that declines alpha and defers for beta.
-	policy := ledger.CacheEvery(1).AtClose().Exclude(alphaID)
+	policy := module.CacheEvery(1).AtClose().Exclude(alphaID)
 
 	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: policy})
 	f.commit(t, w, "c1", "n1")
@@ -332,7 +333,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
-	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(3)})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: module.CacheEvery(3)})
 	// The first two commits are inside the interval: nothing is written yet.
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
@@ -357,7 +358,7 @@ func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 		t.Fatalf("entry after Close: through=%d err=%v, want 3 (the interval governs Close too)", through.Next, err)
 	}
 	f.counter.reset()
-	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(3)})
+	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: module.CacheEvery(3)})
 	if n := f.counter.get(alphaID); n != 1 {
 		t.Errorf("alpha folded %d events on reopen, want 1 (the commit past the entry)", n)
 	}
@@ -399,22 +400,22 @@ func TestAuthoritativeEntryMustVerify(t *testing.T) {
 	ctx := context.Background()
 	counter := newApplyCounter()
 	typ := tpfx("k") + "row"
-	mk := func(id ledger.ProjectionID, authoritative bool) ledger.ProjectionDefinition {
-		return ledger.ProjectionDefinition{
+	mk := func(id module.ProjectionID, authoritative bool) module.ProjectionDefinition {
+		return module.ProjectionDefinition{
 			ID: id, Version: 1, Consumes: []ledger.EventType{typ}, Authoritative: authoritative,
 			Initial: func() (any, error) { return noteState{}, nil },
-			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
+			Apply: func(state any, e module.DecodedEvent) (any, error) {
 				counter.inc(id)
 				s := state.(noteState)
 				s.Notes = append(append([]string(nil), s.Notes...), e.Value.(notePayload).Text)
 				return s, nil
 			},
-			StateCodec: ledger.JSONStateCodec[noteState]{},
+			StateCodec: module.JSONStateCodec[noteState]{},
 		}
 	}
-	registry, err := ledger.BuildRegistry(ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "k", Streams: noteStreams(),
-		Events:      []ledger.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[notePayload]{}}}},
-		Projections: []ledger.ProjectionDefinition{mk(alphaID, true), mk(betaID, false)}})
+	registry, err := module.BuildRegistry(module.ModuleDescriptor{Source: module.SourceTwilight, ID: "k", Streams: noteStreams(),
+		Events:      []module.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}}}},
+		Projections: []module.ProjectionDefinition{mk(alphaID, true), mk(betaID, false)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +423,7 @@ func TestAuthoritativeEntryMustVerify(t *testing.T) {
 	if _, err := f.store.Create(ctx, session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
-	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(1)})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: module.CacheEvery(1)})
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
 	if err := w.Close(ctx); err != nil {
@@ -433,14 +434,14 @@ func TestAuthoritativeEntryMustVerify(t *testing.T) {
 	if err != nil || !ok || through.Next != 2 {
 		t.Fatalf("alpha entry = ok:%v through:%d %v", ok, through.Next, err)
 	}
-	if _, verified := ledger.OpenCheckpoint(alphaID, 1, through, sealed); !verified {
+	if _, verified := module.OpenCheckpoint(alphaID, 1, through, sealed); !verified {
 		t.Fatal("alpha entry does not verify as a checkpoint of alpha at 2")
 	}
-	if _, verified := ledger.OpenCheckpoint(betaID, 1, through, sealed); verified {
+	if _, verified := module.OpenCheckpoint(betaID, 1, through, sealed); verified {
 		t.Fatal("alpha's checkpoint verified under beta's identity")
 	}
 	plain, _, _, _ := f.cache.Load(ctx, "s", betaID, 1)
-	if _, verified := ledger.OpenCheckpoint(betaID, 1, through, plain); verified {
+	if _, verified := module.OpenCheckpoint(betaID, 1, through, plain); verified {
 		t.Fatal("beta's plain entry passed as a checkpoint")
 	}
 	// A forged entry: valid state JSON, right position, no seal. The Writer
@@ -451,7 +452,7 @@ func TestAuthoritativeEntryMustVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	counter.reset()
-	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: ledger.CacheEvery(1)})
+	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: module.CacheEvery(1)})
 	if n := counter.get(alphaID); n != 2 {
 		t.Fatalf("alpha folded %d events on reopen, want 2 (forged checkpoint refused)", n)
 	}

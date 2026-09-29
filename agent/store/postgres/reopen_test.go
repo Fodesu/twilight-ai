@@ -5,6 +5,7 @@ import (
 	"github.com/felinics/twilight/agent/store/postgres"
 	"github.com/felinics/twilight/agent/store/postgres/postgrestest"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"sync"
@@ -12,7 +13,7 @@ import (
 	"testing/fstest"
 )
 
-const rowsProjection = ledger.ProjectionID("twilight/z/rows")
+const rowsProjection = module.ProjectionID("twilight/z/rows")
 
 type rowPayload struct {
 	Text string `json:"text"`
@@ -30,17 +31,17 @@ type foldCounter struct {
 func (c *foldCounter) get() int { c.mu.Lock(); defer c.mu.Unlock(); return c.calls }
 func (c *foldCounter) reset()   { c.mu.Lock(); c.calls = 0; c.mu.Unlock() }
 
-func counterRegistry(t testing.TB, c *foldCounter) *ledger.Registry {
+func counterRegistry(t testing.TB, c *foldCounter) *module.Registry {
 	t.Helper()
 	const typ ledger.EventType = "twilight/z/row"
-	r, err := ledger.BuildRegistry(ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "z",
-		Streams: []ledger.StreamDefinition{{Domain: "z", Lineage: ledger.LineageSession}},
-		Events: []ledger.EventDefinition{{Type: typ, Domain: "z",
-			Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[rowPayload]{}}}},
-		Projections: []ledger.ProjectionDefinition{{
+	r, err := module.BuildRegistry(module.ModuleDescriptor{Source: module.SourceTwilight, ID: "z",
+		Streams: []module.StreamDefinition{{Domain: "z", Inheritance: module.Inherited}},
+		Events: []module.EventDefinition{{Type: typ, Domain: "z",
+			Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[rowPayload]{}}}},
+		Projections: []module.ProjectionDefinition{{
 			ID: rowsProjection, Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return rowState{}, nil },
-			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
+			Apply: func(state any, e module.DecodedEvent) (any, error) {
 				c.mu.Lock()
 				c.calls++
 				c.mu.Unlock()
@@ -50,7 +51,7 @@ func counterRegistry(t testing.TB, c *foldCounter) *ledger.Registry {
 				s := state.(rowState)
 				return rowState{Rows: append(s.Rows, e.Value.(rowPayload).Text)}, nil
 			},
-			StateCodec: ledger.JSONStateCodec[rowState]{},
+			StateCodec: module.JSONStateCodec[rowState]{},
 		}}})
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +84,7 @@ func TestReopenFoldsOnlyTheTail(t *testing.T) {
 		}
 	}
 	writers := writer.NewWriters(first, counterRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: ledger.CacheEvery(0).AtClose()})
+		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: module.CacheEvery(0).AtClose()})
 	w, err := writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +102,7 @@ func TestReopenFoldsOnlyTheTail(t *testing.T) {
 	second := postgrestest.OpenDSN(t, dsn).Sessions()
 	counter.reset()
 	writers2 := writer.NewWriters(second, counterRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: second.ProjectionCache(), CachePolicy: ledger.CacheEvery(0).AtClose()})
+		writer.WritersConfig{Cache: second.ProjectionCache(), CachePolicy: module.CacheEvery(0).AtClose()})
 	w2, err := writers2.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"sync"
@@ -31,8 +32,8 @@ type Event struct {
 	// checkpoints; zero on a failure or progress Event.
 	Position ledger.Position
 	Row      ledger.Event
-	Module   ledger.ModuleKey
-	Version  ledger.PayloadVersion
+	Module   module.ModuleKey
+	Version  module.PayloadVersion
 	Value    any
 	Unknown  bool
 	Err      error
@@ -67,7 +68,7 @@ var ErrNoHistory = errors.New("observe: the bus has no history to catch up from"
 
 // Bus decodes applied commits and fans them out per Session.
 type Bus struct {
-	registry *ledger.Registry
+	registry *module.Registry
 	history  History
 	mu       sync.Mutex
 	subs     map[session.SessionID]map[*subscriber]struct{}
@@ -76,7 +77,7 @@ type Bus struct {
 // NewBus returns a Bus decoding through registry. history, when not nil,
 // lets SubscribeFrom catch up from the ledger; a Bus without it serves live
 // subscriptions only.
-func NewBus(registry *ledger.Registry, history History) *Bus {
+func NewBus(registry *module.Registry, history History) *Bus {
 	return &Bus{registry: registry, history: history, subs: make(map[session.SessionID]map[*subscriber]struct{})}
 }
 

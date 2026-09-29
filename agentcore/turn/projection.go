@@ -3,13 +3,14 @@ package turn
 import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
-const SurfaceProjectionID ledger.ProjectionID = "twilight/turn/surface"
+const SurfaceProjectionID module.ProjectionID = "twilight/turn/surface"
 
 type TurnStatus string
 
@@ -83,7 +84,7 @@ func (s *TurnSurface) Active() (TurnView, bool) {
 	return TurnView{}, false
 }
 
-var SurfaceProjection = ledger.ProjectionDefinition{
+var SurfaceProjection = module.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: []ledger.EventType{TypeStarted, TypeFailed, TypeSuperseded,
 		chatlog.TypeInputDelivered, runmod.Prefix + "run_ended"},
@@ -91,17 +92,17 @@ var SurfaceProjection = ledger.ProjectionDefinition{
 	// from the parent's run streams, whose domain is of segment lineage and
 	// would otherwise be skipped (EXT-PRJ-8); a fork point inside a Turn is
 	// refused by the Owner (OWN-FRK-1).
-	Inherits:      ledger.InheritAll,
+	Inherits:      module.InheritAll,
 	Authoritative: true,
 	Initial: func() (any, error) {
 		return TurnSurface{Turns: map[TurnID]TurnView{}, RunOwner: map[run.RunID]TurnID{}}, nil
 	},
 	Apply:      applySurface,
-	StateCodec: ledger.JSONStateCodec[TurnSurface]{},
+	StateCodec: module.JSONStateCodec[TurnSurface]{},
 }
 
 //nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
-func applySurface(state any, e ledger.DecodedEvent) (any, error) {
+func applySurface(state any, e module.DecodedEvent) (any, error) {
 	prev, ok := state.(TurnSurface)
 	if !ok {
 		return nil, fmt.Errorf("turn surface: state is %T", state)

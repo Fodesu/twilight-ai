@@ -179,8 +179,8 @@ func (c *Client) AllocateWorkspace(ctx context.Context, req AllocateWorkspaceReq
 }
 
 // Fork forks the Session.
-func (c *Client) Fork(ctx context.Context, parent session.SessionID, req ForkRequest) (ledger.SegmentHeader, error) {
-	var out ledger.SegmentHeader
+func (c *Client) Fork(ctx context.Context, parent session.SessionID, req ForkRequest) (session.SegmentHeader, error) {
+	var out session.SegmentHeader
 	err := c.do(ctx, stdhttp.MethodPost, sessionPath(parent, "/fork"), nil, req, &out)
 	return out, err
 }

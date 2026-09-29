@@ -1,10 +1,8 @@
-// Package ledger is the commit vocabulary and module framework of an
-// append-only event ledger: commits and their event batches, the segment
-// records that carry them, module identity and extension slots, and the
-// module framework built on that vocabulary — typed event codecs with
-// payload versions, stream declarations, and pure projections. The package
-// fixes shapes, ordering and atomicity; it names no domain of its own and
-// interprets no payload.
+// Package ledger is the commit vocabulary of an append-only event ledger:
+// commits and their event batches, the domains that group a commit's
+// events, positions and heads, and the classified errors every store over
+// it reports. The package fixes shapes, ordering and atomicity; it names no
+// domain of its own, interprets no payload and knows no host.
 package ledger
 
 import (

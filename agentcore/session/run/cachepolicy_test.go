@@ -2,6 +2,7 @@ package runmod
 
 import (
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"testing"
 )
 
@@ -10,8 +11,8 @@ import (
 // checkpoints the Runtime owns (RUN-CMT-2), and the interval is the
 // deployment's, not a constant of this module.
 func TestWriterCachePolicyExcludesTheMachineProjection(t *testing.T) {
-	other := ledger.ProjectionID("twilight/chatlog/surface")
-	for _, every := range []ledger.CommitSeq{1, ledger.DefaultCacheEvery, 4096} {
+	other := module.ProjectionID("twilight/chatlog/surface")
+	for _, every := range []ledger.CommitSeq{1, module.DefaultCacheEvery, 4096} {
 		policy := WriterCachePolicy(every)
 		// The interval has elapsed for any of these, so only the exclusion can
 		// decline.
@@ -31,7 +32,7 @@ func TestWriterCachePolicyExcludesTheMachineProjection(t *testing.T) {
 // The interval is honoured, including the zero value standing in for the
 // default, so a deployment that passes no interval still gets bounded work.
 func TestWriterCachePolicyHonoursTheInterval(t *testing.T) {
-	other := ledger.ProjectionID("twilight/chatlog/surface")
+	other := module.ProjectionID("twilight/chatlog/surface")
 	cases := []struct {
 		every  ledger.CommitSeq
 		head   ledger.CommitSeq
@@ -42,8 +43,8 @@ func TestWriterCachePolicyHonoursTheInterval(t *testing.T) {
 		{every: 8, head: 8, cached: 0, want: true},
 		{every: 8, head: 12, cached: 5, want: false},
 		{every: 8, head: 13, cached: 5, want: true},
-		{every: 0, head: ledger.DefaultCacheEvery - 1, cached: 0, want: false},
-		{every: 0, head: ledger.DefaultCacheEvery, cached: 0, want: true},
+		{every: 0, head: module.DefaultCacheEvery - 1, cached: 0, want: false},
+		{every: 0, head: module.DefaultCacheEvery, cached: 0, want: true},
 	}
 	for _, tc := range cases {
 		got := WriterCachePolicy(tc.every)(other, 1, ledger.Head{Next: tc.head}, ledger.Head{Next: tc.cached}, false)

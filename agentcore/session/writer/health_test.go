@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"testing"
@@ -12,13 +13,13 @@ import (
 
 // healthModule has one event type and two projections over it: an
 // authoritative one and a derived one, both of which fail on the text "boom".
-func healthModule() ledger.ModuleDescriptor {
+func healthModule() module.ModuleDescriptor {
 	typ := tpfx("h") + "row"
-	mk := func(id ledger.ProjectionID, authoritative bool) ledger.ProjectionDefinition {
-		return ledger.ProjectionDefinition{
+	mk := func(id module.ProjectionID, authoritative bool) module.ProjectionDefinition {
+		return module.ProjectionDefinition{
 			ID: id, Version: 1, Consumes: []ledger.EventType{typ}, Authoritative: authoritative,
 			Initial: func() (any, error) { return noteState{}, nil },
-			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
+			Apply: func(state any, e module.DecodedEvent) (any, error) {
 				text := e.Value.(notePayload).Text
 				if text == "boom" {
 					return nil, errors.New("cannot fold boom")
@@ -27,12 +28,12 @@ func healthModule() ledger.ModuleDescriptor {
 				s.Notes = append(append([]string(nil), s.Notes...), text)
 				return s, nil
 			},
-			StateCodec: ledger.JSONStateCodec[noteState]{},
+			StateCodec: module.JSONStateCodec[noteState]{},
 		}
 	}
-	return ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "h", Streams: noteStreams(),
-		Events:      []ledger.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[notePayload]{}}}},
-		Projections: []ledger.ProjectionDefinition{mk("h/authoritative", true), mk("h/derived", false)}}
+	return module.ModuleDescriptor{Source: module.SourceTwilight, ID: "h", Streams: noteStreams(),
+		Events:      []module.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}}}},
+		Projections: []module.ProjectionDefinition{mk("h/authoritative", true), mk("h/derived", false)}}
 }
 
 // EXT-PRJ-9: a derived projection that cannot fold a commit does not refuse
@@ -41,7 +42,7 @@ func healthModule() ledger.ModuleDescriptor {
 func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	ctx := context.Background()
 	store := filestoretest.Store(t)
-	registry, err := ledger.BuildRegistry(healthModule())
+	registry, err := module.BuildRegistry(healthModule())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,11 +50,11 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := session.NewMemoryProjectionCache()
-	w, err := openWriter(ctx, store, registry, Admission{}, "s", session.OpenOptions{}, WritersConfig{Cache: cache, CachePolicy: ledger.CacheEvery(1)})
+	w, err := openWriter(ctx, store, registry, Admission{}, "s", session.OpenOptions{}, WritersConfig{Cache: cache, CachePolicy: module.CacheEvery(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	commit := func(id, text string, only ledger.ProjectionID) (CommitResult, error) {
+	commit := func(id, text string, only module.ProjectionID) (CommitResult, error) {
 		return w.Commit(ctx, func(View) (*SemanticGroup, error) {
 			return &SemanticGroup{CommitID: ledger.CommitID(id), Batches: noteBatch(TypedEvent{Type: tpfx("h") + "row", Value: notePayload{Text: text}})}, nil
 		})
@@ -67,9 +68,9 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	}
 	// Reopen with only the derived projection failing: rebuild the registry
 	// with an authoritative projection that accepts everything.
-	registry2, err := ledger.BuildRegistry(func() ledger.ModuleDescriptor {
+	registry2, err := module.BuildRegistry(func() module.ModuleDescriptor {
 		m := healthModule()
-		m.Projections[0].Apply = func(state any, e ledger.DecodedEvent) (any, error) { return state, nil }
+		m.Projections[0].Apply = func(state any, e module.DecodedEvent) (any, error) { return state, nil }
 		return m
 	}())
 	if err != nil {
@@ -78,7 +79,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	w, err = openWriter(ctx, store, registry2, Admission{}, "s", session.OpenOptions{}, WritersConfig{Cache: cache, CachePolicy: ledger.CacheEvery(1)})
+	w, err = openWriter(ctx, store, registry2, Admission{}, "s", session.OpenOptions{}, WritersConfig{Cache: cache, CachePolicy: module.CacheEvery(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,9 +116,9 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	// Write "one", "boom", "three" with a registry whose derived projection
 	// accepts everything, then reopen with the one that fails on boom.
 	permissive := healthModule()
-	permissive.Projections[1].Apply = func(state any, e ledger.DecodedEvent) (any, error) { return state, nil }
+	permissive.Projections[1].Apply = func(state any, e module.DecodedEvent) (any, error) { return state, nil }
 	permissive.Projections[0].Apply = permissive.Projections[1].Apply
-	reg1, err := ledger.BuildRegistry(permissive)
+	reg1, err := module.BuildRegistry(permissive)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	}
 	strict := healthModule()
 	strict.Projections[0].Apply = permissive.Projections[0].Apply // authoritative one keeps folding
-	reg2, err := ledger.BuildRegistry(strict)
+	reg2, err := module.BuildRegistry(strict)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +161,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	}
 	// An authoritative projection that cannot fold the log refuses the open.
 	failingAuth := healthModule()
-	reg3, err := ledger.BuildRegistry(failingAuth)
+	reg3, err := module.BuildRegistry(failingAuth)
 	if err != nil {
 		t.Fatal(err)
 	}

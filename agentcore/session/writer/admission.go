@@ -7,6 +7,8 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
+	"github.com/felinics/twilight/agentcore/session"
 	"slices"
 )
 
@@ -29,7 +31,7 @@ const claimDerivationVersion uint16 = 1
 // named by the segment that holds the commit. No Session and no protocol
 // version enter it: the segment is the canonical owner of the commit, and a
 // Session that forks or advances keeps reading the same claim.
-func DeriveClaimID(segment ledger.SegmentID, commitID ledger.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
+func DeriveClaimID(segment session.SegmentID, commitID ledger.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
 	raw, _ := jsonstable.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/claim", []string{string(segment), string(commitID), string(refSet)})
 	return artifact.ClaimID(jsonstable.DigestBytes(raw))
 }
@@ -41,7 +43,7 @@ func nextClaimID(released artifact.ClaimID) artifact.ClaimID {
 
 // CommitOwner is the ClaimOwner of a commit: the segment that holds it and
 // the CommitID within it.
-func CommitOwner(segment ledger.SegmentID, id ledger.CommitID) artifact.ClaimOwner {
+func CommitOwner(segment session.SegmentID, id ledger.CommitID) artifact.ClaimOwner {
 	return artifact.ClaimOwner{Kind: ClaimOwnerKind, Authority: string(segment), Identity: string(id)}
 }
 
@@ -54,7 +56,7 @@ type admitter struct {
 	Admission
 	// segment is the tip segment this Writer appends to: the owner authority
 	// of every claim it activates.
-	segment ledger.SegmentID
+	segment session.SegmentID
 }
 
 // reconcile settles the tip segment's claims against the log at open; w
@@ -69,7 +71,7 @@ func (a *admitter) reconcile(ctx context.Context, w artifact.OwnerVerifier) erro
 	return err
 }
 
-func (a *admitter) admit(ctx context.Context, id artifact.BindingID, decl *ledger.BindingReferenceDefinition) (string, error) {
+func (a *admitter) admit(ctx context.Context, id artifact.BindingID, decl *module.BindingReferenceDefinition) (string, error) {
 	if a.Bindings == nil {
 		// A configuration error, not a verdict on the commit: returning it as an
 		// error keeps it from reading like a data rejection.

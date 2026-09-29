@@ -1,10 +1,10 @@
-package ledger
+package module
 
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"strings"
-	"unicode/utf8"
 )
 
 // SourceID and ModuleID identify a ledger module: the source that publishes
@@ -27,13 +27,13 @@ func (k ModuleKey) String() string { return string(k.Source) + "/" + string(k.ID
 
 // MarshalText renders the key as a JSON object key.
 func (k ModuleKey) MarshalText() ([]byte, error) {
-	if err := validIdentity("module source", string(k.Source)); err != nil {
+	if err := ledger.ValidIdentity("module source", string(k.Source)); err != nil {
 		return nil, err
 	}
 	if strings.Contains(string(k.Source), "/") {
 		return nil, fmt.Errorf("module source %q contains %q", k.Source, "/")
 	}
-	if err := validIdentity("module ID", string(k.ID)); err != nil {
+	if err := ledger.ValidIdentity("module ID", string(k.ID)); err != nil {
 		return nil, err
 	}
 	return []byte(k.String()), nil
@@ -112,15 +112,4 @@ func (e Extensions) Clone() Extensions {
 		out[k] = append(RawValue(nil), v...)
 	}
 	return out
-}
-
-// validIdentity checks that v is a non-empty valid-UTF-8 identity string.
-func validIdentity(name, v string) error {
-	if v == "" {
-		return fmt.Errorf("%s is empty", name)
-	}
-	if !utf8.ValidString(v) {
-		return fmt.Errorf("%s is not valid UTF-8", name)
-	}
-	return nil
 }

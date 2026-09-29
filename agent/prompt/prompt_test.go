@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -26,7 +27,7 @@ type fixedSource struct {
 	head  ledger.Head
 }
 
-func (s fixedSource) Load(_ context.Context, _ session.SessionID, id ledger.ProjectionID, _ ledger.ProjectionVersion) (any, ledger.Head, error) {
+func (s fixedSource) Load(_ context.Context, _ session.SessionID, id module.ProjectionID, _ module.ProjectionVersion) (any, ledger.Head, error) {
 	if id != chatlog.ContextProjectionID {
 		return nil, ledger.Head{}, errors.New("unexpected projection")
 	}

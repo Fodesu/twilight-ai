@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -32,7 +33,7 @@ func DefaultSnapshotPolicy(_, after *run.MachineState) bool {
 
 // Config assembles a SessionRunStore (agent-store.md 10).
 type Config struct {
-	Registry *ledger.Registry
+	Registry *module.Registry
 	// Store is the read side: Record folds from it (through Cache) without
 	// taking ownership; commands write through the Writer a port is bound
 	// to (OWN-HDL-2).
@@ -424,7 +425,7 @@ func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, run
 // same head: the two reads are separate round trips, and a commit landing
 // between them makes both correct at different points, not divergent.
 func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, runID run.RunID, expect *run.MachineState, expectHead ledger.Head) (Record, error) {
-	page, err := s.cfg.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: sid, Domain: Stream(runID), Lineage: streamDefinition.Lineage})
+	page, err := s.cfg.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: sid, Domain: Stream(runID), Inheritance: streamDefinition.Inheritance})
 	if err != nil {
 		return Record{}, err
 	}

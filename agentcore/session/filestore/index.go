@@ -59,7 +59,7 @@ func (x *segIndex) extend(c *ledger.Commit, start, end int64) {
 
 // segIndex returns the segment's index, current against the log at path
 // (SES-REP-5). The caller holds the store lock.
-func (s *Store) segIndex(id ledger.SegmentID, header ledger.SegmentHeader, dir string) (*segIndex, error) {
+func (s *Store) segIndex(id session.SegmentID, header session.SegmentHeader, dir string) (*segIndex, error) {
 	logPath := filepath.Join(dir, logFile)
 	st, err := os.Stat(logPath)
 	size, mod := int64(0), int64(0)
@@ -84,7 +84,7 @@ func (s *Store) segIndex(id ledger.SegmentID, header ledger.SegmentHeader, dir s
 // its last span ends where the log ends and its last entry matches the log's
 // last line; lagging when the log continues past it, in which case the tail
 // is parsed and appended; anything else is rebuilt from the whole log.
-func (s *Store) loadIndex(id ledger.SegmentID, header ledger.SegmentHeader, dir string, logSize int64) (*segIndex, error) {
+func (s *Store) loadIndex(id session.SegmentID, header session.SegmentHeader, dir string, logSize int64) (*segIndex, error) {
 	logPath := filepath.Join(dir, logFile)
 	x := s.readIndexFile(header, dir)
 	switch {
@@ -101,7 +101,7 @@ func (s *Store) loadIndex(id ledger.SegmentID, header ledger.SegmentHeader, dir 
 // readIndexFile parses index.jsonl into a segIndex, or returns nil when the
 // file is absent or unusable. A torn final line is dropped like a torn log
 // line; malformed content before it makes the file unusable.
-func (s *Store) readIndexFile(header ledger.SegmentHeader, dir string) *segIndex {
+func (s *Store) readIndexFile(header session.SegmentHeader, dir string) *segIndex {
 	data, err := os.ReadFile(filepath.Join(dir, indexFile))
 	if err != nil {
 		return nil
@@ -193,7 +193,7 @@ func (s *Store) repairIndexTail(x *segIndex, logPath string) (bool, error) {
 }
 
 // rebuildIndex derives the index from the whole log and rewrites index.jsonl.
-func (s *Store) rebuildIndex(id ledger.SegmentID, header ledger.SegmentHeader, dir string) (*segIndex, error) {
+func (s *Store) rebuildIndex(id session.SegmentID, header session.SegmentHeader, dir string) (*segIndex, error) {
 	commits, offsets, _, _, err := readLog(filepath.Join(dir, logFile), "", "index")
 	if err != nil {
 		return nil, err
@@ -239,10 +239,10 @@ func appendFile(path string, data []byte) error {
 
 // dropIndex forgets the in-memory index; the next use reloads it from
 // index.jsonl and the log.
-func (s *Store) dropIndex(id ledger.SegmentID) { delete(s.index, id) }
+func (s *Store) dropIndex(id session.SegmentID) { delete(s.index, id) }
 
 // Locate is SES-REP-3/5: membership and Seq from the index alone.
-func (s *Store) Locate(ctx context.Context, id ledger.SegmentID, cid ledger.CommitID) (ledger.CommitSeq, bool, error) {
+func (s *Store) Locate(ctx context.Context, id session.SegmentID, cid ledger.CommitID) (ledger.CommitSeq, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}
@@ -264,7 +264,7 @@ func (s *Store) Locate(ctx context.Context, id ledger.SegmentID, cid ledger.Comm
 }
 
 // Index is SES-REP-5: the segment's CommitIndex and head.
-func (s *Store) Index(ctx context.Context, id ledger.SegmentID) (session.CommitIndex, ledger.Head, error) {
+func (s *Store) Index(ctx context.Context, id session.SegmentID) (session.CommitIndex, ledger.Head, error) {
 	if err := ctx.Err(); err != nil {
 		return session.CommitIndex{}, ledger.Head{}, err
 	}
@@ -282,7 +282,7 @@ func (s *Store) Index(ctx context.Context, id ledger.SegmentID) (session.CommitI
 }
 
 // Summarize is the segment index's summary (SES-REP-5).
-func (s *Store) Summarize(ctx context.Context, id ledger.SegmentID) (session.IndexSummary, ledger.Head, error) {
+func (s *Store) Summarize(ctx context.Context, id session.SegmentID) (session.IndexSummary, ledger.Head, error) {
 	if err := ctx.Err(); err != nil {
 		return session.IndexSummary{}, ledger.Head{}, err
 	}
@@ -301,7 +301,7 @@ func (s *Store) Summarize(ctx context.Context, id ledger.SegmentID) (session.Ind
 
 // StreamHead sums the stream's event counts over the segment's index
 // entries (SES-REP-3).
-func (s *Store) StreamHead(ctx context.Context, id ledger.SegmentID, stream ledger.Domain, before ledger.CommitSeq) (ledger.StreamSeq, error) {
+func (s *Store) StreamHead(ctx context.Context, id session.SegmentID, stream ledger.Domain, before ledger.CommitSeq) (ledger.StreamSeq, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -331,7 +331,7 @@ func (s *Store) StreamHead(ctx context.Context, id ledger.SegmentID, stream ledg
 
 // PutIndex accepts the kernel's rebuild by rebuilding from the log itself,
 // which is where the byte spans come from, and checks the two agree.
-func (s *Store) PutIndex(ctx context.Context, id ledger.SegmentID, idx session.CommitIndex) error {
+func (s *Store) PutIndex(ctx context.Context, id session.SegmentID, idx session.CommitIndex) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -353,7 +353,7 @@ func (s *Store) PutIndex(ctx context.Context, id ledger.SegmentID, idx session.C
 }
 
 // LookupCommit is SES-REP-4: it reads exactly the commit's byte range.
-func (s *Store) LookupCommit(ctx context.Context, id ledger.SegmentID, cid ledger.CommitID) (ledger.Commit, bool, error) {
+func (s *Store) LookupCommit(ctx context.Context, id session.SegmentID, cid ledger.CommitID) (ledger.Commit, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return ledger.Commit{}, false, err
 	}
@@ -389,7 +389,7 @@ func (s *Store) LookupCommit(ctx context.Context, id ledger.SegmentID, cid ledge
 // commitsFrom returns the segment's own commits from from onward and the
 // segment head, reading only the bytes the index points at. The caller
 // holds the lock.
-func (s *Store) commitsFrom(id ledger.SegmentID, header ledger.SegmentHeader, dir string, from ledger.CommitSeq) ([]ledger.Commit, ledger.Head, error) {
+func (s *Store) commitsFrom(id session.SegmentID, header session.SegmentHeader, dir string, from ledger.CommitSeq) ([]ledger.Commit, ledger.Head, error) {
 	x, err := s.segIndex(id, header, dir)
 	if err != nil {
 		return nil, ledger.Head{}, err

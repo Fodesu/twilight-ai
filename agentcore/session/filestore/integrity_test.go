@@ -2,7 +2,6 @@ package filestore
 
 import (
 	"context"
-	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
 	"os"
 	"path/filepath"
@@ -14,7 +13,7 @@ import (
 // must not serve it under the requested identity nor treat it as unowned.
 func TestSessionDirectoryIntegrity(t *testing.T) {
 	ctx := context.Background()
-	create := func(t *testing.T, s *Store, sid session.SessionID) ledger.SegmentHeader {
+	create := func(t *testing.T, s *Store, sid session.SessionID) session.SegmentHeader {
 		t.Helper()
 		h, err := s.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1})
 		if err != nil {
@@ -24,10 +23,10 @@ func TestSessionDirectoryIntegrity(t *testing.T) {
 	}
 	cases := []struct {
 		name          string
-		damage        func(t *testing.T, s *Store, a ledger.SegmentHeader)
+		damage        func(t *testing.T, s *Store, a session.SegmentHeader)
 		headerCorrupt bool
 	}{
-		{"header of another segment", func(t *testing.T, s *Store, a ledger.SegmentHeader) {
+		{"header of another segment", func(t *testing.T, s *Store, a session.SegmentHeader) {
 			b := create(t, s, "b")
 			raw, err := os.ReadFile(filepath.Join(s.segmentDir(b.ID), headerFile))
 			if err != nil {
@@ -37,7 +36,7 @@ func TestSessionDirectoryIntegrity(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, true},
-		{"unreadable root record", func(t *testing.T, s *Store, _ ledger.SegmentHeader) {
+		{"unreadable root record", func(t *testing.T, s *Store, _ session.SegmentHeader) {
 			if err := os.WriteFile(s.rootPath("a"), []byte("{not json"), 0o644); err != nil {
 				t.Fatal(err)
 			}

@@ -3,6 +3,7 @@ package filestore_test
 import (
 	"context"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -15,7 +16,7 @@ import (
 // This file covers the durable side of EXT-PRJ-3: the cache entries a Writer
 // leaves in the session directory, and a fresh process resuming from them.
 
-const projectID = ledger.ProjectionID("twilight/z/rows")
+const projectID = module.ProjectionID("twilight/z/rows")
 
 type rowPayload struct {
 	Text string `json:"text"`
@@ -50,27 +51,27 @@ func (c *foldCounter) reset() {
 
 // counterModule is a one-projection module whose Apply counts the events it
 // folds, which is how these tests tell a resume from a full fold.
-func counterModule(c *foldCounter) ledger.ModuleDescriptor {
+func counterModule(c *foldCounter) module.ModuleDescriptor {
 	const typ ledger.EventType = "twilight/z/row"
-	return ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "z",
-		Streams: []ledger.StreamDefinition{{Domain: "z", Lineage: ledger.LineageSession}},
-		Events: []ledger.EventDefinition{{Type: typ, Domain: "z",
-			Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[rowPayload]{}}}},
-		Projections: []ledger.ProjectionDefinition{{
+	return module.ModuleDescriptor{Source: module.SourceTwilight, ID: "z",
+		Streams: []module.StreamDefinition{{Domain: "z", Inheritance: module.Inherited}},
+		Events: []module.EventDefinition{{Type: typ, Domain: "z",
+			Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[rowPayload]{}}}},
+		Projections: []module.ProjectionDefinition{{
 			ID: projectID, Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return rowState{}, nil },
-			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
+			Apply: func(state any, e module.DecodedEvent) (any, error) {
 				c.inc()
 				s := state.(rowState)
 				return rowState{Rows: append(append([]string(nil), s.Rows...), e.Value.(rowPayload).Text)}, nil
 			},
-			StateCodec: ledger.JSONStateCodec[rowState]{},
+			StateCodec: module.JSONStateCodec[rowState]{},
 		}}}
 }
 
-func mustRegistry(t *testing.T, c *foldCounter) *ledger.Registry {
+func mustRegistry(t *testing.T, c *foldCounter) *module.Registry {
 	t.Helper()
-	r, err := ledger.BuildRegistry(counterModule(c))
+	r, err := module.BuildRegistry(counterModule(c))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func mustRegistry(t *testing.T, c *foldCounter) *ledger.Registry {
 
 // entryPath is the layout the adapter must keep: a projection ID contains
 // slashes, so it is percent-encoded like a Session ID.
-func entryPath(root string, sid session.SessionID, v ledger.ProjectionVersion) string {
+func entryPath(root string, sid session.SessionID, v module.ProjectionVersion) string {
 	return filepath.Join(root, "sessions", string(sid), "projections", "twilight%2Fz%2Frows", "1.json")
 }
 
@@ -91,7 +92,7 @@ func TestProjectionCacheRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := store.ProjectionCache()
-	state, err := ledger.JSONStateCodec[rowState]{}.Encode(rowState{Rows: []string{"a"}})
+	state, err := module.JSONStateCodec[rowState]{}.Encode(rowState{Rows: []string{"a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +124,7 @@ func TestProjectionCacheIgnoresCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := store.ProjectionCache()
-	state, err := ledger.JSONStateCodec[rowState]{}.Encode(rowState{Rows: []string{"a"}})
+	state, err := module.JSONStateCodec[rowState]{}.Encode(rowState{Rows: []string{"a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +164,7 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	writers := writer.NewWriters(first, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: ledger.CacheEvery(0).AtClose()})
+		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: module.CacheEvery(0).AtClose()})
 	w, err := writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)

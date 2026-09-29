@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -18,12 +19,12 @@ type rowPayload struct {
 
 const rowType ledger.EventType = "twilight/z/row"
 
-func registry(t *testing.T) *ledger.Registry {
+func registry(t *testing.T) *module.Registry {
 	t.Helper()
-	r, err := ledger.BuildRegistry(ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "z",
-		Streams: []ledger.StreamDefinition{{Domain: "z", Lineage: ledger.LineageSession}},
-		Events: []ledger.EventDefinition{{Type: rowType, Domain: "z",
-			Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[rowPayload]{}}}}})
+	r, err := module.BuildRegistry(module.ModuleDescriptor{Source: module.SourceTwilight, ID: "z",
+		Streams: []module.StreamDefinition{{Domain: "z", Inheritance: module.Inherited}},
+		Events: []module.EventDefinition{{Type: rowType, Domain: "z",
+			Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[rowPayload]{}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

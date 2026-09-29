@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
@@ -38,7 +39,7 @@ func inputDigest(raw string) Digest { return jsonstable.DigestBytes([]byte(raw))
 // Store, the run module, one owner process (Writers) and a Runtime.
 type testStack struct {
 	store    session.Stores
-	registry *ledger.Registry
+	registry *module.Registry
 	bindings artifact.BindingStore
 	ledger   artifact.RetentionLedger
 	writers  writer.Writers
@@ -52,7 +53,7 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 		now = time.Now
 	}
 	store := filestoretest.Store(t)
-	registry, err := ledger.BuildRegistry(runmod.Module)
+	registry, err := module.BuildRegistry(runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

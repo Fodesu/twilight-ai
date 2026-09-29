@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"strconv"
@@ -20,13 +21,13 @@ import (
 // is the Share policy; the other fork policies write the child's own fact.
 const (
 	// Source is the SourceID of this agent's application modules (EXT-REG-1).
-	Source ledger.SourceID = "agent"
+	Source module.SourceID = "agent"
 	// ModuleID names the module.
-	ModuleID ledger.ModuleID = "workspace"
+	ModuleID module.ModuleID = "workspace"
 	// StreamDomain is the singleton stream the binding facts live on.
 	StreamDomain = "workspace"
 	// Version is the payload version the module writes.
-	Version ledger.PayloadVersion = 1
+	Version module.PayloadVersion = 1
 	// TypeBound binds the Session to a Workspace.
 	TypeBound ledger.EventType = "agent/workspace/bound"
 	// TypeUnbound records that the Session works in no Workspace, ending a
@@ -37,12 +38,12 @@ const (
 	// point restores.
 	TypeSnapshotted ledger.EventType = "agent/workspace/snapshotted"
 	// BindingProjectionID is the module's projection.
-	BindingProjectionID ledger.ProjectionID = "agent/workspace/binding"
+	BindingProjectionID module.ProjectionID = "agent/workspace/binding"
 	// TargetKind is the run.TargetRef Kind of a Workspace target.
 	TargetKind = "workspace"
 )
 
-var streamDefinition = ledger.StreamDefinition{Domain: StreamDomain, Lineage: ledger.LineageSession}
+var streamDefinition = module.StreamDefinition{Domain: StreamDomain, Inheritance: module.Inherited}
 
 // Stream is the module's logical stream.
 var Stream = streamDefinition.Ref("")
@@ -83,16 +84,16 @@ type Binding struct {
 func (b Binding) InheritedBy(sid session.SessionID) bool { return b.Bound && b.Scope != sid }
 
 // BindingProjection folds the module's two facts into the current Binding.
-var BindingProjection = ledger.ProjectionDefinition{
+var BindingProjection = module.ProjectionDefinition{
 	ID: BindingProjectionID, Version: 1,
 	Consumes:   []ledger.EventType{TypeBound, TypeUnbound, TypeSnapshotted},
 	Initial:    func() (any, error) { return Binding{}, nil },
 	Apply:      applyBinding,
-	StateCodec: ledger.JSONStateCodec[Binding]{},
+	StateCodec: module.JSONStateCodec[Binding]{},
 }
 
 //nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
-func applyBinding(state any, e ledger.DecodedEvent) (any, error) {
+func applyBinding(state any, e module.DecodedEvent) (any, error) {
 	b, ok := state.(Binding)
 	if !ok {
 		return nil, fmt.Errorf("workspace binding: state is %T", state)
@@ -119,31 +120,31 @@ func applyBinding(state any, e ledger.DecodedEvent) (any, error) {
 
 // Module is the workspace ModuleDescriptor: one singleton stream, two
 // facts, one projection.
-var Module = ledger.ModuleDescriptor{
+var Module = module.ModuleDescriptor{
 	Source:  Source,
 	ID:      ModuleID,
-	Streams: []ledger.StreamDefinition{streamDefinition},
-	Events: []ledger.EventDefinition{
-		{Type: TypeBound, Domain: StreamDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{Version: ledger.JSONCodec[BoundPayload]{Check: func(p *BoundPayload) error {
+	Streams: []module.StreamDefinition{streamDefinition},
+	Events: []module.EventDefinition{
+		{Type: TypeBound, Domain: StreamDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{Version: module.JSONCodec[BoundPayload]{Check: func(p *BoundPayload) error {
 			if p.Workspace == "" || p.Scope == "" {
 				return errors.New("workspace bound requires workspace and scope")
 			}
 			return nil
 		}}}},
-		{Type: TypeUnbound, Domain: StreamDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{Version: ledger.JSONCodec[UnboundPayload]{Check: func(p *UnboundPayload) error {
+		{Type: TypeUnbound, Domain: StreamDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{Version: module.JSONCodec[UnboundPayload]{Check: func(p *UnboundPayload) error {
 			if p.Scope == "" {
 				return errors.New("workspace unbound requires scope")
 			}
 			return nil
 		}}}},
-		{Type: TypeSnapshotted, Domain: StreamDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{Version: ledger.JSONCodec[SnapshottedPayload]{Check: func(p *SnapshottedPayload) error {
+		{Type: TypeSnapshotted, Domain: StreamDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{Version: module.JSONCodec[SnapshottedPayload]{Check: func(p *SnapshottedPayload) error {
 			if p.Workspace == "" || p.Snapshot == "" || p.Scope == "" {
 				return errors.New("workspace snapshotted requires workspace, snapshot and scope")
 			}
 			return nil
 		}}}},
 	},
-	Projections: []ledger.ProjectionDefinition{BindingProjection},
+	Projections: []module.ProjectionDefinition{BindingProjection},
 }
 
 // Read folds the Session's Binding through a lease-free reader.

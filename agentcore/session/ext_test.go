@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"testing"
@@ -15,9 +16,9 @@ import (
 func TestKernelExtRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := filestoretest.Store(t)
-	key := ledger.ModuleKey{Source: "acme", ID: "audit"}
-	ext := ledger.Extensions{key: ledger.RawValue(`{"by":"later"}`)}
-	same := func(got ledger.Extensions) bool { return len(got) == 1 && string(got[key]) == string(ext[key]) }
+	key := module.ModuleKey{Source: "acme", ID: "audit"}
+	ext := module.Extensions{key: module.RawValue(`{"by":"later"}`)}
+	same := func(got module.Extensions) bool { return len(got) == 1 && string(got[key]) == string(ext[key]) }
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "s", Ext: ext}); err != nil {
 		t.Fatal(err)
 	}

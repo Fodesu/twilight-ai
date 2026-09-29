@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"os"
 	"path/filepath"
@@ -31,7 +32,7 @@ type projectionRecord struct {
 
 type projectionCache struct{ store *Store }
 
-func (c projectionCache) Load(_ context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion) (jsonstable.Value, ledger.Head, bool, error) {
+func (c projectionCache) Load(_ context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (jsonstable.Value, ledger.Head, bool, error) {
 	raw, err := os.ReadFile(projectionPath(c.store, sid, id, v))
 	if err != nil {
 		// A missing or unreadable entry is a cache miss, not a failure: the
@@ -51,7 +52,7 @@ func (c projectionCache) Load(_ context.Context, sid session.SessionID, id ledge
 
 // Save keeps the entry monotonic (EXT-PRJ-7): a write that lands after a
 // later one is dropped.
-func (c projectionCache) Save(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion, state jsonstable.Value, through ledger.Head) error {
+func (c projectionCache) Save(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion, state jsonstable.Value, through ledger.Head) error {
 	if _, current, ok, _ := c.Load(ctx, sid, id, v); ok && current.Next >= through.Next {
 		return nil
 	}
@@ -70,7 +71,7 @@ func (c projectionCache) Save(ctx context.Context, sid session.SessionID, id led
 // projection ID contains slashes, so it is percent-encoded exactly like a
 // Session ID. The cache is the Session's, not the segment's: forks fold their
 // own view of a shared prefix.
-func projectionPath(s *Store, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion) string {
+func projectionPath(s *Store, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) string {
 	return filepath.Join(s.sessionDir(sid), projectionsDir, encodeID(string(id)),
 		strconv.FormatUint(uint64(v), 10)+".json")
 }

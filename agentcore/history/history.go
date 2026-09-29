@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -15,7 +16,7 @@ import (
 // History reads a Session's committed stream for boundary questions.
 type History struct {
 	Store       session.Store
-	Registry    *ledger.Registry
+	Registry    *module.Registry
 	Projections session.ProjectionReader
 }
 
@@ -142,7 +143,7 @@ func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at ledger.
 			}
 			chunk = append(chunk, c)
 		}
-		if state, err = h.Registry.FoldFrom(scope, state, chunk, page.Header); err != nil {
+		if state, err = h.Registry.FoldFrom(scope, state, chunk, page.Header.Seed()); err != nil {
 			return "", false, err
 		}
 		if !page.HasMore || len(page.Commits) == 0 || page.Commits[len(page.Commits)-1].Seq >= at {

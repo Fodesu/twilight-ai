@@ -1,4 +1,4 @@
-package ledger
+package module
 
 import (
 	"testing"
@@ -16,7 +16,7 @@ func TestEncodeWireGolden(t *testing.T) {
 	reg, err := BuildRegistry(ModuleDescriptor{
 		Source:  "goldsrc",
 		ID:      "gold",
-		Streams: []StreamDefinition{{Domain: "gold", Lineage: LineageSession}},
+		Streams: []StreamDefinition{{Domain: "gold", Inheritance: Inherited}},
 		Events: []EventDefinition{{
 			Type:   "goldsrc/gold/sample",
 			Domain: "gold",

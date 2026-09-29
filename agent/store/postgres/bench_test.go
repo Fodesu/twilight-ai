@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"testing"
@@ -24,7 +25,7 @@ var sizes = []int{1_000, 10_000, 100_000}
 
 // seedSession creates a Session whose tip holds n commits of one small
 // event each, loaded in bulk, and returns its tip segment.
-func seedSession(b *testing.B, store *postgres.SessionStore, dbh *postgres.DB, sid session.SessionID, n int) ledger.SegmentID {
+func seedSession(b *testing.B, store *postgres.SessionStore, dbh *postgres.DB, sid session.SessionID, n int) session.SegmentID {
 	b.Helper()
 	ctx := context.Background()
 	// Payloads carry the module's version envelope, as a Writer writes them,
@@ -143,7 +144,7 @@ func BenchmarkWriterOpen(b *testing.B) {
 	}
 }
 
-func encodeRow(b *testing.B, registry *ledger.Registry, i int) jsonstable.Value {
+func encodeRow(b *testing.B, registry *module.Registry, i int) jsonstable.Value {
 	b.Helper()
 	v, err := registry.Encode("twilight/z/row", rowPayload{Text: fmt.Sprintf("row %d", i)})
 	if err != nil {
@@ -158,7 +159,7 @@ func mustEncodeRows(b *testing.B, n int) jsonstable.Value {
 	for i := range rows {
 		rows[i] = fmt.Sprintf("row %d", i)
 	}
-	v, err := ledger.JSONStateCodec[rowState]{}.Encode(rowState{Rows: rows})
+	v, err := module.JSONStateCodec[rowState]{}.Encode(rowState{Rows: rows})
 	if err != nil {
 		b.Fatal(err)
 	}

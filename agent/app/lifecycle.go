@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
@@ -20,13 +21,13 @@ import (
 // --- session lifecycle, forwarded from the Authority ---------------------------------
 
 // Fork creates a child session from a parent's ledger prefix (OWN-FRK-1).
-func (app *Application) Fork(ctx context.Context, req ForkRequest) (ledger.SegmentHeader, error) {
+func (app *Application) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
 	return app.Owner.Fork(ctx, req)
 }
 
 // ForkBeforeTurn forks a session at the commit before the named turn started
 // (OWN-FRK-2), so the turn's inputs can be regenerated or edited in the child.
-func (app *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (ledger.SegmentHeader, error) {
+func (app *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	return app.Owner.ForkBeforeTurn(ctx, parent, turnID, child)
 }
 
@@ -51,7 +52,7 @@ func (app *Application) TurnSurface(ctx context.Context, sid session.SessionID) 
 }
 
 // Projection reads any registered projection of a Session (APP-MEM-1).
-func (app *Application) Projection(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion) (any, ledger.Head, error) {
+func (app *Application) Projection(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
 	return app.Owner.Projection(ctx, sid, id, v)
 }
 

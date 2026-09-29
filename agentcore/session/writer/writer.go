@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"sync"
 )
@@ -46,7 +47,7 @@ type View interface {
 	Head() ledger.Head
 	Epoch() ledger.Epoch
 	// Header is the tip segment's header: the segment this Writer appends to.
-	Header() ledger.SegmentHeader
+	Header() session.SegmentHeader
 	// Committed reports whether a commit is already in the ledger, from an
 	// index the kernel keeps. An index read failure returns the error; it is
 	// not reported as "not committed".
@@ -58,7 +59,7 @@ type View interface {
 	// stream and the StreamSeq its next event takes (SES-REP-3).
 	StreamHead(ledger.Domain) (ledger.StreamSeq, bool)
 	// Projection returns a detached state that the caller owns.
-	Projection(ledger.ProjectionID, ledger.ProjectionVersion) (any, error)
+	Projection(module.ProjectionID, module.ProjectionVersion) (any, error)
 }
 
 // CommitFn decides the commit to write; nil means write nothing.
@@ -89,7 +90,7 @@ type CommitResult struct {
 type Writer interface {
 	SessionID() session.SessionID
 	Epoch() ledger.Epoch
-	Header() ledger.SegmentHeader
+	Header() session.SegmentHeader
 	Commit(context.Context, CommitFn) (CommitResult, error)
 	Projections() session.ProjectionReader
 	// OwnerExists reports whether the owner names a commit of this ledger.
@@ -111,9 +112,9 @@ type WritersConfig struct {
 	// one instead of refolding the whole log (EXT-PRJ-3).
 	Cache session.ProjectionCache
 	// CachePolicy decides which projections the Writer refreshes and when; nil
-	// means ledger.CacheEvery(ledger.DefaultCacheEvery). It never affects reading: an entry
+	// means module.CacheEvery(module.DefaultCacheEvery). It never affects reading: an entry
 	// the cache already holds is used whoever wrote it.
-	CachePolicy ledger.CachePolicy
+	CachePolicy module.CachePolicy
 	// Observers are notified of every applied commit (EXT-WRT-7).
 	Observers []CommitObserver
 }
@@ -124,7 +125,7 @@ type sessionWriter struct {
 	mu       sync.Mutex
 	kernel   session.Handle
 	store    session.Store
-	registry *ledger.Registry
+	registry *module.Registry
 	lost     error
 
 	projections *projector
@@ -139,11 +140,11 @@ type sessionWriter struct {
 // every registered projection from the whole log (EXT-WRT-1). When a ledger
 // is configured it reconciles this Session's claims before returning
 // (ART-RET-3): no Commit can be in flight yet.
-func OpenWriter(ctx context.Context, store session.Store, registry *ledger.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error) {
+func OpenWriter(ctx context.Context, store session.Store, registry *module.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error) {
 	return openWriter(ctx, store, registry, admission, sid, opts, WritersConfig{})
 }
 
-func openWriter(ctx context.Context, store session.Store, registry *ledger.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions, cfg WritersConfig) (Writer, error) {
+func openWriter(ctx context.Context, store session.Store, registry *module.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions, cfg WritersConfig) (Writer, error) {
 	if store == nil || registry == nil {
 		return nil, errors.New("writer: nil store or registry")
 	}
@@ -201,7 +202,7 @@ func (w *sessionWriter) Epoch() ledger.Epoch          { return w.kernel.Epoch() 
 
 // Header is the tip segment's creation record, read from the kernel handle.
 // Inside a CommitFn the View answers the same value.
-func (w *sessionWriter) Header() ledger.SegmentHeader { return w.kernel.Header() }
+func (w *sessionWriter) Header() session.SegmentHeader { return w.kernel.Header() }
 
 func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner) (bool, error) {
 	if owner.Kind != ClaimOwnerKind || owner.Authority != string(w.kernel.Header().ID) {
@@ -237,7 +238,7 @@ func (w *sessionWriter) Close(ctx context.Context) error {
 	var writes []cacheWrite
 	// An entry at an inherited boundary is never started from (EXT-PRJ-3).
 	head := w.kernel.Head()
-	if ledger.OwnBoundary(w.kernel.Header(), head) {
+	if ledger.OwnBoundary(w.kernel.Header().Seed(), head) {
 		writes = w.projections.planRefresh(head, true)
 	}
 	w.lost = errWriterClosed
@@ -253,9 +254,9 @@ type view struct{ w *sessionWriter }
 
 // Head and Header come from the kernel handle. The view does not lock the
 // Writer: Commit already holds that lock, and locking it again would deadlock.
-func (v view) Head() ledger.Head            { return v.w.kernel.Head() }
-func (v view) Epoch() ledger.Epoch          { return v.w.kernel.Epoch() }
-func (v view) Header() ledger.SegmentHeader { return v.w.kernel.Header() }
+func (v view) Head() ledger.Head             { return v.w.kernel.Head() }
+func (v view) Epoch() ledger.Epoch           { return v.w.kernel.Epoch() }
+func (v view) Header() session.SegmentHeader { return v.w.kernel.Header() }
 
 // Committed and LookupCommit are answered by the kernel, which holds the
 // CommitID index Append needs (SES-REP-3/4).
@@ -269,7 +270,7 @@ func (v view) StreamHead(stream ledger.Domain) (ledger.StreamSeq, bool) {
 	return v.w.kernel.StreamHead(stream)
 }
 
-func (v view) Projection(id ledger.ProjectionID, ver ledger.ProjectionVersion) (any, error) {
+func (v view) Projection(id module.ProjectionID, ver module.ProjectionVersion) (any, error) {
 	return v.w.projections.detached(id, ver)
 }
 

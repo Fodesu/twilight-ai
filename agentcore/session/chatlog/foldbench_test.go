@@ -3,6 +3,7 @@ package chatlog
 import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -12,10 +13,10 @@ import (
 // benchEvents builds n model_step_completed facts, the cheapest event that
 // grows both the maps and EntryOrder of each projection. Each event carries
 // the ledger Position a fold would stamp on it.
-func benchEvents(n int) []ledger.DecodedEvent {
-	out := make([]ledger.DecodedEvent, n)
+func benchEvents(n int) []module.DecodedEvent {
+	out := make([]module.DecodedEvent, n)
 	for i := range out {
-		out[i] = ledger.DecodedEvent{
+		out[i] = module.DecodedEvent{
 			Position: ledger.Position{Commit: ledger.CommitSeq(i)},
 			Value:    runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(fmt.Sprint(i)), FinishReason: model.FinishReasonStop, ResultDigest: "sha256:x"}},
 		}
@@ -23,7 +24,7 @@ func benchEvents(n int) []ledger.DecodedEvent {
 	return out
 }
 
-func benchFold(b *testing.B, def ledger.ProjectionDefinition, n int) {
+func benchFold(b *testing.B, def module.ProjectionDefinition, n int) {
 	events := benchEvents(n)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

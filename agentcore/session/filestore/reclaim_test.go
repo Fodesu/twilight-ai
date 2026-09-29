@@ -67,7 +67,7 @@ func TestCollectReclaimsAfterDeleteRecord(t *testing.T) {
 	if err != nil || report.Truncated[header.ID] != 1 || len(report.Dropped[header.ID]) != 1 || report.Dropped[header.ID][0] != "c1" {
 		t.Fatalf("collect repair = %+v %v", report, err)
 	}
-	removed := map[ledger.SegmentID]bool{}
+	removed := map[session.SegmentID]bool{}
 	for _, id := range report.Removed {
 		removed[id] = true
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"math"
 	"testing"
@@ -43,7 +44,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("lease", func(t *testing.T) { testLease(t, factory(t)) })
 }
 
-func create(t *testing.T, store session.Store, sid session.SessionID) ledger.SegmentHeader {
+func create(t *testing.T, store session.Store, sid session.SessionID) session.SegmentHeader {
 	t.Helper()
 	h, err := store.Create(context.Background(), session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1})
 	if err != nil {
@@ -160,11 +161,11 @@ func testStreams(t *testing.T, f Fixture) {
 	appendCommit(t, w, "c3", batch(runStream("r7"), "twilight/run/run_ended", `{"runId":"r7"}`))
 	appendCommit(t, w, "c4", batch(chatStream(), "twilight/chat/c", `{"n":3}`))
 
-	page, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: chatStream(), Lineage: ledger.LineageSession})
+	page, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: chatStream(), Inheritance: module.Inherited})
 	if err != nil || len(page.Events) != 3 {
 		t.Fatalf("chat stream = %d events, err %v", len(page.Events), err)
 	}
-	runs, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: runStream("r7"), Lineage: ledger.LineageSegment})
+	runs, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: runStream("r7"), Inheritance: module.Own})
 	if err != nil || len(runs.Events) != 3 {
 		t.Fatalf("run stream = %d events, err %v", len(runs.Events), err)
 	}
@@ -179,15 +180,15 @@ func testStreams(t *testing.T, f Fixture) {
 		}
 	}
 	// From counts inside the stream: it skips a stream's own events only.
-	tail, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: chatStream(), Lineage: ledger.LineageSession, From: 1})
+	tail, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: chatStream(), Inheritance: module.Inherited, From: 1})
 	if err != nil || len(tail.Events) != 2 || tail.Events[0].Type != "twilight/chat/b" {
 		t.Fatalf("chat stream from 1 = %+v, err %v", tail.Events, err)
 	}
-	runTail, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: runStream("r7"), Lineage: ledger.LineageSegment, From: 2})
+	runTail, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: runStream("r7"), Inheritance: module.Own, From: 2})
 	if err != nil || len(runTail.Events) != 1 || runTail.Events[0].Type != "twilight/run/run_ended" {
 		t.Fatalf("run stream from 2 = %+v, err %v", runTail.Events, err)
 	}
-	limited, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: chatStream(), Lineage: ledger.LineageSession, Limit: 2})
+	limited, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: chatStream(), Inheritance: module.Inherited, Limit: 2})
 	if err != nil || len(limited.Events) != 2 || !limited.HasMore {
 		t.Fatalf("limited stream = %d more=%v, err %v", len(limited.Events), limited.HasMore, err)
 	}
@@ -199,10 +200,10 @@ func testStreams(t *testing.T, f Fixture) {
 	}
 	// Malformed stream refs and a read that declares no lineage are rejected
 	// before anything is read.
-	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: ledger.Domain{}, Lineage: ledger.LineageSession}); !session.IsCode(err, session.ErrInvalid) {
+	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: ledger.Domain{}, Inheritance: module.Inherited}); !session.IsCode(err, session.ErrInvalid) {
 		t.Fatalf("empty stream ref = %v, want invalid", err)
 	}
-	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: ledger.Domain{Name: "run/r7"}, Lineage: ledger.LineageSegment}); !session.IsCode(err, session.ErrInvalid) {
+	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: ledger.Domain{Name: "run/r7"}, Inheritance: module.Own}); !session.IsCode(err, session.ErrInvalid) {
 		t.Fatalf("stream domain with separator = %v, want invalid", err)
 	}
 	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: chatStream()}); !session.IsCode(err, session.ErrInvalid) {

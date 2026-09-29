@@ -19,7 +19,7 @@ import (
 // Every adapter gets these semantics from here and implements none of them.
 type Ledger struct {
 	st        Storage
-	segmentID func() (ledger.SegmentID, error)
+	segmentID func() (SegmentID, error)
 	// graph serializes this process's Create, Delete and Collect (SES-GC-4).
 	// Append and reads never take it. Across processes, TruncateSegment and
 	// CreateSession share the per-segment lock: truncation re-reads the live
@@ -34,13 +34,13 @@ type LedgerOption func(*Ledger)
 // WithSegmentIDSource replaces the segment identity generator. Production
 // uses NewSegmentID; wire fixtures inject a deterministic source so the
 // bytes they freeze are reproducible.
-func WithSegmentIDSource(src func() (ledger.SegmentID, error)) LedgerOption {
+func WithSegmentIDSource(src func() (SegmentID, error)) LedgerOption {
 	return func(l *Ledger) { l.segmentID = src }
 }
 
 // NewLedger returns the Store over be.
 func NewLedger(st Storage, opts ...LedgerOption) *Ledger {
-	l := &Ledger{st: st, segmentID: ledger.NewSegmentID}
+	l := &Ledger{st: st, segmentID: NewSegmentID}
 	for _, o := range opts {
 		o(l)
 	}
@@ -49,40 +49,40 @@ func NewLedger(st Storage, opts ...LedgerOption) *Ledger {
 
 // --- create -----------------------------------------------------------------------
 
-func (l *Ledger) Create(ctx context.Context, req CreateRequest) (ledger.SegmentHeader, error) {
+func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, error) {
 	if err := ctx.Err(); err != nil {
-		return ledger.SegmentHeader{}, err
+		return SegmentHeader{}, err
 	}
 	l.graph.Lock()
 	defer l.graph.Unlock()
 	if err := validIdentity("SessionID", string(req.SessionID)); err != nil {
-		return ledger.SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, err.Error())
+		return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, err.Error())
 	}
-	header := ledger.SegmentHeader{CausationID: req.CausationID, Ext: req.Ext.Clone()}
+	header := SegmentHeader{CausationID: req.CausationID, Ext: req.Ext.Clone()}
 	var parent *Session
 	if req.Fork != nil {
 		// The edge names the segment that contributes the inherited commit,
 		// wherever on the parent's path it lives (SES-FRK-1).
 		if req.Fork.Session == req.SessionID {
-			return ledger.SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, "a session cannot fork itself")
+			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, "a session cannot fork itself")
 		}
 		var err error
 		parent, err = l.Load(ctx, req.Fork.Session)
 		if err != nil {
 			if IsCode(err, ErrNotFound) {
-				return ledger.SegmentHeader{}, newError(ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", req.Fork.Session))
+				return SegmentHeader{}, newError(ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", req.Fork.Session))
 			}
-			return ledger.SegmentHeader{}, err
+			return SegmentHeader{}, err
 		}
 		// The edge names a position in the parent's history (SES-FRK-1).
 		// EdgeAt reads the commit, so an open span cannot accept a seq the
 		// segment does not hold.
 		edge, ok, err := parent.EdgeAt(ctx, req.Fork.Seq)
 		if err != nil {
-			return ledger.SegmentHeader{}, err
+			return SegmentHeader{}, err
 		}
 		if !ok {
-			return ledger.SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
+			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
 		}
 		header.Parent = &edge
 	}
@@ -93,30 +93,30 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (ledger.SegmentH
 		if sameCreation(header, seg.Header) {
 			return seg.Header, nil
 		}
-		return ledger.SegmentHeader{}, newError(ErrConflict, "create", req.SessionID, "session exists with a different creation record")
+		return SegmentHeader{}, newError(ErrConflict, "create", req.SessionID, "session exists with a different creation record")
 	} else if !IsCode(err, ErrNotFound) && !IsCode(err, ErrDeleted) {
-		return ledger.SegmentHeader{}, err
+		return SegmentHeader{}, err
 	}
 	id, err := l.segmentID()
 	if err != nil {
-		return ledger.SegmentHeader{}, err
+		return SegmentHeader{}, err
 	}
 	header.ID = id
 	if err := header.Validate(); err != nil {
-		return ledger.SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, err.Error())
+		return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, err.Error())
 	}
 	path, err := creationPath(parent, header, req.SessionID)
 	if err != nil {
-		return ledger.SegmentHeader{}, err
+		return SegmentHeader{}, err
 	}
-	segment := ledger.Segment{Header: header}
+	segment := Segment{Header: header}
 	root := SessionRecord{ID: req.SessionID, Tip: segment.ID(), CreatedAtUnixMilli: req.CreatedAtUnixMilli, Path: path}
 	if err := l.st.CreateSession(ctx, segment, root); err != nil {
 		// The parent was checked above. Another replica may have removed
 		// the parent segment or truncated a retained commit since
 		// (SES-GC-4). CreateSession re-checks both under the segment lock
 		// and writes nothing when either is gone.
-		return ledger.SegmentHeader{}, err
+		return SegmentHeader{}, err
 	}
 	return header, nil
 }
@@ -125,7 +125,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (ledger.SegmentH
 // spans through the one that contains the fork seq, closes that span, and
 // appends an open span for the new segment. The closed span's segment is
 // the parent edge EdgeAt already resolved.
-func creationPath(parent *Session, header ledger.SegmentHeader, sid SessionID) (Path, error) {
+func creationPath(parent *Session, header SegmentHeader, sid SessionID) (Path, error) {
 	if header.Parent == nil {
 		path := Path{{Segment: header.ID, From: 0, End: OpenBound()}}
 		if err := path.Validate(header.ID); err != nil {
@@ -157,20 +157,20 @@ func creationPath(parent *Session, header ledger.SegmentHeader, sid SessionID) (
 // same resolved edge, same causation, same extensions. The creation time
 // is the first writer's and does not decide it, so a retried Create with a
 // fresh clock is a replay (SES-CRT-1).
-func sameCreation(want, have ledger.SegmentHeader) bool {
+func sameCreation(want, have SegmentHeader) bool {
 	if (have.Parent == nil) != (want.Parent == nil) || (have.Parent != nil && *have.Parent != *want.Parent) {
 		return false
 	}
 	return have.CausationID == want.CausationID && have.Ext.Equal(want.Ext)
 }
 
-func (l *Ledger) Header(ctx context.Context, sid SessionID) (ledger.SegmentHeader, error) {
+func (l *Ledger) Header(ctx context.Context, sid SessionID) (SegmentHeader, error) {
 	if err := ctx.Err(); err != nil {
-		return ledger.SegmentHeader{}, err
+		return SegmentHeader{}, err
 	}
 	seg, err := l.tipSegment(ctx, sid)
 	if err != nil {
-		return ledger.SegmentHeader{}, err
+		return SegmentHeader{}, err
 	}
 	return seg.Header, nil
 }
@@ -275,14 +275,14 @@ func (l *Ledger) ReadStream(ctx context.Context, req StreamReadRequest) (StreamP
 	// Validate before loading so a malformed read is ErrInvalid even when the
 	// Session is absent. Stream positions count the stream's events from the
 	// first commit the read sees (SES-REP-2).
-	if err := validateStreamRead(req.SessionID, req.Domain, req.Lineage); err != nil {
+	if err := validateStreamRead(req.SessionID, req.Domain, req.Inheritance); err != nil {
 		return StreamPage{}, err
 	}
 	s, err := l.Load(ctx, req.SessionID)
 	if err != nil {
 		return StreamPage{}, err
 	}
-	return s.collectStream(ctx, req.Domain, req.Lineage, req.From, req.Limit)
+	return s.collectStream(ctx, req.Domain, req.Inheritance, req.From, req.Limit)
 }
 
 // StreamEvents walks commits in order and returns the events of stream from
@@ -331,7 +331,7 @@ func (l *Ledger) Delete(ctx context.Context, sid SessionID) (CollectReport, erro
 	if err != nil {
 		return CollectReport{}, err
 	}
-	report := CollectReport{Truncated: map[ledger.SegmentID]ledger.CommitSeq{}, Dropped: map[ledger.SegmentID][]ledger.CommitID{}}
+	report := CollectReport{Truncated: map[SegmentID]ledger.CommitSeq{}, Dropped: map[SegmentID][]ledger.CommitID{}}
 	// Tip first: a segment is removed only after the child edge that names
 	// its parent has been removed with the child.
 	for i := len(path) - 1; i >= 0; i-- {
@@ -355,7 +355,7 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	if err != nil {
 		return CollectReport{}, err
 	}
-	nodes := make(map[ledger.SegmentID]ledger.Segment, len(ids))
+	nodes := make(map[SegmentID]Segment, len(ids))
 	for _, id := range ids {
 		seg, err := l.st.Segment(ctx, id)
 		if err != nil {
@@ -372,8 +372,8 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	if err != nil {
 		return CollectReport{}, err
 	}
-	report := CollectReport{Truncated: map[ledger.SegmentID]ledger.CommitSeq{}, Dropped: map[ledger.SegmentID][]ledger.CommitID{}}
-	reached := make(map[ledger.SegmentID]Bound, len(nodes))
+	report := CollectReport{Truncated: map[SegmentID]ledger.CommitSeq{}, Dropped: map[SegmentID][]ledger.CommitID{}}
+	reached := make(map[SegmentID]Bound, len(nodes))
 	for id := range nodes {
 		bound, ok, err := l.st.SpanBound(ctx, id)
 		if err != nil {
@@ -410,12 +410,12 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 
 // legacyBounds is the retention of roots whose path was never stored.
 // Roots that have spans are already visible through SpanBound.
-func (l *Ledger) legacyBounds(ctx context.Context) (map[ledger.SegmentID]Bound, error) {
+func (l *Ledger) legacyBounds(ctx context.Context) (map[SegmentID]Bound, error) {
 	roots, err := l.st.ListRecords(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := map[ledger.SegmentID]Bound{}
+	out := map[SegmentID]Bound{}
 	for i := range roots {
 		if len(roots[i].Path) > 0 {
 			continue
@@ -438,7 +438,7 @@ func (l *Ledger) legacyBounds(ctx context.Context) (map[ledger.SegmentID]Bound, 
 // reclaim applies the greatest span that still names id. No span removes
 // the segment. A closed maximum truncates the segment to that commit.
 // ErrReferenced leaves the segment for a later Collect.
-func (l *Ledger) reclaim(ctx context.Context, id ledger.SegmentID, report *CollectReport) error {
+func (l *Ledger) reclaim(ctx context.Context, id SegmentID, report *CollectReport) error {
 	bound, ok, err := l.st.SpanBound(ctx, id)
 	if err != nil {
 		return err
@@ -459,7 +459,7 @@ func (l *Ledger) reclaim(ctx context.Context, id ledger.SegmentID, report *Colle
 // clip drops id's commits after cov. TruncateSegment re-reads the live span
 // under the segment lock and may keep a higher suffix than cov; the report
 // records only the commits that call actually removed.
-func (l *Ledger) clip(ctx context.Context, id ledger.SegmentID, cov Bound, report *CollectReport) error {
+func (l *Ledger) clip(ctx context.Context, id SegmentID, cov Bound, report *CollectReport) error {
 	if cov.Open {
 		return nil
 	}
@@ -477,8 +477,8 @@ func (l *Ledger) clip(ctx context.Context, id ledger.SegmentID, cov Bound, repor
 
 // removalOrder lists the segments no live path covers so that every segment
 // comes before its parent: a child's edge keeps its parent from being removed.
-func removalOrder(nodes map[ledger.SegmentID]ledger.Segment, need map[ledger.SegmentID]Bound) []ledger.SegmentID {
-	depth := func(id ledger.SegmentID) int {
+func removalOrder(nodes map[SegmentID]Segment, need map[SegmentID]Bound) []SegmentID {
+	depth := func(id SegmentID) int {
 		d := 0
 		for seg, ok := nodes[id]; ok && seg.Header.Parent != nil; seg, ok = nodes[seg.Header.Parent.Segment] {
 			d++
@@ -488,7 +488,7 @@ func removalOrder(nodes map[ledger.SegmentID]ledger.Segment, need map[ledger.Seg
 		}
 		return d
 	}
-	var out []ledger.SegmentID
+	var out []SegmentID
 	for id := range nodes {
 		if _, reached := need[id]; !reached {
 			out = append(out, id)

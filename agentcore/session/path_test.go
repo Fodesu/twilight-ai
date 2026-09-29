@@ -2,13 +2,11 @@ package session
 
 import (
 	"testing"
-
-	"github.com/felinics/twilight/agentcore/ledger"
 )
 
 func TestPathCut(t *testing.T) {
-	root := ledger.SegmentID("A")
-	mid := ledger.SegmentID("B")
+	root := SegmentID("A")
+	mid := SegmentID("B")
 	p := Path{
 		{Segment: root, From: 0, End: ThroughBound(2)},
 		{Segment: mid, From: 3, End: OpenBound()},
@@ -17,7 +15,7 @@ func TestPathCut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if edge != (ledger.CommitRef{Segment: mid, Seq: 4}) || len(got) != 3 {
+	if edge != (CommitRef{Segment: mid, Seq: 4}) || len(got) != 3 {
 		t.Fatalf("cut last span = %+v edge %+v", got, edge)
 	}
 	if got[1].End != ThroughBound(4) || got[2] != (Span{Segment: "C", From: 5, End: OpenBound()}) {
@@ -35,7 +33,7 @@ func TestPathCut(t *testing.T) {
 		{Segment: root, From: 0, End: ThroughBound(1)},
 		{Segment: "D", From: 2, End: OpenBound()},
 	}
-	if edge != (ledger.CommitRef{Segment: root, Seq: 1}) || len(got) != len(want) {
+	if edge != (CommitRef{Segment: root, Seq: 1}) || len(got) != len(want) {
 		t.Fatalf("cut earlier span = %+v edge %+v", got, edge)
 	}
 	for i := range want {
@@ -95,7 +93,7 @@ func TestPathValidate(t *testing.T) {
 			{Segment: "A", From: 1, End: OpenBound()},
 		},
 	}
-	tips := []ledger.SegmentID{"A", "B", "B", "A", "A"}
+	tips := []SegmentID{"A", "B", "B", "A", "A"}
 	for i, p := range bad {
 		if err := p.Validate(tips[i]); err == nil {
 			t.Fatalf("path %d validated: %+v", i, p)

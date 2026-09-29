@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"strings"
@@ -24,7 +25,7 @@ type noteState struct {
 	Notes []string `json:"notes"`
 }
 
-var refsExtractor = ledger.BindingExtractorFunc(func(value any) ([]artifact.BindingID, error) {
+var refsExtractor = module.BindingExtractorFunc(func(value any) ([]artifact.BindingID, error) {
 	var out []artifact.BindingID
 	for _, r := range value.(notePayload).Refs {
 		out = append(out, artifact.BindingID(r))
@@ -33,30 +34,30 @@ var refsExtractor = ledger.BindingExtractorFunc(func(value any) ([]artifact.Bind
 })
 
 // tpfx is the first-party prefix of a test module.
-func tpfx(id ledger.ModuleID) ledger.EventType {
-	return ledger.ModulePrefix(ledger.SourceTwilight, id)
+func tpfx(id module.ModuleID) ledger.EventType {
+	return module.ModulePrefix(module.SourceTwilight, id)
 }
 
 // noteDomain is the singleton stream domain every writer test module
 // declares; each registry these tests build holds one module.
 const noteDomain = "note"
 
-func noteStreams() []ledger.StreamDefinition {
-	return []ledger.StreamDefinition{{Domain: noteDomain, Lineage: ledger.LineageSession}}
+func noteStreams() []module.StreamDefinition {
+	return []module.StreamDefinition{{Domain: noteDomain, Inheritance: module.Inherited}}
 }
 
-func noteModule(id ledger.ModuleID, requires ...ledger.ModuleRequirement) ledger.ModuleDescriptor {
+func noteModule(id module.ModuleID, requires ...module.ModuleRequirement) module.ModuleDescriptor {
 	typ := tpfx(id) + "note"
-	return ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: id, Requires: requires, Streams: noteStreams(),
-		Events: []ledger.EventDefinition{
-			{Type: typ, Domain: noteDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[notePayload]{}},
-				Bindings: []ledger.BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Domain: noteDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[notePayload]{}}, Ignorable: true},
+	return module.ModuleDescriptor{Source: module.SourceTwilight, ID: id, Requires: requires, Streams: noteStreams(),
+		Events: []module.EventDefinition{
+			{Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}},
+				Bindings: []module.BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
+			{Type: tpfx(id) + "hint", Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}}, Ignorable: true},
 		},
-		Projections: []ledger.ProjectionDefinition{{
-			ID: ledger.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []ledger.EventType{typ}, Authoritative: true,
+		Projections: []module.ProjectionDefinition{{
+			ID: module.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []ledger.EventType{typ}, Authoritative: true,
 			Initial: func() (any, error) { return noteState{}, nil },
-			Apply: func(state any, e ledger.DecodedEvent) (any, error) {
+			Apply: func(state any, e module.DecodedEvent) (any, error) {
 				s := state.(noteState)
 				text := e.Value.(notePayload).Text
 				if text == "reject" {
@@ -65,7 +66,7 @@ func noteModule(id ledger.ModuleID, requires ...ledger.ModuleRequirement) ledger
 				s.Notes = append(append([]string(nil), s.Notes...), text)
 				return s, nil
 			},
-			StateCodec: ledger.JSONStateCodec[noteState]{},
+			StateCodec: module.JSONStateCodec[noteState]{},
 		}},
 	}
 }
@@ -77,7 +78,7 @@ func noteBatch(events ...TypedEvent) []TypedBatch {
 
 type fixture struct {
 	store    session.Stores
-	registry *ledger.Registry
+	registry *module.Registry
 	bindings artifact.BindingStore
 	ledger   artifact.RetentionLedger
 }
@@ -86,7 +87,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{}
 	f.store = filestoretest.Store(t)
-	r, err := ledger.BuildRegistry(noteModule("a"))
+	r, err := module.BuildRegistry(noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +124,7 @@ func noteGroup(id string, texts ...string) CommitFn {
 
 func notes(t *testing.T, w Writer) []string {
 	t.Helper()
-	state, _, err := w.Projections().Load(context.Background(), "s", ledger.ProjectionID(string(tpfx("a"))+"notes"), 1)
+	state, _, err := w.Projections().Load(context.Background(), "s", module.ProjectionID(string(tpfx("a"))+"notes"), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +181,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 		if c, ok, err := v.LookupCommit("c1"); err != nil || !ok || len(c.Batches) != 1 || len(c.Batches[0].Events) != 2 {
 			t.Fatalf("view lookup = %+v %v %v", c, ok, err)
 		}
-		if s, err := v.Projection(ledger.ProjectionID(string(tpfx("a"))+"notes"), 1); err != nil || len(s.(noteState).Notes) != 2 {
+		if s, err := v.Projection(module.ProjectionID(string(tpfx("a"))+"notes"), 1); err != nil || len(s.(noteState).Notes) != 2 {
 			t.Fatalf("view projection = %+v %v", s, err)
 		}
 		return nil, nil
@@ -208,7 +209,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 		t.Fatalf("index not rebuilt: %+v", again)
 	}
 	reader := session.NewProjectionReader(f.store, f.registry, nil)
-	state, through, err := reader.Load(ctx, "s", ledger.ProjectionID(string(tpfx("a"))+"notes"), 1)
+	state, through, err := reader.Load(ctx, "s", module.ProjectionID(string(tpfx("a"))+"notes"), 1)
 	if err != nil || len(state.(noteState).Notes) != 2 || through.Next != 1 {
 		t.Fatalf("store reader = %+v %+v %v", state, through, err)
 	}
@@ -443,11 +444,11 @@ func TestBindingAdmission(t *testing.T) {
 
 	maxTwo := uint32(2)
 	typ := tpfx("r") + "ref"
-	reg, err := ledger.BuildRegistry(ledger.ModuleDescriptor{Source: ledger.SourceTwilight, ID: "r", Streams: noteStreams(),
-		Events: []ledger.EventDefinition{{
-			Type: typ, Domain: noteDomain, Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{1: ledger.JSONCodec[notePayload]{}},
-			Bindings: []ledger.BindingReferenceDefinition{{
-				Extractor: refsExtractor, Cardinality: ledger.Cardinality{Min: 1, Max: &maxTwo},
+	reg, err := module.BuildRegistry(module.ModuleDescriptor{Source: module.SourceTwilight, ID: "r", Streams: noteStreams(),
+		Events: []module.EventDefinition{{
+			Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}},
+			Bindings: []module.BindingReferenceDefinition{{
+				Extractor: refsExtractor, Cardinality: module.Cardinality{Min: 1, Max: &maxTwo},
 				AllowedSchemes:     []artifact.Scheme{"spill"},
 				RequiredDurability: artifact.EventBound,
 			}},
@@ -564,7 +565,7 @@ func TestProjectionCache(t *testing.T) {
 	ctx := context.Background()
 	w := f.open(t, false)
 	defer w.Close(ctx)
-	id := ledger.ProjectionID(string(tpfx("a")) + "notes")
+	id := module.ProjectionID(string(tpfx("a")) + "notes")
 	_, _ = w.Commit(ctx, noteGroup("c1", "one"))
 	cache := session.NewMemoryProjectionCache()
 	state, through, _ := w.Projections().Load(ctx, "s", id, 1)
@@ -593,7 +594,7 @@ func TestProjectionCache(t *testing.T) {
 
 // tipSegment is the segment sid's root currently appends to: the owner
 // authority of the claims its Writer activates.
-func tipSegment(t *testing.T, store session.Stores, sid session.SessionID) ledger.SegmentID {
+func tipSegment(t *testing.T, store session.Stores, sid session.SessionID) session.SegmentID {
 	t.Helper()
 	h, err := store.Header(context.Background(), sid)
 	if err != nil {

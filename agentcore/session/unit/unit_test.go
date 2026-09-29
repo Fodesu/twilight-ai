@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
-	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -18,7 +18,7 @@ import (
 func newWriter(t *testing.T) writer.Writer {
 	t.Helper()
 	ctx := context.Background()
-	registry, err := ledger.BuildRegistry(chatlog.Module, runmod.Module)
+	registry, err := module.BuildRegistry(chatlog.Module, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

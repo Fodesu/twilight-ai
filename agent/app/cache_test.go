@@ -6,6 +6,7 @@ import (
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"sync"
 	"testing"
@@ -23,11 +24,11 @@ func newCountingCache() *countingCache {
 	return &countingCache{inner: session.NewMemoryProjectionCache()}
 }
 
-func (c *countingCache) Load(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion) (jsonstable.Value, ledger.Head, bool, error) {
+func (c *countingCache) Load(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (jsonstable.Value, ledger.Head, bool, error) {
 	return c.inner.Load(ctx, sid, id, v)
 }
 
-func (c *countingCache) Save(ctx context.Context, sid session.SessionID, id ledger.ProjectionID, v ledger.ProjectionVersion, state jsonstable.Value, through ledger.Head) error {
+func (c *countingCache) Save(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion, state jsonstable.Value, through ledger.Head) error {
 	c.mu.Lock()
 	c.saves++
 	c.mu.Unlock()
@@ -106,7 +107,7 @@ func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	if cache.count() == 0 {
 		t.Fatal("no projection was cached at all, so the check below proves nothing")
 	}
-	machine := ledger.ProjectionID("twilight/run/machine")
+	machine := module.ProjectionID("twilight/run/machine")
 	if _, _, ok, err := cache.Load(ctx, sid, machine, 1); err != nil || ok {
 		t.Errorf("machine projection entry: ok=%v err=%v, want absent", ok, err)
 	}

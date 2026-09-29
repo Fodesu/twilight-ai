@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 )
 
 // CreateRequest establishes a Session: a root naming a new segment. A
@@ -23,7 +24,7 @@ type CreateRequest struct {
 	// Ext are the module extension slots stored as SegmentHeader.Ext
 	// (SES-WIR-5): a module records what it needs about the segment's
 	// creation under its own key.
-	Ext ledger.Extensions
+	Ext module.Extensions
 }
 
 // ForkOrigin names the point a fork inherits: a Session and a CommitSeq of
@@ -48,7 +49,7 @@ type CommitReadRequest struct {
 // Head is the ledger head at read time; HasMore reports whether commits
 // beyond the returned ones exist.
 type CommitPage struct {
-	Header  ledger.SegmentHeader
+	Header  SegmentHeader
 	Commits []ledger.Commit
 	Head    ledger.Head
 	HasMore bool
@@ -60,17 +61,17 @@ type CommitPage struct {
 // domain; a zero Lineage is ErrInvalid. From counts events within the
 // stream as the chosen lineage sees it, starting at 0 for the first event.
 type StreamReadRequest struct {
-	SessionID SessionID
-	Domain    ledger.Domain
-	Lineage   ledger.StreamLineage
-	From      ledger.StreamSeq
-	Limit     uint32 // 0 = unlimited
+	SessionID   SessionID
+	Domain      ledger.Domain
+	Inheritance module.Inheritance
+	From        ledger.StreamSeq
+	Limit       uint32 // 0 = unlimited
 }
 
 // StreamPage is the result of one ReadStream. Head is the ledger head at
 // read time; HasMore reports whether events beyond the returned ones exist.
 type StreamPage struct {
-	Header  ledger.SegmentHeader
+	Header  SegmentHeader
 	Domain  ledger.Domain
 	Events  []ledger.Event
 	Head    ledger.Head
@@ -81,13 +82,13 @@ type StreamPage struct {
 // segments it removed entirely and, for segments some session still covers,
 // the new Head.Next after their unneeded suffix was dropped.
 type CollectReport struct {
-	Removed   []ledger.SegmentID
-	Truncated map[ledger.SegmentID]ledger.CommitSeq
+	Removed   []SegmentID
+	Truncated map[SegmentID]ledger.CommitSeq
 	// Dropped lists, per truncated segment, the CommitIDs of the commits the
 	// truncation removed, so the layer that owns their retention claims can
 	// release them (SES-GC-3); a removed segment's claims are released by
 	// segment.
-	Dropped map[ledger.SegmentID][]ledger.CommitID
+	Dropped map[SegmentID][]ledger.CommitID
 }
 
 // Store is the kernel port (SES 4 to 6, 8, 9). A Session is a root into the
@@ -98,9 +99,9 @@ type CollectReport struct {
 type Store interface {
 	// Create establishes a root and its tip segment and returns the tip's
 	// header.
-	Create(context.Context, CreateRequest) (ledger.SegmentHeader, error)
+	Create(context.Context, CreateRequest) (SegmentHeader, error)
 	// Header returns the header of the Session's tip segment.
-	Header(context.Context, SessionID) (ledger.SegmentHeader, error)
+	Header(context.Context, SessionID) (SegmentHeader, error)
 	// Record returns the Session's root.
 	Record(context.Context, SessionID) (SessionRecord, error)
 	Open(context.Context, SessionID, OpenOptions) (Handle, error)
@@ -166,7 +167,7 @@ type Handle interface {
 	Head() ledger.Head
 	// Header is the tip segment's creation record. It does not change for
 	// the life of the handle: a Session's tip segment is fixed at Create.
-	Header() ledger.SegmentHeader
+	Header() SegmentHeader
 	// Append persists one commit atomically and returns it as stored (SES-APP-1).
 	// It rejects malformed CommitIDs, duplicate CommitIDs, malformed stream
 	// refs and events, and a stale Epoch (SES-APP-3).

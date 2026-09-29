@@ -50,7 +50,7 @@ func IndexEntryOf(c *ledger.Commit) IndexEntry {
 
 // BuildCommitIndex derives the index of a segment from its own commits, which
 // are contiguous from header.Seed().Next.
-func BuildCommitIndex(header ledger.SegmentHeader, commits []ledger.Commit) CommitIndex {
+func BuildCommitIndex(header SegmentHeader, commits []ledger.Commit) CommitIndex {
 	idx := CommitIndex{Through: header.Seed()}
 	if len(commits) > 0 {
 		idx.Entries = make([]IndexEntry, 0, len(commits))

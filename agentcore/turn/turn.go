@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
@@ -19,7 +20,7 @@ import (
 )
 
 const (
-	ModuleID ledger.ModuleID = "turn"
+	ModuleID module.ModuleID = "turn"
 	// StreamDomain is the stream domain of Turn events: one keyed stream
 	// per Turn, bound by the payload's turnId.
 	StreamDomain = "turn"
@@ -27,7 +28,7 @@ const (
 
 // streamDefinition declares the turn domain: keyed by TurnID and of session
 // lineage, so a fork continues its parent's Turns.
-var streamDefinition = ledger.StreamDefinition{Domain: StreamDomain, Key: streamKey, Lineage: ledger.LineageSession}
+var streamDefinition = module.StreamDefinition{Domain: StreamDomain, Key: streamKey, Inheritance: module.Inherited}
 
 // streamKey binds a turn event to its Turn's stream.
 func streamKey(value any) (string, error) {
@@ -125,25 +126,25 @@ func CancelCommandID(sid session.SessionID, turnID TurnID, runID run.RunID) run.
 // --- module -----------------------------------------------------------------------
 
 // Version is the payload version the turn module writes every event with.
-const Version ledger.PayloadVersion = 1
+const Version module.PayloadVersion = 1
 
-func def[T any](typ ledger.EventType, check func(*T) error) ledger.EventDefinition {
-	return ledger.EventDefinition{Type: typ, Domain: StreamDomain,
-		Codecs: map[ledger.PayloadVersion]ledger.PayloadCodec{Version: ledger.JSONCodec[T]{Check: check}}}
+func def[T any](typ ledger.EventType, check func(*T) error) module.EventDefinition {
+	return module.EventDefinition{Type: typ, Domain: StreamDomain,
+		Codecs: map[module.PayloadVersion]module.PayloadCodec{Version: module.JSONCodec[T]{Check: check}}}
 }
 
 // Module declares the turn events, the surface projection and the Requires
 // of the Turn's scope: run (run_ended, which settles the Turn's Run) and
 // chatlog (input_delivered, which extends the Turn's inputs).
-var Module = ledger.ModuleDescriptor{
-	Source:  ledger.SourceTwilight,
+var Module = module.ModuleDescriptor{
+	Source:  module.SourceTwilight,
 	ID:      ModuleID,
-	Streams: []ledger.StreamDefinition{streamDefinition},
-	Requires: []ledger.ModuleRequirement{
-		{Source: ledger.SourceTwilight, Module: runmod.ModuleID, Events: []ledger.EventType{runmod.Prefix + "run_ended"}},
-		{Source: ledger.SourceTwilight, Module: chatlog.ModuleID, Events: []ledger.EventType{chatlog.TypeInputDelivered}},
+	Streams: []module.StreamDefinition{streamDefinition},
+	Requires: []module.ModuleRequirement{
+		{Source: module.SourceTwilight, Module: runmod.ModuleID, Events: []ledger.EventType{runmod.Prefix + "run_ended"}},
+		{Source: module.SourceTwilight, Module: chatlog.ModuleID, Events: []ledger.EventType{chatlog.TypeInputDelivered}},
 	},
-	Events: []ledger.EventDefinition{
+	Events: []module.EventDefinition{
 		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {
 			if p.TurnID == "" || p.RunID == "" || p.Preset.ID == "" || p.Preset.Digest == "" {
 				return errors.New("started requires turnId, runId and preset")
@@ -163,5 +164,5 @@ var Module = ledger.ModuleDescriptor{
 			return nil
 		}),
 	},
-	Projections: []ledger.ProjectionDefinition{SurfaceProjection},
+	Projections: []module.ProjectionDefinition{SurfaceProjection},
 }

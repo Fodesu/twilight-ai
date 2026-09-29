@@ -33,9 +33,9 @@ type ledgerHandle struct {
 	failed error
 }
 
-func (w *ledgerHandle) SessionID() SessionID         { return w.session.ID() }
-func (w *ledgerHandle) Epoch() ledger.Epoch          { return w.lease.Epoch }
-func (w *ledgerHandle) Header() ledger.SegmentHeader { return w.session.Header() }
+func (w *ledgerHandle) SessionID() SessionID  { return w.session.ID() }
+func (w *ledgerHandle) Epoch() ledger.Epoch   { return w.lease.Epoch }
+func (w *ledgerHandle) Header() SegmentHeader { return w.session.Header() }
 
 func (w *ledgerHandle) Lease() Lease {
 	w.mu.Lock()

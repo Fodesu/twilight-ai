@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/session"
@@ -119,8 +120,8 @@ type Event struct {
 	Session  session.SessionID     `json:"session"`
 	Position ledger.Position       `json:"position"`
 	Type     ledger.EventType      `json:"type,omitempty"`
-	Module   ledger.ModuleKey      `json:"module,omitempty"`
-	Version  ledger.PayloadVersion `json:"version,omitempty"`
+	Module   module.ModuleKey      `json:"module,omitempty"`
+	Version  module.PayloadVersion `json:"version,omitempty"`
 	Value    json.RawMessage       `json:"value,omitempty"`
 	Unknown  bool                  `json:"unknown,omitempty"`
 	Error    string                `json:"error,omitempty"`
