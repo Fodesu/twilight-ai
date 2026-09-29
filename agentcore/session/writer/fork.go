@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // ForkRequest creates a child Session from a parent's ledger prefix.

@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 

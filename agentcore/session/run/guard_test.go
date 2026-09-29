@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // guardView is a writer.View whose only answer is the machine projection.

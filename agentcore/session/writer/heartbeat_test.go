@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // EXT-WRT-11: a Writer opened with a lease keeps it renewed for as long as

@@ -8,8 +8,8 @@ import (
 
 	"github.com/felinics/twilight/agent/store/postgres"
 	"github.com/felinics/twilight/agent/store/postgres/postgrestest"
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/writer"
 )
 

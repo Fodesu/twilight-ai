@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // ReadSurface loads the turn surface of one Session through r.

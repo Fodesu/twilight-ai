@@ -10,11 +10,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/sdk"
 
 	"github.com/felinics/twilight/agent/input"

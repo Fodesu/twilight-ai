@@ -14,8 +14,8 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // TypedEvent is a module value plus its event metadata. The payload is

@@ -3,10 +3,10 @@ package workspace
 import (
 	"context"
 
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // Resolver is the application's loop.TargetResolver (APP-TGT-1, RUN-LOP-9):

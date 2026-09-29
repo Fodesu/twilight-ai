@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // faultStore wraps a Store so one Append can be made to fail either before

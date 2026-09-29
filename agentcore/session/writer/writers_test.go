@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // EXT-WRT-6: a Writers value confines a failed Writer to that instance. After

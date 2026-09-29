@@ -9,7 +9,7 @@ import (
 // SourceID and ModuleID identify a Session module: the source that publishes
 // it and its name within that source (EXT-REG-1). They are declared here so
 // the kernel can key extension slots by module without knowing the module
-// framework; agentcore/extension aliases them.
+// framework; agentcore/session/extension aliases them.
 type (
 	SourceID string
 	ModuleID string

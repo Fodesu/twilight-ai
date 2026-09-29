@@ -3,8 +3,8 @@ package runmod
 import (
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // WriterCachePolicy is the module's answer to "who may cache this projection":
