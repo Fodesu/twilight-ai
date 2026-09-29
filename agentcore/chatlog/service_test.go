@@ -3,8 +3,8 @@ package chatlog_test
 import (
 	"testing"
 
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
 )
 
 // pairEntries builds a context with one tool call pair: input, assistant

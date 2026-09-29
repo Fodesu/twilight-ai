@@ -1,12 +1,11 @@
 // Package chatlog is the first-party conversation module. It owns the
-// conversation's own
-// facts -- the input lifecycle, summaries, compactions and out-of-band
-// result supersession -- and projects the conversation (Surface) and the
-// model-facing context (Context) from those facts together with the Run
-// facts of agent/run. Assistant and tool_result entries are projections of
-// ModelStepCompleted, ToolCallCompleted, ToolCallAnswered and ToolCallFailed:
-// the module writes no second copy of a model or tool outcome. Turn lifecycle
-// belongs to agent/turn; execution facts to agent/run.
+// conversation's facts -- the input lifecycle, summaries, compactions and
+// out-of-band result supersession -- and projects the conversation (Surface)
+// and the model-facing context (Context) from those facts together with the
+// Run facts of agentcore/run. Assistant and tool_result entries are
+// projections of ModelStepCompleted, ToolCallCompleted, ToolCallAnswered and
+// ToolCallFailed: the module writes no second copy of a model or tool
+// outcome. Turn lifecycle belongs to agentcore/turn.
 package chatlog
 
 import (
@@ -15,11 +14,11 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 

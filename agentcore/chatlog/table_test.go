@@ -8,9 +8,9 @@ import (
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"testing"
 
+	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // TestTablePersistence checks the persistent map on its own: a Set never

@@ -4,10 +4,10 @@ import (
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"testing"
 
+	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 func freezeChatlog(t *testing.T, name, got, want string) {

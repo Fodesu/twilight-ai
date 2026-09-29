@@ -1,8 +1,8 @@
 package extension_test
 
 import (
+	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"testing"
 )
 

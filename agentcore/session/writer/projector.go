@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // projectionKey names one projection version in the projector's maps.

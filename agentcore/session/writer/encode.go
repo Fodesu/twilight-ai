@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // bindingRef is one artifact reference an event declares: the BindingID, the

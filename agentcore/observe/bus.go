@@ -15,8 +15,8 @@ import (
 
 	"github.com/felinics/twilight/agentcore/run"
 
+	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // Event is one item of a Session's event stream. Every observation of a

@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/extension"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // SES-FRK-2/3, EXT-WRT-8: a Writer over a fork folds its projections from
