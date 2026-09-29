@@ -11,7 +11,7 @@ import (
 )
 
 // ContentResolver resolves the frozen bodies structural entries name by
-// digest (RUN-WIR-4). agent/session/run.Content is the first-party
+// digest (RUN-WIR-4). run/sessionstore.Content is the first-party
 // implementation; the projections never call it (CHT-MAT-1).
 type ContentResolver interface {
 	ModelResult(context.Context, jsonstable.Digest) (model.ModelResult, error)

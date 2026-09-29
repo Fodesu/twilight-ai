@@ -14,9 +14,9 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"net/http/httptest"
@@ -60,7 +60,7 @@ func newOwner(t *testing.T) (*app.Application, *ownerhttp.Client) {
 	}
 	a, err := app.Build(app.Config{
 		Store:      filestoretest.Store(t),
-		Content:    filestoretest.Content(t, runmod.FrozenAuthority),
+		Content:    filestoretest.Content(t, sessionstore.FrozenAuthority),
 		Artifacts:  owner.Artifacts{Bindings: bindings, Ledger: ledger},
 		Executions: storetest.NewMap(nil),
 		Inbox:      &inboxtest.Map{},

@@ -21,11 +21,11 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
-	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -40,10 +40,10 @@ const (
 
 // newRuntime assembles the Memory Session stack with only the run module and
 // creates the Run with its seed input through a Start-like group.
-func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore, writer.Writer) {
+func newRuntime(t testing.TB, inputs ...run.AgentInput) (*sessionstore.SessionRunStore, writer.Writer) {
 	t.Helper()
 	store := filestoretest.Store(t)
-	registry, err := module.BuildRegistry(runmod.Module)
+	registry, err := module.BuildRegistry(sessionstore.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore
 	}
 	bindings, ledger := artifacttest.Stores(t)
 	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
-	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: runmodtest.Frozen(t, bindings)})
+	rt, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: sessionstoretest.Frozen(t, bindings)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,10 +67,10 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: sessionstore.EventType(f), Value: sessionstore.Event{RunID: defaultRunID, Fact: f}})
 	}
 	group := &writer.SemanticGroup{CommitID: "create/" + defaultRunID,
-		Batches: []writer.TypedBatch{{Domain: runmod.Stream(defaultRunID), Events: runEvents}}}
+		Batches: []writer.TypedBatch{{Domain: sessionstore.Stream(defaultRunID), Events: runEvents}}}
 	w, err := writers.Writer(ctx, defaultSession)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ type Feature struct {
 	ctx    context.Context
 	runCtx context.Context
 	runID  run.RunID
-	runs   *runmod.SessionRunStore
+	runs   *sessionstore.SessionRunStore
 	rt     store.RunStore // runs bound to w
 	w      writer.Writer  // the owner's capability over defaultSession
 

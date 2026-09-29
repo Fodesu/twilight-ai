@@ -14,11 +14,11 @@ import (
 	"github.com/felinics/twilight/agentcore/module"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
-	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"testing"
 	"time"
@@ -43,7 +43,7 @@ type testStack struct {
 	bindings artifact.BindingStore
 	ledger   artifact.RetentionLedger
 	writers  writer.Writers
-	runtime  *runmod.SessionRunStore
+	runtime  *sessionstore.SessionRunStore
 	now      func() time.Time
 }
 
@@ -53,7 +53,7 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 		now = time.Now
 	}
 	store := filestoretest.Store(t)
-	registry, err := module.BuildRegistry(runmod.Module)
+	registry, err := module.BuildRegistry(sessionstore.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func (s *testStack) open(t testing.TB) {
 		s.bindings, s.ledger = artifacttest.Stores(t)
 	}
 	s.writers = writer.NewWriters(s.store, s.registry, writer.Admission{Bindings: s.bindings, Ledger: s.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
-	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: s.registry, Store: s.store, Frozen: runmodtest.Frozen(t, s.bindings), Now: s.now})
+	rt, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: s.registry, Store: s.store, Frozen: sessionstoretest.Frozen(t, s.bindings), Now: s.now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,10 +104,10 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: sessionstore.EventType(f), Value: sessionstore.Event{RunID: runID, Fact: f}})
 	}
 	group := &writer.SemanticGroup{CommitID: ledger.CommitID("create/" + string(runID)),
-		Batches: []writer.TypedBatch{{Domain: runmod.Stream(runID), Events: runEvents}}}
+		Batches: []writer.TypedBatch{{Domain: sessionstore.Stream(runID), Events: runEvents}}}
 	w, err := s.writers.Writer(context.Background(), testSession)
 	if err != nil {
 		t.Fatal(err)
@@ -122,20 +122,20 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 }
 
 // newTestRuntime is a run store holding "run-1" seeded with one input.
-func newTestRuntime(t testing.TB) (*runmod.SessionRunStore, writer.Writer) {
+func newTestRuntime(t testing.TB) (*sessionstore.SessionRunStore, writer.Writer) {
 	t.Helper()
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{"q":"hi"}`)})
 	return stack.runtime, stack.writer(t)
 }
 
-func loopRuntime(t *testing.T) (*runmod.SessionRunStore, writer.Writer) {
+func loopRuntime(t *testing.T) (*sessionstore.SessionRunStore, writer.Writer) {
 	t.Helper()
 	return newTestRuntime(t)
 }
 
 // recordFacts returns every committed fact of runID in stream order.
-func recordFacts(t testing.TB, rt *runmod.SessionRunStore, runID RunID) []Fact {
+func recordFacts(t testing.TB, rt *sessionstore.SessionRunStore, runID RunID) []Fact {
 	t.Helper()
 	record, err := rt.Record(context.Background(), testSession, runID)
 	if err != nil {
@@ -144,7 +144,7 @@ func recordFacts(t testing.TB, rt *runmod.SessionRunStore, runID RunID) []Fact {
 	return record.Facts
 }
 
-func loadState(t testing.TB, rt *runmod.SessionRunStore, w writer.Writer, runID RunID) store.Snapshot {
+func loadState(t testing.TB, rt *sessionstore.SessionRunStore, w writer.Writer, runID RunID) store.Snapshot {
 	t.Helper()
 	snap, err := rt.Bind(w).Load(context.Background(), runID)
 	if err != nil {

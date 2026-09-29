@@ -1,4 +1,4 @@
-package runmod
+package sessionstore
 
 import (
 	"github.com/felinics/twilight/agentcore/ledger"

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"testing"
@@ -18,7 +18,7 @@ import (
 func newWriter(t *testing.T) writer.Writer {
 	t.Helper()
 	ctx := context.Background()
-	registry, err := module.BuildRegistry(chatlog.Module, runmod.Module)
+	registry, err := module.BuildRegistry(chatlog.Module, sessionstore.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,13 +58,13 @@ func TestCommitMergesRefusesAndReplays(t *testing.T) {
 		prepared++
 		return submitted("b").Prepare(ctx, v, now)
 	})
-	work := unit.Work{CommitID: "u1", Parts: []unit.Part{submitted("a"), runmod.CreateRun(newRun, nil), counting}}
+	work := unit.Work{CommitID: "u1", Parts: []unit.Part{submitted("a"), sessionstore.CreateRun(newRun, nil), counting}}
 	res, err := unit.Commit(ctx, w, 7, work)
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("commit = %+v %v", res, err)
 	}
 	if len(res.Commit.Batches) != 2 || res.Commit.Batches[0].Domain != chatlog.Stream || len(res.Commit.Batches[0].Events) != 2 ||
-		res.Commit.Batches[1].Domain != runmod.Stream("r1") {
+		res.Commit.Batches[1].Domain != sessionstore.Stream("r1") {
 		t.Fatalf("batches = %+v", res.Commit.Batches)
 	}
 	if res.Commit.Batches[0].Events[0].RecordedAtUnixMilli != 7 {
@@ -83,7 +83,7 @@ func TestCommitMergesRefusesAndReplays(t *testing.T) {
 		if ok, err := v.Committed("u2"); err != nil || ok {
 			t.Fatalf("refused unit committed = %v %v", ok, err)
 		}
-		if _, ok := v.StreamHead(runmod.Stream("r1")); !ok {
+		if _, ok := v.StreamHead(sessionstore.Stream("r1")); !ok {
 			t.Fatal("run stream not indexed")
 		}
 		return nil, nil

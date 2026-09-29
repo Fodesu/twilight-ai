@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -18,12 +19,11 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
 	"github.com/felinics/twilight/agentcore/run/store"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
-	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
@@ -56,18 +56,18 @@ type harness struct {
 	now       int64
 	seq       int
 	writers   writer.Writers
-	rt        *runmod.SessionRunStore
+	rt        *sessionstore.SessionRunStore
 	c         *rt.Coordinator
 }
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := module.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
+	registry, err := module.BuildRegistry(chatlog.Module, sessionstore.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bindings, retention := artifacttest.Stores(t)
-	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmodtest.Frozen(t, bindings), now: 1_000,
+	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: sessionstoretest.Frozen(t, bindings), now: 1_000,
 		bindings: bindings, retention: retention}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func (h *harness) open() {
 	h.t.Helper()
 	clock := func() time.Time { return time.UnixMilli(h.now) }
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.retention}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
-	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: h.registry, Store: h.store, Frozen: h.frozen, Now: clock})
+	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: h.registry, Store: h.store, Frozen: h.frozen, Now: clock})
 	if err != nil {
 		h.t.Fatal(err)
 	}

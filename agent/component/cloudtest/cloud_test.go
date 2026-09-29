@@ -39,9 +39,9 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/redispatch/redispatchtest"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -272,7 +272,7 @@ func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activ
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	content, err := filestore.NewContentStore(c.content, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	content, err := filestore.NewContentStore(c.content, sessionstore.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		c.t.Fatal(err)
 	}

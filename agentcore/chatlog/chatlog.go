@@ -18,7 +18,7 @@ import (
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 )
 
 const ModuleID module.ModuleID = "chatlog"
@@ -493,7 +493,7 @@ var supersededExtractor module.BindingExtractor = module.BindingExtractorFunc(fu
 	if p.OutputDigest == "" {
 		return nil, nil
 	}
-	return []artifact.BindingID{runmod.FrozenBindingID(p.OutputDigest)}, nil
+	return []artifact.BindingID{sessionstore.FrozenBindingID(p.OutputDigest)}, nil
 })
 
 var partsBinding = module.BindingReferenceDefinition{
@@ -537,9 +537,9 @@ var consumedRunFacts = []string{"model_step_completed", "tool_step_opened", "too
 func runRequirement() module.ModuleRequirement {
 	events := make([]ledger.EventType, 0, len(consumedRunFacts))
 	for _, name := range consumedRunFacts {
-		events = append(events, runmod.Type(name))
+		events = append(events, sessionstore.Type(name))
 	}
-	return module.ModuleRequirement{Source: module.SourceTwilight, Module: runmod.ModuleID, Events: events}
+	return module.ModuleRequirement{Source: module.SourceTwilight, Module: sessionstore.ModuleID, Events: events}
 }
 
 // Module is the chatlog ModuleDescriptor (CHT-SCP-1: Requires run facts).

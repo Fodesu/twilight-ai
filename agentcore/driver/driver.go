@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/run/loop"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 )
@@ -18,7 +18,7 @@ import (
 type Driver struct {
 	// Runs is the Run module's Session adapter; every drive binds it to the
 	// caller's Writer.
-	Runs     *runmod.SessionRunStore
+	Runs     *sessionstore.SessionRunStore
 	Loops    *Loops
 	Recovery *Recovery
 	// Responders answer the ExternalResponse waits a drive leaves; nil

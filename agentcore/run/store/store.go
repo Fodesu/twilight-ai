@@ -32,7 +32,7 @@ var ErrOwnershipLost = errors.New("agent: run store ownership lost")
 // the Runs of one Scope live in, already bound to the caller's write
 // capability. It speaks only Run types; how a command reaches durable
 // storage, how facts are encoded on the wire and how the bound capability
-// fences a stale owner are the adapter's business (agent/session/run). Runs
+// fences a stale owner are the adapter's business (run/sessionstore). Runs
 // are created by the owning module's creation commit; there is no Create.
 type RunStore interface {
 	// Scope is the store this port is bound to.

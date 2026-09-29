@@ -1,4 +1,4 @@
-package runmod
+package sessionstore
 
 import (
 	"fmt"
@@ -17,7 +17,7 @@ func RequireNoActiveRun(view writer.View) error {
 		return err
 	}
 	for id := range m.Active {
-		return fmt.Errorf("runmod: run %s is active", id)
+		return fmt.Errorf("sessionstore: run %s is active", id)
 	}
 	return nil
 }

@@ -2,12 +2,12 @@ package turn
 
 import (
 	"fmt"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 )
 
 const SurfaceProjectionID module.ProjectionID = "twilight/turn/surface"
@@ -87,7 +87,7 @@ func (s *TurnSurface) Active() (TurnView, bool) {
 var SurfaceProjection = module.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: []ledger.EventType{TypeStarted, TypeFailed, TypeSuperseded,
-		chatlog.TypeInputDelivered, runmod.Prefix + "run_ended"},
+		chatlog.TypeInputDelivered, sessionstore.Prefix + "run_ended"},
 	// Attempt settlement is folded from run_ended, so inherited Turns settle
 	// from the parent's run streams, whose domain is of segment lineage and
 	// would otherwise be skipped (EXT-PRJ-8); a fork point inside a Turn is
@@ -120,7 +120,7 @@ func applySurface(state any, e module.DecodedEvent) (any, error) {
 		s.Turns[p.TurnID] = TurnView{TurnID: p.TurnID, Status: TurnActive, InputIDs: append([]chatlog.InputID(nil), p.InputIDs...),
 			Preset: p.Preset, RunID: p.RunID}
 		s.RunOwner[p.RunID] = p.TurnID
-	case runmod.Event:
+	case sessionstore.Event:
 		return s.applyRun(p)
 	case FailedPayload:
 		v, err := s.settling(p.TurnID)
@@ -166,7 +166,7 @@ func applySurface(state any, e module.DecodedEvent) (any, error) {
 // completed, failed otherwise; a Stop already settled it as stopped in the
 // same commit and the end is only recorded. A Run owned by no Turn of this
 // Session is not ours.
-func (s TurnSurface) applyRun(ev runmod.Event) (any, error) {
+func (s TurnSurface) applyRun(ev sessionstore.Event) (any, error) {
 	ended, ok := ev.Fact.(run.RunEnded)
 	if !ok {
 		return nil, fmt.Errorf("turn surface: unexpected run fact %T", ev.Fact)

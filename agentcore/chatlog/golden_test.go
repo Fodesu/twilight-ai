@@ -1,11 +1,11 @@
 package chatlog_test
 
 import (
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"testing"
 )
 
@@ -61,7 +61,7 @@ func TestChatlogWireGolden(t *testing.T) {
 	}
 	freezeChatlog(t, "compaction digest", string(cpd), "sha256:bbfcad9e58bc7a287bd5519b5ecde07dc2926ba9f88363bf15bc3b6ec10b630f")
 
-	reg, err := module.BuildRegistry(runmod.Module, chatlog.Module)
+	reg, err := module.BuildRegistry(sessionstore.Module, chatlog.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

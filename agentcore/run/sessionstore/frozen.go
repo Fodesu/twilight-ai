@@ -1,4 +1,4 @@
-package runmod
+package sessionstore
 
 import (
 	"bytes"
@@ -46,7 +46,7 @@ type frozenValues struct {
 // as an error rather than a miss.
 func FrozenValues(content artifact.ContentStore, bindings artifact.BindingStore) (frozen.Store, error) {
 	if content == nil || bindings == nil {
-		return nil, errors.New("runmod: frozen values require a content store and a binding store")
+		return nil, errors.New("sessionstore: frozen values require a content store and a binding store")
 	}
 	return &frozenValues{store: content, bindings: bindings}, nil
 }
@@ -177,7 +177,7 @@ func (c *Content) raw(ctx context.Context, what string, digest run.Digest) ([]by
 		return nil, err
 	}
 	if digest == "" {
-		return nil, fmt.Errorf("runmod: empty %s digest", what)
+		return nil, fmt.Errorf("sessionstore: empty %s digest", what)
 	}
 	raw, ok, err := c.Frozen.Get(ctx, digest)
 	if err != nil {

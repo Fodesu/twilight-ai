@@ -5,8 +5,8 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/turn"
 	"strings"
 	"testing"
@@ -30,7 +30,7 @@ func (guardView) LookupCommit(ledger.CommitID) (ledger.Commit, bool, error) {
 	return ledger.Commit{}, false, nil
 }
 func (v guardView) Projection(id module.ProjectionID, _ module.ProjectionVersion) (any, error) {
-	if id == runmod.MachineProjectionID {
+	if id == sessionstore.MachineProjectionID {
 		return v.machine, v.err
 	}
 	return v.state, v.err
@@ -40,8 +40,8 @@ func activeSurface(runID run.RunID) turn.TurnSurface {
 	return turn.TurnSurface{Order: []turn.TurnID{"t1"}, Turns: map[turn.TurnID]turn.TurnView{"t1": {TurnID: "t1", Status: turn.TurnActive, RunID: runID}}}
 }
 
-func machineWith(current run.Current) runmod.Machine {
-	return runmod.Machine{Active: map[run.RunID]run.MachineState{"r1": {RunID: "r1", Status: run.RunActive, Current: current}}}
+func machineWith(current run.Current) sessionstore.Machine {
+	return sessionstore.Machine{Active: map[run.RunID]run.MachineState{"r1": {RunID: "r1", Status: run.RunActive, Current: current}}}
 }
 
 // The quiescent guard admits a Session between Turns and a Turn between
@@ -56,7 +56,7 @@ func TestRequireQuiescentRun(t *testing.T) {
 		"no turns":                          {view: guardView{state: turn.TurnSurface{}}, ok: true},
 		"completed turn":                    {view: guardView{state: surfaceWith(turn.TurnCompleted)}, ok: true},
 		"active turn, run open":             {view: guardView{state: activeSurface("r1"), machine: machineWith(run.Open{})}, ok: true},
-		"active turn, no live run":          {view: guardView{state: activeSurface("r1"), machine: runmod.Machine{}}, ok: true},
+		"active turn, no live run":          {view: guardView{state: activeSurface("r1"), machine: sessionstore.Machine{}}, ok: true},
 		"tool step without executing calls": {view: guardView{state: activeSurface("r1"), machine: machineWith(pending)}, ok: true},
 		"tool step with an executing call":  {view: guardView{state: activeSurface("r1"), machine: machineWith(executing)}},
 		"model step prepared":               {view: guardView{state: activeSurface("r1"), machine: machineWith(run.ModelStep{Status: run.ModelPrepared})}},

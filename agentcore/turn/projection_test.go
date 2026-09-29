@@ -3,7 +3,7 @@ package turn
 import (
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"strings"
 	"testing"
 )
@@ -14,8 +14,8 @@ import (
 // rather than a silent no-op.
 func TestSurfaceSettlesFromRunEnded(t *testing.T) {
 	started := StartedPayload{TurnID: "t1", RunID: "r1"}
-	ended := func(runID run.RunID, end run.RunEnd) runmod.Event {
-		return runmod.Event{RunID: runID, Fact: run.RunEnded{End: end}}
+	ended := func(runID run.RunID, end run.RunEnd) sessionstore.Event {
+		return sessionstore.Event{RunID: runID, Fact: run.RunEnded{End: end}}
 	}
 	completed, failed := run.RunCompletedEnd{}, run.RunFailedEnd{Reason: "provider"}
 	cases := []struct {

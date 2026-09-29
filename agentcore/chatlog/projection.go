@@ -7,7 +7,7 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 )
 
 const (
@@ -114,7 +114,7 @@ var chatlogConsumes = func() []ledger.EventType {
 	out = append(out, TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
 		TypeToolResultSuperseded, TypeSummary, TypeCompactionCreated, TypeCompactionInvalidated)
 	for _, name := range consumedRunFacts {
-		out = append(out, runmod.Type(name))
+		out = append(out, sessionstore.Type(name))
 	}
 	return out
 }()
@@ -173,7 +173,7 @@ func applySurface(state any, e module.DecodedEvent) (any, error) { //nolint:gocr
 		if err := terminateInput(&s, p.InputID, InputRejected); err != nil {
 			return nil, err
 		}
-	case runmod.Event:
+	case sessionstore.Event:
 		return s.applyRun(p, e.Position)
 	case ToolResultSupersededPayload:
 		old, ok := s.ToolResults.Get(p.ToolResultID)
@@ -222,7 +222,7 @@ func applySurface(state any, e module.DecodedEvent) (any, error) { //nolint:gocr
 // applyRun folds one Run fact into the Surface (CHT-ENT-1, CHT-ENT-2). The
 // Run's Turn is remembered from run_created until run_ended: no fact of the
 // Run follows its end, so the table is bounded by the Runs active now.
-func (s Surface) applyRun(ev runmod.Event, pos ledger.Position) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
+func (s Surface) applyRun(ev sessionstore.Event, pos ledger.Position) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
 		// The Run's Turn comes from the input_delivered that fed it.
@@ -460,7 +460,7 @@ func applyContext(state any, e module.DecodedEvent) (any, error) { //nolint:gocr
 	case InputRejectedPayload:
 		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
-	case runmod.Event:
+	case sessionstore.Event:
 		return c.applyRun(p, e.Position)
 	case ToolResultSupersededPayload:
 		i := c.indexOf(EntryToolResult, string(p.ToolResultID))
@@ -508,7 +508,7 @@ func applyContext(state any, e module.DecodedEvent) (any, error) { //nolint:gocr
 
 // applyRun folds one Run fact into the Context (CHT-CTX-2). Runs is bounded
 // like the Surface's: the Turn is forgotten at run_ended.
-func (c Context) applyRun(ev runmod.Event, pos ledger.Position) (any, error) {
+func (c Context) applyRun(ev sessionstore.Event, pos ledger.Position) (any, error) {
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
 		// The Run's Turn comes from the input_delivered that fed it.
@@ -619,7 +619,7 @@ func ContextFold(events []module.DecodedEvent) ([]Entry, error) {
 	state, _ := ContextProjection.Initial()
 	for i := range events {
 		e := &events[i]
-		if e.Unknown || (e.Module != module.TwilightModule(ModuleID) && e.Module != module.TwilightModule(runmod.ModuleID)) {
+		if e.Unknown || (e.Module != module.TwilightModule(ModuleID) && e.Module != module.TwilightModule(sessionstore.ModuleID)) {
 			return nil, errors.New("chatlog: context fold requires decoded chatlog or run events")
 		}
 		next, err := applyContext(state, *e)

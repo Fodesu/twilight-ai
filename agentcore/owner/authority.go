@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/history"
@@ -24,10 +25,9 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 	"sync"
@@ -52,7 +52,7 @@ type Ports struct {
 	// Store is the Session kernel (required).
 	Store session.Stores
 	// Content is the cas ContentStore the frozen bodies live in under
-	// runmod.FrozenAuthority (RUN-WIR-4). The run store writes them; the
+	// sessionstore.FrozenAuthority (RUN-WIR-4). The run store writes them; the
 	// materializer reads them for prompts, replies and transcripts.
 	// Required.
 	Content artifact.ContentStore
@@ -112,7 +112,7 @@ type Owner struct {
 	Admission writer.Admission
 	// Runs is the Run module's Session adapter: the Run core's store bound
 	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
-	Runs *runmod.SessionRunStore
+	Runs *sessionstore.SessionRunStore
 	// Turns commits the Turn protocol and reads Turn status.
 	Turns *rt.Coordinator
 	// Loops, Driver, Recovery and Responders are the drive chain over the
@@ -160,7 +160,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	// The first-party four are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
 	registry, err := module.BuildRegistryWithExtensions(
-		[]module.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
+		[]module.ModuleDescriptor{chatlog.Module, sessionstore.Module, turn.Module}, p.Modules)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +178,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	}
 	// Frozen bodies live in the content store and are admitted through the
 	// same binding store the Writers resolve against (RUN-WIR-4).
-	fz, err := runmod.FrozenValues(p.Content, bindings)
+	fz, err := sessionstore.FrozenValues(p.Content, bindings)
 	if err != nil {
 		return nil, err
 	}
@@ -188,8 +188,8 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	}
 	admission := writer.Admission{Bindings: bindings, Ledger: retention}
 	writers := writer.NewWriters(store, registry, admission, p.Ownership,
-		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery), Observers: p.Observers})
-	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: fz, Cache: cache, Now: now})
+		writer.WritersConfig{Cache: cache, CachePolicy: sessionstore.WriterCachePolicy(p.CacheEvery), Observers: p.Observers})
+	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: fz, Cache: cache, Now: now})
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	// takes no ownership (OWN-HDL-2). The Writer keeps its own transactional
 	// projections for the commit critical section.
 	projections := session.NewProjectionReader(store, registry, cache)
-	content := runmod.NewContent(fz)
+	content := sessionstore.NewContent(fz)
 	a := &Owner{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
 		Turns:   &rt.Coordinator{Projections: projections, Runs: runs, Now: now},

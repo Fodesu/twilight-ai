@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/run"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 )
@@ -51,11 +51,11 @@ func RequireQuiescentRun(v writer.View) error {
 	if !ok {
 		return nil
 	}
-	mstate, err := v.Projection(runmod.MachineProjectionID, runmod.MachineProjection.Version)
+	mstate, err := v.Projection(sessionstore.MachineProjectionID, sessionstore.MachineProjection.Version)
 	if err != nil {
 		return err
 	}
-	machine, ok := mstate.(runmod.Machine)
+	machine, ok := mstate.(sessionstore.Machine)
 	if !ok {
 		return fmt.Errorf("runtime: machine projection is %T", mstate)
 	}

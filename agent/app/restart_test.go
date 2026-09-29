@@ -13,9 +13,9 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -44,7 +44,7 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (preset.Pre
 	if err != nil {
 		t.Fatal(err)
 	}
-	content1, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	content1, err := filestore.NewContentStore(root, sessionstore.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content2, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	content2, err := filestore.NewContentStore(root, sessionstore.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestRestartRedispatchesMissingEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content2, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	content2, err := filestore.NewContentStore(root, sessionstore.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content2, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	content2, err := filestore.NewContentStore(root, sessionstore.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			content, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+			content, err := filestore.NewContentStore(root, sessionstore.FrozenAuthority, filestore.ContentStoreOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -454,7 +454,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 	}
 }
 
-func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID run.RunID) runmod.Record {
+func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID run.RunID) sessionstore.Record {
 	t.Helper()
 	rec, err := h.Owner.Runs.Record(context.Background(), sid, runID)
 	if err != nil {

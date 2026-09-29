@@ -2,14 +2,14 @@ package runtimetest
 
 import (
 	"errors"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/store"
 	rt "github.com/felinics/twilight/agentcore/runtime"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 	"testing"
@@ -35,9 +35,9 @@ func Run(t *testing.T, factory Factory) {
 }
 
 const (
-	typeCreated  = runmod.Prefix + "run_created"
-	typeAccepted = runmod.Prefix + "input_accepted"
-	typeEnded    = runmod.Prefix + "run_ended"
+	typeCreated  = sessionstore.Prefix + "run_created"
+	typeAccepted = sessionstore.Prefix + "input_accepted"
+	typeEnded    = sessionstore.Prefix + "run_ended"
 )
 
 // --- Start（TRN-STR-1/2/3/4、TRN-ID-3/4、TRN-EVT-2、TRN-SCP-2） -----------------------------
@@ -94,7 +94,7 @@ func testStart(t *testing.T, factory Factory) {
 	if d := decode[chatlog.InputDeliveredPayload](t, h.registry, &group[1]); d.TurnID != "t1" || d.RunID != runID {
 		t.Fatalf("delivered payload = %+v", d)
 	}
-	created := decode[runmod.Event](t, h.registry, &group[3])
+	created := decode[sessionstore.Event](t, h.registry, &group[3])
 	if _, ok := created.Fact.(run.RunCreated); !ok || created.RunID != runID {
 		t.Fatalf("created fact = %+v", created)
 	}
@@ -323,7 +323,7 @@ func testStop(t *testing.T, factory Factory) {
 	// conflicts.
 	res := h.complete(next.RunID)
 	types := eventTypes(res.Events)
-	if types[len(types)-1] != runmod.Prefix+"run_ended" {
+	if types[len(types)-1] != sessionstore.Prefix+"run_ended" {
 		t.Fatalf("completion group = %v, want run_ended last and no turn event", types)
 	}
 	st = h.status("t3")
@@ -392,10 +392,10 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: sessionstore.EventType(f), RecordedAtUnixMilli: h.now, Value: sessionstore.Event{RunID: "r-foreign", Fact: f}})
 	}
 	h.mustApply(writer.SemanticGroup{CommitID: "foreign-run", Batches: []writer.TypedBatch{
-		{Domain: runmod.Stream("r-foreign"), Events: runEvents},
+		{Domain: sessionstore.Stream("r-foreign"), Events: runEvents},
 	}})
 	surface := h.surface()
 	if len(surface.Turns) != 1 || surface.RunOwner["r-foreign"] != "" {

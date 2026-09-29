@@ -21,9 +21,9 @@ import (
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
 // Config is the owner service's document.
@@ -177,7 +177,7 @@ func sessionStores(cfg *Config, db stores.Handle) (session.Stores, artifact.Cont
 		if cfg.Sessions.Root != "" || cfg.Content.Root != "" {
 			return nil, nil, errors.New("ownerservice: sessions.root and content.root are not used with stores.postgres")
 		}
-		content, err := shared.Content(runmod.FrozenAuthority)
+		content, err := shared.Content(sessionstore.FrozenAuthority)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -190,7 +190,7 @@ func sessionStores(cfg *Config, db stores.Handle) (session.Stores, artifact.Cont
 	if err != nil {
 		return nil, nil, err
 	}
-	content, err := filestore.NewContentStore(cfg.Content.Root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	content, err := filestore.NewContentStore(cfg.Content.Root, sessionstore.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		return nil, nil, err
 	}

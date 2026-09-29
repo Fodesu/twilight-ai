@@ -19,9 +19,9 @@ import (
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
 	"github.com/felinics/twilight/agentcore/run/redispatch/redispatchtest"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	runstoretest "github.com/felinics/twilight/agentcore/run/sessionstore/storetest"
 	"github.com/felinics/twilight/agentcore/runtime/runtimetest"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
-	runstoretest "github.com/felinics/twilight/agentcore/session/run/storetest"
 	"github.com/felinics/twilight/agentcore/session/sessiontest"
 )
 
@@ -91,7 +91,7 @@ func TestArtifactConformance(t *testing.T) {
 func TestContentPutLimit(t *testing.T) {
 	db := postgrestest.Open(t)
 	artifacttest.PutLimit(t, func(t *testing.T, maxBytes int64) artifact.ContentStore {
-		store, err := db.Content(runmod.FrozenAuthority, postgres.ContentStoreOptions{MaxBytes: maxBytes})
+		store, err := db.Content(sessionstore.FrozenAuthority, postgres.ContentStoreOptions{MaxBytes: maxBytes})
 		if err != nil {
 			t.Fatal(err)
 		}

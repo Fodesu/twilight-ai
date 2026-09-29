@@ -17,11 +17,11 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 	"path/filepath"
@@ -87,7 +87,7 @@ func exampleStores(root, worker string) app.Config {
 	if err != nil {
 		panic(err)
 	}
-	content, err := filestore.NewContentStore(filepath.Join(root, "content"), runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	content, err := filestore.NewContentStore(filepath.Join(root, "content"), sessionstore.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		panic(err)
 	}
@@ -118,7 +118,7 @@ func buildHost(cfg app.Config, models map[run.ModelRef]local.ModelInvoker, tools
 // durableContent is a fresh file cas store under the frozen authority.
 func durableContent(t testing.TB) artifact.ContentStore {
 	t.Helper()
-	return filestoretest.Content(t, runmod.FrozenAuthority)
+	return filestoretest.Content(t, sessionstore.FrozenAuthority)
 }
 
 // mustPreset builds the one-model AgentPreset the tests register.

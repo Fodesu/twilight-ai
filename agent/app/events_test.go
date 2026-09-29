@@ -7,10 +7,10 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -66,7 +66,7 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 				if v.TurnID == ref.TurnID {
 					sawStarted, runID = true, v.RunID
 				}
-			case runmod.Event:
+			case sessionstore.Event:
 				if ended, ok := v.Fact.(run.RunEnded); ok && v.RunID == runID {
 					_, sawCompleted = ended.End.(run.RunCompletedEnd)
 				}

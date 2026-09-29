@@ -17,8 +17,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/store"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 
 	"github.com/felinics/twilight/sdk"
@@ -342,7 +342,7 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 // responseLossRuntime is a run store whose bound ports lose the response of
 // some accepted commits, so a test can see the Loop's one-shot replay.
 type responseLossRuntime struct {
-	*runmod.SessionRunStore
+	*sessionstore.SessionRunStore
 	mu             sync.Mutex
 	count          map[CommandID]int
 	loseModelStart bool

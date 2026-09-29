@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -30,7 +30,7 @@ type Coordinator struct {
 	Projections session.ProjectionReader
 	// Runs is the Run module's Session adapter: it reads Runs for Status and
 	// contributes the Run Parts of every Turn unit.
-	Runs *runmod.SessionRunStore
+	Runs *sessionstore.SessionRunStore
 	// Now stamps event times; nil selects time.Now.
 	Now func() time.Time
 }
@@ -66,7 +66,7 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, wo
 		switch {
 		case errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}):
 			return fmt.Errorf("%w: %w", store.ErrOwnershipLost, err)
-		case errors.Is(err, chatlog.ErrNotSubmitted), errors.Is(err, runmod.ErrRunExists):
+		case errors.Is(err, chatlog.ErrNotSubmitted), errors.Is(err, sessionstore.ErrRunExists):
 			return fmt.Errorf("%w: %w", turn.ErrConflict, err)
 		}
 		return err
@@ -132,7 +132,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 				writer.TypedEvent{Type: turn.TypeStarted, Value: turn.StartedPayload{TurnID: turnID, RunID: runID, InputIDs: inputIDs, Preset: req.Preset}}), nil
 		}),
 		chatlog.DeliverInputs(chatlog.TurnID(turnID), runID, req.Inputs),
-		runmod.CreateRun(newRun, req.Inputs),
+		sessionstore.CreateRun(newRun, req.Inputs),
 	}}
 	if err := c.commit(ctx, w, "start", work); err != nil {
 		return TurnResult{}, err

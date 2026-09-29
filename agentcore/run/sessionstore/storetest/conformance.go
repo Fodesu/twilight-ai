@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -13,11 +14,10 @@ import (
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/run/wire"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -98,7 +98,7 @@ func testCreation(t *testing.T, factory Factory) {
 		t.Fatal(err)
 	}
 	head := h.head()
-	if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "start/t2/1", Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
+	if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "start/t2/1", Parts: []unit.Part{sessionstore.CreateRun(again, nil)}}); !errors.Is(err, sessionstore.ErrRunExists) {
 		t.Fatalf("duplicate created = %v, want ErrRunExists", err)
 	}
 	if h.head() != head {
@@ -262,7 +262,7 @@ func testDeclineToolCall(t *testing.T, factory Factory) {
 	if res.Status != store.CommitAccepted {
 		t.Fatalf("decline = %v", res.Status)
 	}
-	if types := eventTypes(res.Events); len(types) != 1 || types[0] != runmod.Prefix+"tool_call_failed" {
+	if types := eventTypes(res.Events); len(types) != 1 || types[0] != sessionstore.Prefix+"tool_call_failed" {
 		t.Fatalf("decline events = %v, want tool_call_failed alone", types)
 	}
 	ts := res.Snapshot.State.Current.(run.ToolStep)
@@ -313,7 +313,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 		t.Fatal("one command did not produce exactly one commit")
 	}
 	types := eventTypes(res.Events)
-	want := []ledger.EventType{runmod.Prefix + "model_step_completed", runmod.Prefix + "tool_step_opened"}
+	want := []ledger.EventType{sessionstore.Prefix + "model_step_completed", sessionstore.Prefix + "tool_step_opened"}
 	if strings.Join(asStrings(types), ",") != strings.Join(asStrings(want), ",") {
 		t.Fatalf("commit events = %v, want %v and no conversation copy", types, want)
 	}
@@ -336,7 +336,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 		len(last.Assistant.CallIDs) != 1 || last.Assistant.CallIDs[0] != chatlog.CallID(call) {
 		t.Fatalf("assistant entry = %+v, want ResultDigest %s and call %s", last.Assistant, resultDigest, call)
 	}
-	if body, err := runmod.NewContent(h.frozen).ModelResult(h.ctx, resultDigest); err != nil || len(body.ToolCalls) != 1 {
+	if body, err := sessionstore.NewContent(h.frozen).ModelResult(h.ctx, resultDigest); err != nil || len(body.ToolCalls) != 1 {
 		t.Fatalf("frozen result = %+v %v", body, err)
 	}
 	// Attach follows the facts; twilight/run/ events are refused.
@@ -344,7 +344,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 	output := run.MustParseCanonicalJSON(`{"ok":true}`)
 	if _, err := h.commit("r1", schema.Identity().DeriveSettlementCommandID(toolEff), 0,
 		run.SubmitToolResult{StepID: ts.RefValue.ID, CallID: call, Effect: toolEff, Result: run.ToolExecutionResult{Output: output}},
-		moduleEvent{Type: runmod.Prefix + "input_accepted", Value: runmod.Event{RunID: "r1", Fact: run.InputAccepted{Input: input("x")}}}); err == nil {
+		moduleEvent{Type: sessionstore.Prefix + "input_accepted", Value: sessionstore.Event{RunID: "r1", Fact: run.InputAccepted{Input: input("x")}}}); err == nil {
 		t.Fatal("Attach with a twilight/run/ event accepted")
 	}
 	h.submitInputs(input("in-attach"))
@@ -352,7 +352,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 		run.SubmitToolResult{StepID: ts.RefValue.ID, CallID: call, Effect: toolEff, Result: run.ToolExecutionResult{Output: output}},
 		moduleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: "in-attach", TurnID: "t1", RunID: "r1"}})
 	types = eventTypes(res.Events)
-	if len(types) != 2 || types[0] != runmod.Prefix+"tool_call_completed" || types[1] != chatlog.TypeInputDelivered {
+	if len(types) != 2 || types[0] != sessionstore.Prefix+"tool_call_completed" || types[1] != chatlog.TypeInputDelivered {
 		t.Fatalf("group events = %v", types)
 	}
 	outputDigest, _ := schema.Canonical().DigestToolOutput(output)
@@ -366,7 +366,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 	if tr == nil || tr.OutputDigest != outputDigest || tr.Status != chatlog.ToolSuccess || tr.Source != chatlog.SourceToolOutput {
 		t.Fatalf("tool_result entry = %+v", tr)
 	}
-	if body, err := runmod.NewContent(h.frozen).ToolOutput(h.ctx, outputDigest); err != nil || !body.Equal(output) {
+	if body, err := sessionstore.NewContent(h.frozen).ToolOutput(h.ctx, outputDigest); err != nil || !body.Equal(output) {
 		t.Fatalf("frozen output = %s %v", body, err)
 	}
 }
@@ -470,7 +470,7 @@ func testSettlementSnapshot(t *testing.T, factory Factory) {
 	}
 	// The Turn settles from the Run's own run_ended: no turn event is written.
 	types := eventTypes(res.Events)
-	if types[len(types)-1] != runmod.Prefix+"run_ended" {
+	if types[len(types)-1] != sessionstore.Prefix+"run_ended" {
 		t.Fatalf("terminal group events = %v, want run_ended last", types)
 	}
 	if v := h.turnSurface().Turns["t1"]; v.Status != turn.TurnCompleted || v.End == nil {
@@ -535,7 +535,7 @@ func testProjection(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	cached := func() (ledger.Head, bool) {
-		_, through, ok, err := h.cache.Load(h.ctx, sid, runmod.MachineProjectionID, runmod.MachineProjection.Version)
+		_, through, ok, err := h.cache.Load(h.ctx, sid, sessionstore.MachineProjectionID, sessionstore.MachineProjection.Version)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -561,7 +561,7 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 	// The cached state plus tail equals the Writer's state.
 	observer := session.NewProjectionReader(h.store, h.registry, h.cache)
-	fromCache, _, err := observer.Load(h.ctx, sid, runmod.MachineProjectionID, runmod.MachineProjection.Version)
+	fromCache, _, err := observer.Load(h.ctx, sid, sessionstore.MachineProjectionID, sessionstore.MachineProjection.Version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func testProjection(t *testing.T, factory Factory) {
 	if !ok || !wire.StatesEquivalent(&active, &loaded.State) || !wire.StatesEquivalent(&active, &rec.Snapshot.State) {
 		t.Fatal("projection, Load and Record disagree")
 	}
-	if fromCache := fromCache.(runmod.Machine).Active["r1"]; !wire.StatesEquivalent(&fromCache, &active) {
+	if fromCache := fromCache.(sessionstore.Machine).Active["r1"]; !wire.StatesEquivalent(&fromCache, &active) {
 		t.Fatal("observer's cache+tail disagrees with the writer's projection")
 	}
 	// Terminal Run leaves the projection entirely; Load and Record still
@@ -588,7 +588,7 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 	if again, err := run.BuildNewRun("r1", ""); err != nil {
 		t.Fatal(err)
-	} else if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "recreate/r1", Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
+	} else if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "recreate/r1", Parts: []unit.Part{sessionstore.CreateRun(again, nil)}}); !errors.Is(err, sessionstore.ErrRunExists) {
 		t.Fatalf("recreating an ended run = %v, want ErrRunExists", err)
 	}
 	// An illegal fact sequence does not fold.

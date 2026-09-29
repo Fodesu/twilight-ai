@@ -1,4 +1,4 @@
-package runmod
+package sessionstore
 
 import (
 	"context"
@@ -29,10 +29,10 @@ func (s *SessionRunStore) RecoverInterrupted(ctx context.Context, w writer.Write
 		return 0, err
 	}
 	if w == nil {
-		return 0, errors.New("runmod: recovery requires the session's writer")
+		return 0, errors.New("sessionstore: recovery requires the session's writer")
 	}
 	if rec == nil {
-		return 0, errors.New("runmod: recovery requires a reconciler; reconcile.Reconciler{Abandon: true} disposes without an executor")
+		return 0, errors.New("sessionstore: recovery requires a reconciler; reconcile.Reconciler{Abandon: true} disposes without an executor")
 	}
 	sid := w.SessionID()
 	state, _, err := w.Projections().Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
@@ -41,7 +41,7 @@ func (s *SessionRunStore) RecoverInterrupted(ctx context.Context, w writer.Write
 	}
 	m, ok := state.(Machine)
 	if !ok {
-		return 0, fmt.Errorf("runmod: machine projection is %T", state)
+		return 0, fmt.Errorf("sessionstore: machine projection is %T", state)
 	}
 	st := s.Bind(w)
 	n := 0

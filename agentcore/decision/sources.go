@@ -10,8 +10,8 @@
 package decision
 
 import (
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
 )
 
 // ProjectionSource is what a prompt builder reads state from: the owner

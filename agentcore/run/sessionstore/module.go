@@ -1,8 +1,8 @@
-// Package runmod is the first-party Run Session Module (agent-run.md 5): the
-// twilight/run/ EventDefinitions, the twilight/run/machine projection and the
-// Session adapter of the Run core (SessionRunStore) over the Session Module
-// Framework.
-package runmod
+// Package sessionstore is the Run domain over a Session ledger: the
+// twilight/run/ event definitions, the twilight/run/machine projection, the
+// frozen-body store over the content store, and the RunStore adapter
+// (SessionRunStore) that commits Run commands through a Session Writer.
+package sessionstore
 
 import (
 	"encoding/json"
@@ -33,7 +33,7 @@ var streamDefinition = module.StreamDefinition{Domain: StreamDomain, Key: stream
 func streamKey(value any) (string, error) {
 	ev, ok := value.(Event)
 	if !ok {
-		return "", fmt.Errorf("value is %T, want runmod.Event", value)
+		return "", fmt.Errorf("value is %T, want sessionstore.Event", value)
 	}
 	return string(ev.RunID), nil
 }
@@ -69,7 +69,7 @@ type factCodec struct {
 func (c factCodec) Validate(value any) error {
 	ev, ok := value.(Event)
 	if !ok {
-		return fmt.Errorf("value is %T, want runmod.Event", value)
+		return fmt.Errorf("value is %T, want sessionstore.Event", value)
 	}
 	if ev.RunID == "" || ev.Fact == nil {
 		return errors.New("event requires runId and fact")
@@ -171,12 +171,12 @@ func factCodecs(name string, older map[module.PayloadVersion]module.PayloadCodec
 	for v := module.PayloadVersion(1); int(v) <= len(older); v++ {
 		c, ok := older[v]
 		if !ok || c == nil {
-			panic(fmt.Sprintf("runmod: fact %s: codec history has no version %d", name, v))
+			panic(fmt.Sprintf("sessionstore: fact %s: codec history has no version %d", name, v))
 		}
 		codecs[v] = c
 	}
 	if len(codecs) != len(older) {
-		panic(fmt.Sprintf("runmod: fact %s: codec history is not contiguous from 1", name))
+		panic(fmt.Sprintf("sessionstore: fact %s: codec history is not contiguous from 1", name))
 	}
 	current := module.PayloadVersion(len(older) + 1) //nolint:gosec // G115: a handful of versions
 	codecs[current] = factCodec{local: name, wire: wire.Facts{}}

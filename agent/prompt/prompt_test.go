@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/prompt"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
@@ -15,7 +16,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"reflect"
 	"testing"
 )

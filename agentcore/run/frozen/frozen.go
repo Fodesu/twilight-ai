@@ -18,7 +18,7 @@ import (
 // tool output and an external tool response. The digest is the SHA-256 of
 // the stored bytes, so a body is one cas entry whose key is its digest; the
 // adapter that realizes this port over a cas ContentStore lives in
-// agent/session/run. Put is idempotent. The fact that names a body is its
+// run/sessionstore. Put is idempotent. The fact that names a body is its
 // retention root: the body stays readable as long as the Session ledger
 // holds the fact.
 type Store interface {

@@ -1,4 +1,4 @@
-package runmod
+package sessionstore
 
 import (
 	"encoding/json"
@@ -103,7 +103,7 @@ type machineCodec struct{}
 
 func (machineCodec) Validate(value any) error {
 	if _, ok := value.(Machine); !ok {
-		return fmt.Errorf("state is %T, want runmod.Machine", value)
+		return fmt.Errorf("state is %T, want sessionstore.Machine", value)
 	}
 	return nil
 }

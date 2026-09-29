@@ -1,4 +1,4 @@
-package runmod
+package sessionstore
 
 import (
 	"context"
@@ -62,10 +62,10 @@ type SessionRunStore struct {
 
 func NewSessionRunStore(cfg Config) (*SessionRunStore, error) {
 	if cfg.Registry == nil || cfg.Store == nil {
-		return nil, errors.New("runmod: store requires registry and store")
+		return nil, errors.New("sessionstore: store requires registry and store")
 	}
 	if cfg.Frozen == nil {
-		return nil, errors.New("runmod: store requires a frozen value store")
+		return nil, errors.New("sessionstore: store requires a frozen value store")
 	}
 	if cfg.Snapshot == nil {
 		cfg.Snapshot = DefaultSnapshotPolicy
@@ -93,7 +93,7 @@ func loadMachine(view writer.View) (Machine, error) {
 	}
 	m, ok := state.(Machine)
 	if !ok {
-		return Machine{}, fmt.Errorf("runmod: machine projection is %T", state)
+		return Machine{}, fmt.Errorf("sessionstore: machine projection is %T", state)
 	}
 	return m, nil
 }
@@ -129,7 +129,7 @@ func (b *bound) Load(ctx context.Context, runID run.RunID) (store.Snapshot, erro
 	}
 	m, ok := state.(Machine)
 	if !ok {
-		return store.Snapshot{}, fmt.Errorf("runmod: machine projection is %T", state)
+		return store.Snapshot{}, fmt.Errorf("sessionstore: machine projection is %T", state)
 	}
 	if snap, ok := m.snapshot(runID); ok {
 		return snap, nil
@@ -169,7 +169,7 @@ func (s *SessionRunStore) FrozenRequest(ctx context.Context, digest run.Digest) 
 		return model.ModelRequest{}, err
 	}
 	if digest == "" {
-		return model.ModelRequest{}, errors.New("runmod: empty request digest")
+		return model.ModelRequest{}, errors.New("sessionstore: empty request digest")
 	}
 	raw, ok, err := s.cfg.Frozen.Get(ctx, digest)
 	if err != nil {
@@ -205,7 +205,7 @@ type Command struct {
 // so a rejected or replayed command leaves nothing inconsistent behind.
 func (s *SessionRunStore) Command(ctx context.Context, req store.CommitRequest) (*Command, error) {
 	if req.Command.RunID == "" || req.Command.ID == "" {
-		return nil, errors.New("runmod: command requires RunID and CommandID")
+		return nil, errors.New("sessionstore: command requires RunID and CommandID")
 	}
 	if err := s.freezeBodies(ctx, req.Command.Command); err != nil {
 		return nil, err
@@ -261,7 +261,7 @@ func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.Commi
 	switch res.Outcome {
 	case writer.CommitApplied:
 		if !c.prepared {
-			return store.CommitResult{}, errors.New("runmod: commit applied without the run part")
+			return store.CommitResult{}, errors.New("sessionstore: commit applied without the run part")
 		}
 		c.s.afterCommit(ctx, w, &c.before, &c.after)
 		return store.CommitResult{Status: store.CommitAccepted, Facts: c.facts,
@@ -282,7 +282,7 @@ func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.Commi
 	case writer.CommitConflict:
 		return store.CommitResult{}, run.ErrCommandConflict
 	default:
-		return store.CommitResult{}, fmt.Errorf("runmod: commit: %s: %s", res.Outcome, res.Detail)
+		return store.CommitResult{}, fmt.Errorf("sessionstore: commit: %s: %s", res.Outcome, res.Detail)
 	}
 }
 
@@ -357,7 +357,7 @@ func (s *SessionRunStore) afterCommit(ctx context.Context, w writer.Writer, befo
 // --- CreateRun part ------------------------------------------------------------------
 
 // ErrRunExists reports a creation of a RunID this Session already holds.
-var ErrRunExists = errors.New("runmod: run already exists")
+var ErrRunExists = errors.New("sessionstore: run already exists")
 
 // CreateRun is the Part that establishes a Run (RUN-NEW-1): RunCreated and
 // one InputAccepted per initial input, in the Run's own stream. The owning
@@ -410,7 +410,7 @@ func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, run
 	}
 	m, ok := state.(Machine)
 	if !ok {
-		return Record{}, fmt.Errorf("runmod: machine projection is %T", state)
+		return Record{}, fmt.Errorf("sessionstore: machine projection is %T", state)
 	}
 	var expect *run.MachineState
 	if ms, ok := m.Active[runID]; ok {
@@ -438,11 +438,11 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 			return Record{}, err
 		}
 		if decoded.Unknown {
-			return Record{}, fmt.Errorf("runmod: record: unknown run event %s v%d", e.Type, decoded.Version)
+			return Record{}, fmt.Errorf("sessionstore: record: unknown run event %s v%d", e.Type, decoded.Version)
 		}
 		ev, ok := decoded.Value.(Event)
 		if !ok {
-			return Record{}, fmt.Errorf("runmod: record: %s decoded to %T", e.Type, decoded.Value)
+			return Record{}, fmt.Errorf("sessionstore: record: %s decoded to %T", e.Type, decoded.Value)
 		}
 		if ev.RunID != runID {
 			continue
@@ -459,10 +459,10 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 	}
 	state, err := store.FoldRun(record.Facts)
 	if err != nil {
-		return Record{}, fmt.Errorf("runmod: record: %w", err)
+		return Record{}, fmt.Errorf("sessionstore: record: %w", err)
 	}
 	if expect != nil && page.Head == expectHead && !wire.StatesEquivalent(&state, expect) {
-		return Record{}, errors.New("runmod: record: projection diverges from the event fold")
+		return Record{}, errors.New("sessionstore: record: projection diverges from the event fold")
 	}
 	record.Snapshot = store.Snapshot{State: state, Position: position}
 	return record, nil

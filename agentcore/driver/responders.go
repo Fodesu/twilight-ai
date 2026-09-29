@@ -9,9 +9,9 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 )
 
@@ -42,7 +42,7 @@ type WaitingCall struct {
 // at a time across every drive and every resume of this process.
 type Responders struct {
 	// Runs is the Run module's Session adapter the answers commit through.
-	Runs *runmod.SessionRunStore
+	Runs *sessionstore.SessionRunStore
 	// Tools are the Responders by the ToolRef whose waits they answer.
 	Tools map[run.ToolRef]Responder
 	// Fail receives an answer that could not be settled; nil discards it.
@@ -151,11 +151,11 @@ func (rs *Responders) answerAll(ctx context.Context, w writer.Writer, lifetime c
 	if len(rs.Tools) == 0 {
 		return
 	}
-	state, _, err := w.Projections().Load(ctx, w.SessionID(), runmod.MachineProjectionID, runmod.MachineProjection.Version)
+	state, _, err := w.Projections().Load(ctx, w.SessionID(), sessionstore.MachineProjectionID, sessionstore.MachineProjection.Version)
 	if err != nil {
 		return
 	}
-	machine, ok := state.(runmod.Machine)
+	machine, ok := state.(sessionstore.Machine)
 	if !ok {
 		return
 	}

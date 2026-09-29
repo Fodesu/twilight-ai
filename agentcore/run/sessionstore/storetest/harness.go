@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -18,11 +19,10 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
-	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -68,19 +68,19 @@ type harness struct {
 	cache    *session.MemoryProjectionCache
 	clock    *clock
 	writers  writer.Writers
-	rt       *runmod.SessionRunStore
+	rt       *sessionstore.SessionRunStore
 	seq      int
 }
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := module.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
+	registry, err := module.BuildRegistry(chatlog.Module, sessionstore.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bindings, ledger := artifacttest.Stores(t)
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
-		ledger: ledger, frozen: runmodtest.Frozen(t, bindings),
+		ledger: ledger, frozen: sessionstoretest.Frozen(t, bindings),
 		cache: session.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{SessionID: sid}); err != nil {
 		t.Fatal(err)
@@ -94,8 +94,8 @@ func newHarness(t testing.TB, f Fixture) *harness {
 func (h *harness) open() {
 	h.t.Helper()
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true},
-		writer.WritersConfig{Cache: h.cache, CachePolicy: runmod.WriterCachePolicy(0)})
-	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: h.registry, Store: h.store,
+		writer.WritersConfig{Cache: h.cache, CachePolicy: sessionstore.WriterCachePolicy(0)})
+	rt, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: h.registry, Store: h.store,
 		Frozen: h.frozen, Cache: h.cache, Now: h.clock.Now})
 	if err != nil {
 		h.fatal(err)
@@ -105,7 +105,7 @@ func (h *harness) open() {
 
 // takeover opens a new owner process over the same store; the previous
 // store stays usable so tests can observe its fencing.
-func (h *harness) takeover() (*runmod.SessionRunStore, writer.Writer) {
+func (h *harness) takeover() (*sessionstore.SessionRunStore, writer.Writer) {
 	h.t.Helper()
 	old, oldWriter := h.rt, h.writer()
 	h.open()
@@ -214,7 +214,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: sessionstore.EventType(f), RecordedAtUnixMilli: 1, Value: sessionstore.Event{RunID: runID, Fact: f}})
 	}
 	// One batch per stream: the Turn's (naming its Run, TRN-SCP-2), the
 	// chatlog's when inputs are delivered, and the Run's.
@@ -224,7 +224,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	if len(chatEvents) > 0 {
 		group.Batches = append(group.Batches, writer.TypedBatch{Domain: chatlog.Stream, Events: chatEvents})
 	}
-	group.Batches = append(group.Batches, writer.TypedBatch{Domain: runmod.Stream(runID), Events: runEvents})
+	group.Batches = append(group.Batches, writer.TypedBatch{Domain: sessionstore.Stream(runID), Events: runEvents})
 	return group
 }
 
@@ -244,7 +244,7 @@ func (h *harness) load(runID run.RunID) store.Snapshot {
 	return snap
 }
 
-func (h *harness) record(runID run.RunID) runmod.Record {
+func (h *harness) record(runID run.RunID) sessionstore.Record {
 	h.t.Helper()
 	rec, err := h.rt.Record(h.ctx, sid, runID)
 	if err != nil {
@@ -287,7 +287,7 @@ func (h *harness) commit(runID run.RunID, id run.CommandID, base run.RunPosition
 	return h.commitWith(h.rt, h.writer(), runID, id, base, cmd, attach...)
 }
 
-func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...moduleEvent) (commitResult, error) {
+func (h *harness) commitWith(rt *sessionstore.SessionRunStore, w writer.Writer, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...moduleEvent) (commitResult, error) {
 	h.t.Helper()
 	env, err := schema.Wire().Envelope(runID, id, cmd)
 	if err != nil {
@@ -490,13 +490,13 @@ func (h *harness) startTool(runID run.RunID, step run.StepID, call run.CallID) r
 	return eff
 }
 
-func (h *harness) machine() runmod.Machine {
+func (h *harness) machine() sessionstore.Machine {
 	h.t.Helper()
-	state, _, err := h.writer().Projections().Load(h.ctx, sid, runmod.MachineProjectionID, runmod.MachineProjection.Version)
+	state, _, err := h.writer().Projections().Load(h.ctx, sid, sessionstore.MachineProjectionID, sessionstore.MachineProjection.Version)
 	if err != nil {
 		h.fatal(err)
 	}
-	return state.(runmod.Machine)
+	return state.(sessionstore.Machine)
 }
 
 func eventTypes(events []ledger.Event) []ledger.EventType {

@@ -9,14 +9,14 @@ package turn
 import (
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
 const (
@@ -141,7 +141,7 @@ var Module = module.ModuleDescriptor{
 	ID:      ModuleID,
 	Streams: []module.StreamDefinition{streamDefinition},
 	Requires: []module.ModuleRequirement{
-		{Source: module.SourceTwilight, Module: runmod.ModuleID, Events: []ledger.EventType{runmod.Prefix + "run_ended"}},
+		{Source: module.SourceTwilight, Module: sessionstore.ModuleID, Events: []ledger.EventType{sessionstore.Prefix + "run_ended"}},
 		{Source: module.SourceTwilight, Module: chatlog.ModuleID, Events: []ledger.EventType{chatlog.TypeInputDelivered}},
 	},
 	Events: []module.EventDefinition{

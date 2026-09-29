@@ -10,13 +10,13 @@ import (
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"testing"
 )
 
 func registry(t *testing.T) *module.Registry {
 	t.Helper()
-	r, err := module.BuildRegistry(runmod.Module, Module)
+	r, err := module.BuildRegistry(sessionstore.Module, Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ type step struct {
 }
 
 func runStep(runID run.RunID, f run.Fact) step {
-	return step{runmod.EventType(f), runmod.Event{RunID: runID, Fact: f}}
+	return step{sessionstore.EventType(f), sessionstore.Event{RunID: runID, Fact: f}}
 }
 
 func completed(runID run.RunID, stepID run.StepID, digest jsonstable.Digest) step {
@@ -277,7 +277,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	if ids, _ := supersededExtractor.BindingIDs(ToolResultSupersededPayload{ToolResultID: "x", Status: ToolSuccess, OutputDigest: "sha256:o"}); len(ids) != 1 || ids[0] != runmod.FrozenBindingID("sha256:o") {
+	if ids, _ := supersededExtractor.BindingIDs(ToolResultSupersededPayload{ToolResultID: "x", Status: ToolSuccess, OutputDigest: "sha256:o"}); len(ids) != 1 || ids[0] != sessionstore.FrozenBindingID("sha256:o") {
 		t.Fatalf("superseded extractor = %v", ids)
 	}
 }

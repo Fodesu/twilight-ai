@@ -1,8 +1,8 @@
 package chatlog_test
 
 import (
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/ledger"
-	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"testing"
 )
 

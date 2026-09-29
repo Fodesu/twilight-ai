@@ -11,8 +11,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
-	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 )
 
@@ -27,7 +27,7 @@ import (
 type Recovery struct {
 	// Runs is the Run module's Session adapter; recovery binds it to the
 	// Writer the Session was opened with.
-	Runs     *runmod.SessionRunStore
+	Runs     *sessionstore.SessionRunStore
 	Executor effect.ExecutionPort
 	Loops    *Loops
 	// Watcher is where every Reconciler waits for Outcomes: the settlement
