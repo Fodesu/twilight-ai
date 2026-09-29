@@ -1,5 +1,5 @@
 // Package spawn is the reference agent's subagent capability (SPN), built on
-// the core's Waiting(ExternalResponse) and Driver.Responders seam: the tool
+// the core's Waiting(ExternalResponse) and driver.Responders seam: the tool
 // a model calls to delegate a task, the argument and result shapes, the
 // deterministic child Session identity, and the provenance record that makes
 // a spawn call recoverable after a crash.

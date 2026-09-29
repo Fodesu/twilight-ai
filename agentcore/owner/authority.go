@@ -96,6 +96,10 @@ type Ports struct {
 	// Fail receives failures of work the Owner does outside any caller's
 	// call, such as settling a reattached Outcome; nil discards them.
 	Fail func(session.SessionID, error)
+	// OrphanProbe is how often an effect still waiting is attached and, when
+	// orphaned, handed to RecoverExecution: by the Watcher of a live drive
+	// and by the Reconciler of a takeover. Zero selects the defaults.
+	OrphanProbe time.Duration
 }
 
 // Owner is the composed core (OWN-PRT-2). Exported fields are the ports
@@ -109,11 +113,17 @@ type Owner struct {
 	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
 	Runs *runmod.SessionRunStore
 	// Turns commits the Turn protocol and reads Turn status.
-	Turns    *rt.Coordinator
-	Driver   *driver.Driver
-	Presets  preset.Registry
-	Executor effect.ExecutionPort
-	Frozen   frozen.Store
+	Turns *rt.Coordinator
+	// Loops, Driver, Recovery and Responders are the drive chain over the
+	// shared Watcher: the Owner composes them and closes the Watcher.
+	Loops      *driver.Loops
+	Driver     *driver.Driver
+	Recovery   *driver.Recovery
+	Responders *driver.Responders
+	Watcher    *effect.Watcher
+	Presets    preset.Registry
+	Executor   effect.ExecutionPort
+	Frozen     frozen.Store
 	// Projections reads every projection through the Session's Writer.
 	Projections session.ProjectionReader
 	// Content materializes the frozen bodies projections name (CHT-MAT-1).
@@ -204,13 +214,14 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 		Clock:   now,
 		open:    make(map[session.SessionID]*openSession),
 	}
-	a.Driver = driver.New()
-	a.Driver.Runs, a.Driver.Executor = runs, p.Executor
+	a.Watcher = &effect.Watcher{Port: p.Executor, Probe: p.OrphanProbe}
 	// A nil resolver gives every effect no target (APP-TGT-1).
-	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
-	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
-	a.Driver.Fail = p.Fail
-	a.Driver.MissingEffects, a.Driver.Redispatches = p.MissingEffects, p.Redispatches
+	a.Loops = &driver.Loops{Executor: p.Executor, Presets: presets, Decisions: decisions, Targets: p.TargetResolver,
+		Sources: decision.Sources{Projections: projections, Content: content}, Watcher: a.Watcher}
+	a.Recovery = &driver.Recovery{Runs: runs, Executor: p.Executor, Loops: a.Loops, Watcher: a.Watcher, Fail: p.Fail,
+		MissingEffects: p.MissingEffects, Redispatches: p.Redispatches, OrphanProbe: p.OrphanProbe}
+	a.Responders = &driver.Responders{Runs: runs, Fail: p.Fail}
+	a.Driver = &driver.Driver{Runs: runs, Loops: a.Loops, Recovery: a.Recovery, Responders: a.Responders}
 	return a, nil
 }
 
@@ -228,7 +239,8 @@ func (a *Owner) Close(ctx context.Context) error {
 		}
 	}
 	a.mu.Unlock()
-	a.Driver.Close()
+	a.Recovery.Close()
+	a.Watcher.Close()
 	err := writer.CloseWriters(ctx, a.Writers)
 	a.mu.Lock()
 	for _, sid := range owned {

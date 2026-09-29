@@ -473,7 +473,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, erro
 		return "", false, err
 	}
 	summary, err := compaction.Summarizer{
-		ResolvePreset: s.a.Presets.Resolve, Content: s.a.Frozen, Executor: s.a.Executor, Watcher: s.a.Driver.OutcomeWatcher(),
+		ResolvePreset: s.a.Presets.Resolve, Content: s.a.Frozen, Executor: s.a.Executor, Watcher: s.a.Watcher,
 	}.Summarize(ctx, s.sid, s.opts.Preset, materialized)
 	if err != nil {
 		return "", false, err

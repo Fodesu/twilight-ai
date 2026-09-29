@@ -130,7 +130,7 @@ type Config struct {
 	Spawn *spawn.Options
 	// OrphanProbe is how often an effect still waiting for its Outcome is
 	// attached and, when its worker died holding it, handed to recovery
-	// (driver.Driver.OrphanProbe); zero selects the defaults.
+	// (owner.Ports.OrphanProbe); zero selects the defaults.
 	OrphanProbe time.Duration
 	// Worker configures the Worker that owns execution records (lease, id,
 	// reconcile loop, clock). It applies whenever Build composes a Worker:
@@ -361,7 +361,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	}
 	a, err := owner.New(owner.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,
-		MissingEffects: c.MissingEffects, Redispatches: c.Redispatches,
+		MissingEffects: c.MissingEffects, Redispatches: c.Redispatches, OrphanProbe: c.OrphanProbe,
 		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
 		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
 	})
@@ -375,16 +375,15 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	}
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// through the driver's planner seam (APP-CKP-1, RUN-LOP-10).
-	a.Driver.Planner = app
-	a.Driver.OrphanProbe = c.OrphanProbe
+	a.Loops.Planner = app
 	// Provisional observations of effects in flight reach the same stream
 	// as the committed facts (OBS-1, RUN-LOP-6).
-	a.Driver.Sink = busSink{bus}
+	a.Driver.Sink, a.Recovery.Sink = busSink{bus}, busSink{bus}
 	if app.spawn != nil {
 		// The subagent tool waits for an external response the Responder
 		// gives (SPN-1, DRV-4).
 		app.spawn.Bind(a)
-		a.Driver.Responders = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
+		a.Responders.Tools = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
 	}
 	for i := range c.Presets {
 		p := &c.Presets[i]

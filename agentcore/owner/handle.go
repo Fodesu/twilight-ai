@@ -71,11 +71,14 @@ func (a *Owner) Open(ctx context.Context, sid session.SessionID) (*Handle, error
 		return nil, err
 	}
 	gen.w = w
-	n, err := a.Driver.Open(ctx, w)
+	n, err := a.Recovery.Open(ctx, w)
 	if err != nil {
 		_ = a.release(context.WithoutCancel(ctx), sid, gen, true)
 		return nil, err
 	}
+	// Waits a previous owner left with a Responder are answered by this
+	// one: the Responder continues from its durable state.
+	a.Driver.ResumeWaiting(ctx, w)
 	a.mu.Lock()
 	gen.state = open
 	a.mu.Unlock()
@@ -103,7 +106,7 @@ func (a *Owner) beginClose(sid session.SessionID, gen *openSession) *openSession
 func (a *Owner) release(ctx context.Context, sid session.SessionID, gen *openSession, closeWriter bool) error {
 	var err error
 	if closeWriter {
-		a.Driver.Stop(sid)
+		a.Recovery.Stop(sid)
 		err = writer.CloseWriter(ctx, a.Writers, sid)
 	}
 	a.mu.Lock()
