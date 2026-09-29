@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -68,13 +69,13 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	turn1Done := make(chan turn.TurnResponse, 1)
+	turn1Done := make(chan rt.TurnResult, 1)
 	go func() {
 		resp, err := s1.Route(ctx, []run.AgentInput{in1})
 		if err != nil {
 			panic(err)
 		}
-		turn1Done <- resp.TurnResponse
+		turn1Done <- resp.TurnResult
 	}()
 	<-stage1.started
 
@@ -142,7 +143,10 @@ func Example_jsonlPrototype() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed\n", owned.Recovered)
 
-	resp2, err := p2.Owner.Driver.Drive(ctx, owned.Writer(), "turn-2")
+	if _, err := p2.Owner.Driver.Drive(ctx, owned.Writer(), "turn-2"); err != nil {
+		panic(err)
+	}
+	resp2, err := p2.Owner.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
 	if err != nil {
 		panic(err)
 	}

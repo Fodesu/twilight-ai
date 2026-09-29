@@ -7,6 +7,7 @@ import (
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -101,7 +102,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
-	if _, err := h.Owner.Turns.Start(ctx, w, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
+	if _, err := h.Owner.Turns.Start(ctx, w, rt.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
 		Inputs: []run.AgentInput{in}, Preset: preset}); err != nil {
 		t.Fatal(err)
 	}

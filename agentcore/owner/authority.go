@@ -205,7 +205,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 		open:    make(map[session.SessionID]*openSession),
 	}
 	a.Driver = driver.New()
-	a.Driver.Runs, a.Driver.Turns, a.Driver.Executor = runs, a.Turns, p.Executor
+	a.Driver.Runs, a.Driver.Executor = runs, p.Executor
 	// A nil resolver gives every effect no target (APP-TGT-1).
 	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
 	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}

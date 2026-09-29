@@ -92,18 +92,18 @@ func turnBatch(turnID turn.TurnID, now int64, events ...writer.TypedEvent) []wri
 // Start opens a new Turn: the Turn's started fact, the chatlog's deliveries
 // and the Run's creation are one unit; the chatlog Part enforces, on the
 // same View, that every input is still submitted.
-func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req turn.StartRequest) (turn.TurnResponse, error) {
+func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartRequest) (TurnResult, error) {
 	if req.Ref.SessionID == "" || req.Ref.TurnID == "" || req.Preset.ID == "" || req.Preset.Digest == "" {
-		return turn.TurnResponse{}, errors.New("runtime: start requires ref and preset")
+		return TurnResult{}, errors.New("runtime: start requires ref and preset")
 	}
 	if err := owned(w, req.Ref); err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	inputIDs := make([]chatlog.InputID, len(req.Inputs))
 	seen := map[run.InputID]struct{}{}
 	for i, in := range req.Inputs {
 		if _, dup := seen[in.ID]; dup || in.ID == "" {
-			return turn.TurnResponse{}, errors.New("runtime: start inputs must have unique non-empty IDs")
+			return TurnResult{}, errors.New("runtime: start inputs must have unique non-empty IDs")
 		}
 		seen[in.ID] = struct{}{}
 		inputIDs[i] = chatlog.InputID(in.ID)
@@ -114,7 +114,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req turn.Start
 	runID := turn.DeriveRunID(sid, turnID)
 	newRun, err := run.BuildNewRun(runID, ledger.CausationID(commitID))
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	work := unit.Work{CommitID: commitID, Parts: []unit.Part{
 		unit.PartFunc(func(_ context.Context, view writer.View, now int64) ([]writer.TypedBatch, error) {
@@ -135,7 +135,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req turn.Start
 		runmod.CreateRun(newRun, req.Inputs),
 	}}
 	if err := c.commit(ctx, w, "start", work); err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	return c.respond(ctx, req.Ref)
 }
@@ -144,33 +144,33 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req turn.Start
 // chatlog's deliveries are one unit, so the Run accepts every input and the
 // chatlog delivers every input, or nothing is written. The command derives
 // from the ordered InputIDs; a replay of the same batch is AlreadyApplied.
-func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req turn.DeliverRequest) (turn.TurnResponse, error) {
+func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverRequest) (TurnResult, error) {
 	if err := owned(w, req.Ref); err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	sid := req.Ref.SessionID
 	surface, err := turn.ReadSurface(ctx, w.Projections(), sid)
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	view, ok := surface.Turns[req.Ref.TurnID]
 	if !ok || view.Status != turn.TurnActive {
-		return turn.TurnResponse{}, fmt.Errorf("%w: turn %s is not active", turn.ErrConflict, req.Ref.TurnID)
+		return TurnResult{}, fmt.Errorf("%w: turn %s is not active", turn.ErrConflict, req.Ref.TurnID)
 	}
 	// AcceptInput is not a hard-CAS command: no Base is needed; the machine
 	// projection is read only for the Run's protocol version.
 	runID := view.RunID
 	if len(req.Inputs) == 0 {
-		return turn.TurnResponse{}, fmt.Errorf("%w: deliver without inputs", turn.ErrConflict)
+		return TurnResult{}, fmt.Errorf("%w: deliver without inputs", turn.ErrConflict)
 	}
 	cmd := run.AcceptInput{Inputs: req.Inputs}
 	env, err := schema.Wire().Envelope(runID, schema.Identity().DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	accept, err := c.Runs.Command(ctx, store.CommitRequest{Command: env})
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	work := unit.Work{CommitID: ledger.CommitID(env.ID), Parts: []unit.Part{accept, chatlog.DeliverInputs(chatlog.TurnID(req.Ref.TurnID), runID, req.Inputs)}}
 	if err := c.commit(ctx, w, "deliver", work); err != nil {
@@ -178,7 +178,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req turn.Del
 			// The last step settled first: the inputs stay submitted.
 			return c.respond(ctx, req.Ref)
 		}
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	return c.respond(ctx, req.Ref)
 }
@@ -186,27 +186,27 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req turn.Del
 // Stop settles the active Turn as stopped: CancelRun rebases on the current
 // state, and the Run's cancellation and the Turn's failed settlement are one
 // unit.
-func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req turn.StopRequest) (turn.TurnResponse, error) {
+func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest) (TurnResult, error) {
 	if err := owned(w, req.Ref); err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
 	surface, err := turn.ReadSurface(ctx, w.Projections(), sid)
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	view, ok := surface.Turns[turnID]
 	if !ok || view.Status != turn.TurnActive {
-		return turn.TurnResponse{}, fmt.Errorf("%w: turn %s is not active", turn.ErrConflict, turnID)
+		return TurnResult{}, fmt.Errorf("%w: turn %s is not active", turn.ErrConflict, turnID)
 	}
 	runID := view.RunID
 	env, err := schema.Wire().Envelope(runID, turn.CancelCommandID(sid, turnID, runID), run.CancelRun{})
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	cancel, err := c.Runs.Command(ctx, store.CommitRequest{Command: env})
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	work := unit.Work{CommitID: ledger.CommitID(env.ID), Parts: []unit.Part{cancel,
 		unit.PartFunc(func(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
@@ -215,54 +215,54 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req turn.StopRe
 		}),
 	}}
 	if err := c.commit(ctx, w, "stop", work); err != nil && !errors.Is(err, run.ErrRunTerminal) {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	return c.respond(ctx, req.Ref)
 }
 
-func (c *Coordinator) Status(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, error) {
+func (c *Coordinator) Status(ctx context.Context, ref turn.TurnRef) (TurnResult, error) {
 	return c.respond(ctx, ref)
 }
 
 // respond reads the projections and fills the disposition.
-func (c *Coordinator) respond(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, error) {
+func (c *Coordinator) respond(ctx context.Context, ref turn.TurnRef) (TurnResult, error) {
 	surface, err := c.surface(ctx, ref.SessionID)
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	view, ok := surface.Turns[ref.TurnID]
 	if !ok {
-		return turn.TurnResponse{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
+		return TurnResult{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
 	}
 	return c.responseFor(ctx, ref, &view)
 }
 
-func (c *Coordinator) responseFor(ctx context.Context, ref turn.TurnRef, view *turn.TurnView) (turn.TurnResponse, error) {
-	resp := turn.TurnResponse{Ref: ref, Status: view.Status, RunID: view.RunID, End: view.Ended()}
+func (c *Coordinator) responseFor(ctx context.Context, ref turn.TurnRef, view *turn.TurnView) (TurnResult, error) {
+	resp := TurnResult{Ref: ref, Status: view.Status, RunID: view.RunID, End: view.Ended()}
 	if view.End != nil {
-		resp.Disposition = turn.ResumeFinished
+		resp.Disposition = ResumeFinished
 		return resp, nil
 	}
 	record, err := c.Runs.Record(ctx, ref.SessionID, view.RunID)
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return TurnResult{}, err
 	}
 	snapshot := record.Snapshot
 	switch {
 	case snapshot.State.Status.Terminal():
-		resp.Disposition = turn.ResumeFinished
+		resp.Disposition = ResumeFinished
 	case run.NeedsRecovery(snapshot.State):
-		resp.Disposition = turn.ResumeWaitingForRecovery
+		resp.Disposition = ResumeWaitingForRecovery
 	default:
 		resp.Waiting = run.WaitingCalls(snapshot.State)
 		if len(resp.Waiting) > 0 {
-			resp.Disposition = turn.ResumeWaitingForResponse
+			resp.Disposition = ResumeWaitingForResponse
 		}
 	}
 	return resp, nil
 }
 
 var (
-	_ turn.Commands = (*Coordinator)(nil)
-	_ turn.Reader   = (*Coordinator)(nil)
+	_ Commands = (*Coordinator)(nil)
+	_ Reader   = (*Coordinator)(nil)
 )

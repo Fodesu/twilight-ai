@@ -3,7 +3,7 @@
 // a Runtime and a Coordinator over the Store under test and drives Runs step
 // by step through Runtime commits: no Loop, driver, model or tool stub is
 // involved.
-package turntest
+package runtimetest
 
 import (
 	"context"
@@ -45,18 +45,18 @@ var presetRef = preset.PresetRef{ID: "p-1", Digest: "sha256:p-1"}
 // Store. now is the clock every event is stamped with; tests move it to show
 // that timestamps never take part in idempotency.
 type harness struct {
-	t        testing.TB
-	ctx      context.Context
-	store    session.Store
-	registry *ledger.Registry
-	frozen   frozen.Store
-	bindings artifact.BindingStore
-	ledger   artifact.RetentionLedger
-	now      int64
-	seq      int
-	writers  writer.Writers
-	rt       *runmod.SessionRunStore
-	c        *rt.Coordinator
+	t         testing.TB
+	ctx       context.Context
+	store     session.Store
+	registry  *ledger.Registry
+	frozen    frozen.Store
+	bindings  artifact.BindingStore
+	retention artifact.RetentionLedger
+	now       int64
+	seq       int
+	writers   writer.Writers
+	rt        *runmod.SessionRunStore
+	c         *rt.Coordinator
 }
 
 func newHarness(t testing.TB, f Fixture) *harness {
@@ -65,9 +65,9 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindings, ledger := artifacttest.Stores(t)
+	bindings, retention := artifacttest.Stores(t)
 	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmodtest.Frozen(t, bindings), now: 1_000,
-		bindings: bindings, ledger: ledger}
+		bindings: bindings, retention: retention}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 func (h *harness) open() {
 	h.t.Helper()
 	clock := func() time.Time { return time.UnixMilli(h.now) }
-	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
+	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.retention}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
 	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: h.registry, Store: h.store, Frozen: h.frozen, Now: clock})
 	if err != nil {
 		h.t.Fatal(err)
@@ -170,12 +170,12 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 	return out
 }
 
-func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) turn.StartRequest {
-	return turn.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: presetRef}
+func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) rt.StartRequest {
+	return rt.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: presetRef}
 }
 
 // start submits ids and starts turnID with them.
-func (h *harness) start(turnID turn.TurnID, ids ...string) turn.TurnResponse {
+func (h *harness) start(turnID turn.TurnID, ids ...string) rt.TurnResult {
 	h.t.Helper()
 	resp, err := h.c.Start(h.ctx, h.writer(), h.startRequest(turnID, h.submit(ids...)...))
 	if err != nil {
@@ -184,7 +184,7 @@ func (h *harness) start(turnID turn.TurnID, ids ...string) turn.TurnResponse {
 	return resp
 }
 
-func (h *harness) status(turnID turn.TurnID) turn.TurnResponse {
+func (h *harness) status(turnID turn.TurnID) rt.TurnResult {
 	h.t.Helper()
 	resp, err := h.c.Status(h.ctx, h.ref(turnID))
 	if err != nil {
@@ -199,7 +199,11 @@ func (h *harness) surface() turn.TurnSurface {
 	if err != nil {
 		h.fatal(err)
 	}
-	return state.(turn.TurnSurface)
+	surface, ok := state.(turn.TurnSurface)
+	if !ok {
+		h.fatal(fmt.Errorf("turn surface projection is %T", state))
+	}
+	return surface
 }
 
 func (h *harness) chat() chatlog.Surface {
@@ -208,7 +212,11 @@ func (h *harness) chat() chatlog.Surface {
 	if err != nil {
 		h.fatal(err)
 	}
-	return state.(chatlog.Surface)
+	surface, ok := state.(chatlog.Surface)
+	if !ok {
+		h.fatal(fmt.Errorf("chatlog surface projection is %T", state))
+	}
+	return surface
 }
 
 // commits reads the whole commit log in order.
@@ -351,11 +359,11 @@ var toolDef = sdk.ToolDefinition{Name: "ask", Parameters: &jsonschema.Schema{Typ
 
 func (h *harness) spec(policy run.ResponsePolicy) run.ToolSpec {
 	h.t.Helper()
-	store, err := sdkconv.FreezeToolDefinition(toolDef)
+	def, err := sdkconv.FreezeToolDefinition(toolDef)
 	if err != nil {
 		h.fatal(err)
 	}
-	d, err := schema.Canonical().DigestToolDefinition(store)
+	d, err := schema.Canonical().DigestToolDefinition(def)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -371,12 +379,12 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	if len(specs) > 0 {
 		req.Tools = []sdk.ToolDefinition{toolDef}
 	}
-	store, err := sdkconv.FreezeModelRequest(req)
+	modelReq, err := sdkconv.FreezeModelRequest(req)
 	if err != nil {
 		h.fatal(err)
 	}
 	proto := schema.Canonical()
-	reqDigest, err := proto.DigestRequest(store)
+	reqDigest, err := proto.DigestRequest(modelReq)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -385,7 +393,7 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
 	}
-	cmd := run.PrepareModelRequest{StepID: schema.Identity().DeriveModelStepID(runID, cmdID), Model: "m-1", Request: store,
+	cmd := run.PrepareModelRequest{StepID: schema.Identity().DeriveModelStepID(runID, cmdID), Model: "m-1", Request: modelReq,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs}
 	h.mustRunCommit(runID, cmdID, snap.Position, cmd)
 	return cmd.StepID

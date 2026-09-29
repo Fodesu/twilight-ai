@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"fmt"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"os"
 	"sync/atomic"
 	"time"
@@ -71,7 +72,7 @@ func Example_recoverableTurn() {
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "turn-1"}
 	startDone := make(chan error, 1)
 	go func() {
-		_, err := p1.Owner.Turns.Start(ctx, owned1.Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
+		_, err := p1.Owner.Turns.Start(ctx, owned1.Writer(), rt.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
 			Preset: profile1})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).
@@ -101,7 +102,10 @@ func Example_recoverableTurn() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", owned.Recovered, chat.ToolResults.Len(), toolResultStatus(&chat))
 
-	resp, err := p2.Owner.Driver.Drive(ctx, owned.Writer(), ref1.TurnID)
+	if _, err := p2.Owner.Driver.Drive(ctx, owned.Writer(), ref1.TurnID); err != nil {
+		panic(err)
+	}
+	resp, err := p2.Owner.Turns.Status(ctx, ref1)
 	if err != nil {
 		panic(err)
 	}

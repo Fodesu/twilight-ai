@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -304,7 +305,7 @@ func (r *Responder) settle(ctx context.Context, h *owner.Handle, pref preset.Pre
 
 func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, pref preset.PresetRef, inputs []run.AgentInput) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turn.NewTurnID()}
-	if _, err := r.a.Turns.Start(ctx, h.Writer(), turn.StartRequest{Ref: ref, Inputs: inputs, Preset: pref}); err != nil {
+	if _, err := r.a.Turns.Start(ctx, h.Writer(), rt.StartRequest{Ref: ref, Inputs: inputs, Preset: pref}); err != nil {
 		return "", err
 	}
 	return r.driveTurn(ctx, h, ref.TurnID)
@@ -317,15 +318,19 @@ func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, pref pre
 func (r *Responder) driveTurn(ctx context.Context, h *owner.Handle, turnID turn.TurnID) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turnID}
 	for {
-		resp, err := r.a.Driver.Drive(ctx, h.Writer(), turnID)
+		taken, err := r.a.Driver.Drive(ctx, h.Writer(), turnID)
 		if err != nil {
 			return "", err
 		}
-		if resp.AlreadyDriving {
+		if taken {
 			return "", fmt.Errorf("subagent %s is driven elsewhere", h.ID())
 		}
+		resp, err := r.a.Turns.Status(ctx, ref)
+		if err != nil {
+			return "", err
+		}
 		switch resp.Disposition {
-		case turn.ResumeWaitingForRecovery:
+		case rt.ResumeWaitingForRecovery:
 			if err := r.awaitRecovery(ctx, ref); err != nil {
 				return "", err
 			}
@@ -343,7 +348,7 @@ func (r *Responder) awaitRecovery(ctx context.Context, ref turn.TurnRef) error {
 		if err != nil {
 			return err
 		}
-		if resp.Status != turn.TurnActive || resp.Disposition != turn.ResumeWaitingForRecovery {
+		if resp.Status != turn.TurnActive || resp.Disposition != rt.ResumeWaitingForRecovery {
 			return nil
 		}
 		timer := time.NewTimer(delay)

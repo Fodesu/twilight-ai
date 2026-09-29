@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/run"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -312,7 +313,7 @@ func (s *Session) apply(ctx context.Context, c *inbox.Command) error {
 		if cmd.TurnID != "" && cmd.TurnID != status.Active {
 			return fmt.Errorf("%w: turn %s is not the active turn", errRejected, cmd.TurnID)
 		}
-		_, err = s.a.Turns.Stop(ctx, s.h.Writer(), turn.StopRequest{Ref: s.ref(status.Active), Reason: cmd.Reason})
+		_, err = s.a.Turns.Stop(ctx, s.h.Writer(), rt.StopRequest{Ref: s.ref(status.Active), Reason: cmd.Reason})
 		return err
 	case CommandWithdraw:
 		cmd, err := decode[WithdrawCommand](c)

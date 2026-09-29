@@ -10,7 +10,6 @@ import (
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/workspace"
-	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
@@ -78,7 +77,7 @@ var ErrRouteContended = rt.ErrRouteContended
 type Result struct {
 	TurnID      turn.TurnID
 	Status      turn.TurnStatus
-	Disposition turn.ResumeDisposition
+	Disposition rt.ResumeDisposition
 	// AlreadyDriving reports that another driver in this process carries the
 	// Turn: the input is committed, its settlement and reply are reported by
 	// that driver. It is a fact about this process, not a Turn disposition.
@@ -234,19 +233,19 @@ func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) 
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
 // stopped Turn's drive observes the cancellation and returns.
-func (s *Session) Stop(ctx context.Context, reason string) (turn.TurnResponse, bool, error) {
+func (s *Session) Stop(ctx context.Context, reason string) (rt.TurnResult, bool, error) {
 	return s.rt.Stop(ctx, reason)
 }
 
 // Route commits the inputs' route -- Deliver into the active Turn, or Start
 // a new one -- then drives the Turn to its next quiescent point.
-func (s *Session) Route(ctx context.Context, inputs []run.AgentInput) (driver.DriveResult, error) {
+func (s *Session) Route(ctx context.Context, inputs []run.AgentInput) (rt.DriveResult, error) {
 	return s.rt.Route(ctx, inputs)
 }
 
 // Drain starts the next Turn from the backlog of submitted, undelivered
 // inputs and drives it; ok is false when there is none.
-func (s *Session) Drain(ctx context.Context) (driver.DriveResult, bool, error) {
+func (s *Session) Drain(ctx context.Context) (rt.DriveResult, bool, error) {
 	return s.rt.Drain(ctx)
 }
 
@@ -263,7 +262,7 @@ func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
 
 // results wraps settled drive results with each Turn's reply;
 // materialization failures are reported to Warn and leave Reply empty.
-func (s *Session) results(ctx context.Context, settlements []driver.DriveResult) []Result {
+func (s *Session) results(ctx context.Context, settlements []rt.DriveResult) []Result {
 	out := make([]Result, len(settlements))
 	for i := range settlements {
 		out[i] = s.result(ctx, &settlements[i])
@@ -273,9 +272,9 @@ func (s *Session) results(ctx context.Context, settlements []driver.DriveResult)
 
 // result wraps one drive result with the settled Turn's reply;
 // materialization failures are reported to Warn and leave Reply empty.
-func (s *Session) result(ctx context.Context, resp *driver.DriveResult) Result {
+func (s *Session) result(ctx context.Context, resp *rt.DriveResult) Result {
 	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, AlreadyDriving: resp.AlreadyDriving}
-	if !resp.AlreadyDriving && resp.Disposition == turn.ResumeFinished {
+	if !resp.AlreadyDriving && resp.Disposition == rt.ResumeFinished {
 		text, err := s.app.Reply(ctx, resp.Ref)
 		if err != nil {
 			s.app.warn(fmt.Errorf("app: materialize reply of turn %s: %w", resp.Ref.TurnID, err))

@@ -19,10 +19,10 @@ import (
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
 	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/process/processtest"
+	"github.com/felinics/twilight/agentcore/runtime/runtimetest"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	runstoretest "github.com/felinics/twilight/agentcore/session/run/storetest"
 	"github.com/felinics/twilight/agentcore/session/sessiontest"
-	"github.com/felinics/twilight/agentcore/turn/turntest"
 )
 
 // clock is a settable store clock shared by the handles of one fixture.
@@ -115,7 +115,7 @@ func TestSessionRunStoreConformance(t *testing.T) {
 }
 
 func TestSessionTurnConformance(t *testing.T) {
-	turntest.Run(t, func(t testing.TB) turntest.Fixture {
-		return turntest.Fixture{Store: postgrestest.Open(t).Sessions()}
+	runtimetest.Run(t, func(t testing.TB) runtimetest.Fixture {
+		return runtimetest.Fixture{Store: postgrestest.Open(t).Sessions()}
 	})
 }

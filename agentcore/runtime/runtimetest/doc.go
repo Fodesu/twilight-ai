@@ -1,4 +1,4 @@
-package turntest
+package runtimetest
 
 // The suite is Store-parameterized like agent/session/sessiontest and
 // agent/session/run/storetest: the reference memory store and every durable adapter run

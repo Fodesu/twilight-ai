@@ -1,4 +1,4 @@
-package turntest
+package runtimetest
 
 import (
 	"testing"

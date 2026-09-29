@@ -1,4 +1,4 @@
-package turntest
+package runtimetest
 
 import (
 	"errors"
@@ -7,6 +7,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -51,10 +52,10 @@ func testStart(t *testing.T, factory Factory) {
 	altered.Digest = "sha256:changed"
 	rejects := []struct {
 		name     string
-		req      turn.StartRequest
+		req      rt.StartRequest
 		conflict bool // ErrConflict, otherwise a validation error
 	}{
-		{"missing preset", turn.StartRequest{Ref: h.ref("t1")}, false},
+		{"missing preset", rt.StartRequest{Ref: h.ref("t1")}, false},
 		{"duplicate input ids", h.startRequest("t1", submitted[0], submitted[0]), false},
 		{"input never submitted", h.startRequest("t1", input("ghost")), true},
 		{"payload differs from submitted content", h.startRequest("t1", altered), true},
@@ -151,7 +152,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	// TRN-DLV-2: input_accepted and input_delivered share one commit whose
 	// CommitID is the Run's input CommandID; the Run queues the input.
 	in2 := h.submit("in-2")
-	dresp, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in2})
+	dresp, err := h.c.Deliver(h.ctx, h.writer(), rt.DeliverRequest{Ref: h.ref("t1"), Inputs: in2})
 	if err != nil || dresp.Status != turn.TurnActive || dresp.RunID != runID {
 		t.Fatalf("deliver = %+v %v", dresp, err)
 	}
@@ -170,21 +171,21 @@ func testDeliver(t *testing.T, factory Factory) {
 	}
 	// Replay of the same delivery writes nothing.
 	head := h.head()
-	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in2}); err != nil || h.head() != head {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), rt.DeliverRequest{Ref: h.ref("t1"), Inputs: in2}); err != nil || h.head() != head {
 		t.Fatalf("deliver replay: err=%v moved=%v", err, h.head() != head)
 	}
 
 	// TRN-DLV-1: an unknown Turn and a Turn that is not active are conflicts;
 	// the input stays submitted.
 	in3 := h.submit("in-3")
-	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("nope"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), rt.DeliverRequest{Ref: h.ref("nope"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("deliver to unknown turn = %v", err)
 	}
 	h.appCancel(runID)
 	if st := h.status("t1"); st.Status != turn.TurnFailed {
 		t.Fatalf("after app cancel status = %s", st.Status)
 	}
-	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), rt.DeliverRequest{Ref: h.ref("t1"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("deliver to a failed turn = %v, want conflict", err)
 	}
 	if v, _ := h.chat().Inputs.Get("in-3"); v.Status != chatlog.InputSubmitted {
@@ -207,7 +208,7 @@ func testDeliver(t *testing.T, factory Factory) {
 		{"digest differs", []run.AgentInput{{ID: in5[0].ID, Digest: "sha256:other"}}},
 	}
 	for _, tc := range rejects {
-		if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: tc.inputs}); !errors.Is(err, turn.ErrConflict) {
+		if _, err := h.c.Deliver(h.ctx, h.writer(), rt.DeliverRequest{Ref: h.ref("t2"), Inputs: tc.inputs}); !errors.Is(err, turn.ErrConflict) {
 			t.Fatalf("%s: deliver = %v, want conflict", tc.name, err)
 		}
 		if h.head() != before {
@@ -228,7 +229,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	// input_accepted and input_delivered together -- and its replay writes nothing.
 	in6 := h.submit("in-6")
 	batch := []run.AgentInput{in5[0], in6[0]}
-	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), rt.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil {
 		t.Fatalf("batch deliver = %v", err)
 	}
 	group = h.group(ledger.CommitID(schema.Identity().DeriveInputCommandID(run2, "in-5", "in-6")))
@@ -244,7 +245,7 @@ func testDeliver(t *testing.T, factory Factory) {
 		t.Fatalf("pending after batch = %+v", pending)
 	}
 	head = h.head()
-	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil || h.head() != head {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), rt.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil || h.head() != head {
 		t.Fatalf("batch replay: err=%v moved=%v", err, h.head() != head)
 	}
 }
@@ -255,14 +256,14 @@ func testDeliver(t *testing.T, factory Factory) {
 
 func testStop(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
-	if _, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("nope")}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Stop(h.ctx, h.writer(), rt.StopRequest{Ref: h.ref("nope")}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("stop unknown = %v", err)
 	}
 
 	// TRN-STP-1: CancelRun and turn/failed{stopped} land in one commit.
 	resp := h.start("t1", "in-1")
-	sresp, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("t1"), Reason: "user"})
-	if err != nil || sresp.Status != turn.TurnStopped || sresp.Disposition != turn.ResumeFinished || sresp.End == nil {
+	sresp, err := h.c.Stop(h.ctx, h.writer(), rt.StopRequest{Ref: h.ref("t1"), Reason: "user"})
+	if err != nil || sresp.Status != turn.TurnStopped || sresp.Disposition != rt.ResumeFinished || sresp.End == nil {
 		t.Fatalf("stop = %+v %v", sresp, err)
 	}
 	group := h.group(ledger.CommitID(turn.CancelCommandID(sid, "t1", resp.RunID)))
@@ -282,9 +283,9 @@ func testStop(t *testing.T, factory Factory) {
 	}
 	// A settled Turn admits nothing else (TRN-EVT-3).
 	for name, call := range map[string]func() error{
-		"stop": func() error { _, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("t1")}); return err },
+		"stop": func() error { _, err := h.c.Stop(h.ctx, h.writer(), rt.StopRequest{Ref: h.ref("t1")}); return err },
 		"deliver": func() error {
-			_, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: h.submit("late")})
+			_, err := h.c.Deliver(h.ctx, h.writer(), rt.DeliverRequest{Ref: h.ref("t1"), Inputs: h.submit("late")})
 			return err
 		},
 	} {
@@ -300,13 +301,13 @@ func testStop(t *testing.T, factory Factory) {
 	resp = h.start("t2", "in-2")
 	h.appCancel(resp.RunID)
 	st := h.status("t2")
-	if st.Status != turn.TurnFailed || st.Disposition != turn.ResumeFinished || st.End == nil || st.RunID != resp.RunID {
+	if st.Status != turn.TurnFailed || st.Disposition != rt.ResumeFinished || st.End == nil || st.RunID != resp.RunID {
 		t.Fatalf("status after a non-completed end = %+v", st)
 	}
 	if _, stopped := st.End.(run.RunStoppedEnd); !stopped {
 		t.Fatalf("end = %T, want RunStoppedEnd", st.End)
 	}
-	if _, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("t2")}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Stop(h.ctx, h.writer(), rt.StopRequest{Ref: h.ref("t2")}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("stop after failure = %v, want conflict", err)
 	}
 	if surf := h.surface(); func() bool { _, ok := surf.Active(); return ok }() {
@@ -326,13 +327,13 @@ func testStop(t *testing.T, factory Factory) {
 		t.Fatalf("completion group = %v, want run_ended last and no turn event", types)
 	}
 	st = h.status("t3")
-	if st.Status != turn.TurnCompleted || st.Disposition != turn.ResumeFinished || st.End == nil {
+	if st.Status != turn.TurnCompleted || st.Disposition != rt.ResumeFinished || st.End == nil {
 		t.Fatalf("completed status = %+v", st)
 	}
 	if _, ok := (st.End).(run.RunCompletedEnd); !ok {
 		t.Fatalf("end = %T", st.End)
 	}
-	if _, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("t3")}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Stop(h.ctx, h.writer(), rt.StopRequest{Ref: h.ref("t3")}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("stop after completion = %v, want conflict", err)
 	}
 }
@@ -344,15 +345,15 @@ func testStatus(t *testing.T, factory Factory) {
 		name        string
 		arrange     func(h *harness, runID run.RunID)
 		status      turn.TurnStatus
-		disposition turn.ResumeDisposition
+		disposition rt.ResumeDisposition
 		waiting     int
 		ended       bool
 	}{
 		{"open run has no disposition", func(*harness, run.RunID) {}, turn.TurnActive, "", 0, false},
-		{"executing model needs recovery", func(h *harness, r run.RunID) { h.executingModel(r) }, turn.TurnActive, turn.ResumeWaitingForRecovery, 0, false},
-		{"approval call waits for a response", func(h *harness, r run.RunID) { h.waitingTool(r) }, turn.TurnActive, turn.ResumeWaitingForResponse, 1, false},
-		{"completed run is finished", func(h *harness, r run.RunID) { h.complete(r) }, turn.TurnCompleted, turn.ResumeFinished, 0, true},
-		{"cancelled run is finished and failed", func(h *harness, r run.RunID) { h.appCancel(r) }, turn.TurnFailed, turn.ResumeFinished, 0, true},
+		{"executing model needs recovery", func(h *harness, r run.RunID) { h.executingModel(r) }, turn.TurnActive, rt.ResumeWaitingForRecovery, 0, false},
+		{"approval call waits for a response", func(h *harness, r run.RunID) { h.waitingTool(r) }, turn.TurnActive, rt.ResumeWaitingForResponse, 1, false},
+		{"completed run is finished", func(h *harness, r run.RunID) { h.complete(r) }, turn.TurnCompleted, rt.ResumeFinished, 0, true},
+		{"cancelled run is finished and failed", func(h *harness, r run.RunID) { h.appCancel(r) }, turn.TurnFailed, rt.ResumeFinished, 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -476,7 +477,7 @@ func testRecovery(t *testing.T, factory Factory) {
 	// Model executing when the owner dies: the takeover disposes it and the
 	// Turn stays active; the superseded Coordinator is fenced.
 	h.executingModel(resp.RunID)
-	if st := h.status("t1"); st.Disposition != turn.ResumeWaitingForRecovery {
+	if st := h.status("t1"); st.Disposition != rt.ResumeWaitingForRecovery {
 		t.Fatalf("before takeover disposition = %s", st.Disposition)
 	}
 	// The input is submitted before the takeover so the superseded Writer's
@@ -489,16 +490,16 @@ func testRecovery(t *testing.T, factory Factory) {
 		t.Fatalf("recover executing model = %d %v", n, err)
 	}
 	st := h.status("t1")
-	if st.Status != turn.TurnActive || st.Disposition == turn.ResumeWaitingForRecovery {
+	if st.Status != turn.TurnActive || st.Disposition == rt.ResumeWaitingForRecovery {
 		t.Fatalf("status after recovery = %+v", st)
 	}
-	if _, err := old.Deliver(h.ctx, oldWriter, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !errors.Is(err, store.ErrOwnershipLost) {
+	if _, err := old.Deliver(h.ctx, oldWriter, rt.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !errors.Is(err, store.ErrOwnershipLost) {
 		t.Fatalf("superseded coordinator deliver = %v, want ownership lost", err)
 	}
 	if v, _ := h.chat().Inputs.Get("late"); v.Status != chatlog.InputSubmitted {
 		t.Fatalf("fenced deliver changed the input: %s", v.Status)
 	}
-	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); err != nil {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), rt.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); err != nil {
 		t.Fatalf("owner deliver after takeover: %v", err)
 	}
 }

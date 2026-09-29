@@ -28,16 +28,10 @@ import (
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
-// DriveResult is what one drive of a Turn reports: the Turn's committed
-// response, and whether another local driver of the same Run was already
-// carrying it, in which case this call drove nothing and Response is the
-// status as read. AlreadyDriving is a fact about this process, not about the
-// Turn, so it is not a TurnResponse disposition: the Turn's durable
-// vocabulary stays the Coordinator's.
-type DriveResult struct {
-	turn.TurnResponse
-	AlreadyDriving bool
-}
+// Drive reports about this process whether a concurrent local driver of the
+// same Run was already carrying it, in which case this call drove nothing.
+// The Turn's committed answer is not the Driver's: that is the Turn
+// protocol's read, and the caller makes it.
 
 // Presets resolves a PresetRef to its immutable AgentPreset.
 type Presets interface {
@@ -50,7 +44,6 @@ type Driver struct {
 	// Runs is the Run module's Session adapter; every drive binds it to the
 	// caller's Writer (OWN-HDL-2).
 	Runs      *runmod.SessionRunStore
-	Turns     turn.Reader
 	Executor  effect.ExecutionPort
 	Presets   Presets
 	Decisions *decision.Catalog
@@ -188,40 +181,38 @@ func (d *Driver) beforePrepare(ctx context.Context, st store.RunStore, input dec
 }
 
 // Drive is DRV-1: while the Turn is active, resolve its recorded preset
-// and drive the active attempt to the next quiescent point, then read the
-// committed Status. w is the caller's ownership capability over the Session:
-// the decision whether to drive reads w's own projections, and the Loop
-// commits through w, so a superseded owner plans against its own epoch's
-// view and is fenced at commit instead of adopting the new owner's state
-// (OWN-HDL-2, RUN-LOP-5). The caller's ctx bounds the drive, so
-// cancellation is the caller's decision. A concurrent local driver of the
-// same Run yields AlreadyDriving with the Turn's status as read.
-func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (DriveResult, error) {
+// and drive the active attempt to the next quiescent point. ok is false
+// when the drive ran; true when a concurrent local driver of the same Run
+// was already carrying it, in which case this call drove nothing. w is the
+// caller's ownership capability over the Session: the decision whether to
+// drive reads w's own projections, and the Loop commits through w, so a
+// superseded owner plans against its own epoch's view and is fenced at
+// commit instead of adopting the new owner's state (OWN-HDL-2, RUN-LOP-5).
+// The caller's ctx bounds the drive, so cancellation is the caller's
+// decision. The Turn's committed status the caller reports is the Turn
+// protocol's read, not this method's.
+func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (alreadyDriving bool, err error) {
 	ref := turn.TurnRef{SessionID: w.SessionID(), TurnID: turnID}
 	surface, err := turn.ReadSurface(ctx, w.Projections(), ref.SessionID)
 	if err != nil {
-		return DriveResult{}, err
+		return false, err
 	}
 	view, ok := surface.Turns[ref.TurnID]
 	if !ok {
-		return DriveResult{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
+		return false, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
 	}
 	if view.Status == turn.TurnActive {
 		l, err := d.loopFor(view.Preset)
 		if err != nil {
-			return DriveResult{}, err
+			return false, err
 		}
 		for {
 			res, err := l.Run(ctx, d.Runs.Bind(w), view.RunID, d.Sink)
 			if err != nil {
 				if errors.Is(err, loop.ErrRunAlreadyRunning) {
-					resp, rerr := d.Turns.Status(ctx, ref)
-					if rerr != nil {
-						return DriveResult{}, rerr
-					}
-					return DriveResult{TurnResponse: resp, AlreadyDriving: true}, nil
+					return true, nil
 				}
-				return DriveResult{}, err
+				return false, err
 			}
 			if res.ExecutionRecovery {
 				// The drive quiesced with executions in flight and no local
@@ -237,7 +228,7 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 			if res.Disposition == loop.LoopWaiting {
 				settled, err := d.answerWaiting(ctx, w, view.RunID)
 				if err != nil {
-					return DriveResult{}, err
+					return false, err
 				}
 				if settled {
 					continue
@@ -246,8 +237,7 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 			break
 		}
 	}
-	resp, err := d.Turns.Status(ctx, ref)
-	return DriveResult{TurnResponse: resp}, err
+	return false, nil
 }
 
 // redispatch is the reconciler's Redispatch port: the Assignment of an

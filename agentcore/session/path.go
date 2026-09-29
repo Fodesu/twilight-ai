@@ -54,7 +54,7 @@ func (p Path) Validate(tip ledger.SegmentID) error {
 			}
 			continue
 		}
-		prev := p[i-1]
+		prev := p[i-1] //nolint:gosec // G602: i > 0 here, the first span returned above
 		if span.From != prev.End.Through+1 {
 			return fmt.Errorf("span %d starts at %d, previous coverage ends at %d", i, span.From, prev.End.Through)
 		}
@@ -90,11 +90,11 @@ func MaxBound(ends []Bound) (Bound, bool) {
 	if len(ends) == 0 {
 		return Bound{}, false
 	}
-	max := ends[0]
+	widest := ends[0]
 	for _, end := range ends[1:] {
-		max = mergeBound(max, end)
+		widest = mergeBound(widest, end)
 	}
-	return max, true
+	return widest, true
 }
 
 func mergeBound(a, b Bound) Bound {

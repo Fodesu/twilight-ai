@@ -26,8 +26,19 @@ import (
 // Turns is the Turn protocol the runtime routes inputs into and reads status
 // back from.
 type Turns interface {
-	turn.Commands
-	turn.Reader
+	Commands
+	Reader
+}
+
+// DriveResult is what one drive of a Turn reports: the Turn's committed
+// answer, and whether another local driver of the same Run was already
+// carrying it, in which case this call drove nothing and the answer is the
+// status as read. AlreadyDriving is a fact about this process, not about
+// the Turn, so it is not a Turn disposition: the Turn's durable vocabulary
+// stays the Turn module's.
+type DriveResult struct {
+	TurnResult
+	AlreadyDriving bool
 }
 
 // Config composes one SessionRuntime. Writer is the ownership capability
@@ -168,7 +179,7 @@ func (r *SessionRuntime) Submit(ctx context.Context, id run.InputID, content run
 // call drained after its settlement. When another driver of this process
 // took the input, the single result reports AlreadyDriving and that driver
 // settles and drains.
-func (r *SessionRuntime) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) ([]driver.DriveResult, error) {
+func (r *SessionRuntime) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) ([]DriveResult, error) {
 	in, err := r.Submit(ctx, id, content)
 	if err != nil {
 		return nil, err
@@ -205,29 +216,29 @@ func (r *SessionRuntime) SubmitAsync(ctx context.Context, id run.InputID, conten
 // Route commits the route of the already-submitted inputs -- Deliver into
 // the active Turn, or Start a new one -- and drives the Turn to its next
 // quiescent point.
-func (r *SessionRuntime) Route(ctx context.Context, inputs []run.AgentInput) (driver.DriveResult, error) {
+func (r *SessionRuntime) Route(ctx context.Context, inputs []run.AgentInput) (DriveResult, error) {
 	ref, err := r.commitRoute(ctx, inputs)
 	if err != nil {
-		return driver.DriveResult{}, err
+		return DriveResult{}, err
 	}
-	return r.driver.Drive(ctx, r.w, ref.TurnID)
+	return r.drive(ctx, ref.TurnID)
 }
 
 // Drain starts the next Turn from the backlog of submitted, undelivered
 // inputs and drives it; ok is false when there is none.
-func (r *SessionRuntime) Drain(ctx context.Context) (driver.DriveResult, bool, error) {
+func (r *SessionRuntime) Drain(ctx context.Context) (DriveResult, bool, error) {
 	resp, ok, err := r.drain(ctx)
 	return resp, ok, err
 }
 
 // Resume drives a still-active Turn (after a restart) to settlement and
 // drains the backlog; ok is false when no Turn is active.
-func (r *SessionRuntime) Resume(ctx context.Context) ([]driver.DriveResult, bool, error) {
+func (r *SessionRuntime) Resume(ctx context.Context) ([]DriveResult, bool, error) {
 	active, ok, err := r.active(ctx)
 	if err != nil || !ok {
 		return nil, false, err
 	}
-	resp, err := r.driver.Drive(ctx, r.w, active)
+	resp, err := r.drive(ctx, active)
 	if err != nil {
 		return nil, false, err
 	}
@@ -237,12 +248,12 @@ func (r *SessionRuntime) Resume(ctx context.Context) ([]driver.DriveResult, bool
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
 // stopped Turn's drive observes the cancellation and returns.
-func (r *SessionRuntime) Stop(ctx context.Context, reason string) (turn.TurnResponse, bool, error) {
+func (r *SessionRuntime) Stop(ctx context.Context, reason string) (TurnResult, bool, error) {
 	active, ok, err := r.active(ctx)
 	if err != nil || !ok {
-		return turn.TurnResponse{}, false, err
+		return TurnResult{}, false, err
 	}
-	resp, err := r.turns.Stop(ctx, r.w, turn.StopRequest{Ref: r.ref(active), Reason: reason})
+	resp, err := r.turns.Stop(ctx, r.w, StopRequest{Ref: r.ref(active), Reason: reason})
 	return resp, true, err
 }
 
@@ -334,22 +345,22 @@ func (r *SessionRuntime) active(ctx context.Context) (turn.TurnID, bool, error) 
 // route commits one input's route with the conflict retry of Config and
 // drives the Turn the input landed in. The AlreadyDriving result reports
 // that another driver of this process delivered the input first.
-func (r *SessionRuntime) route(ctx context.Context, in run.AgentInput) (driver.DriveResult, error) {
+func (r *SessionRuntime) route(ctx context.Context, in run.AgentInput) (DriveResult, error) {
 	var lastErr error
 	for attempt := 0; attempt < r.routeRetries; attempt++ {
 		ref, err := r.commitRoute(ctx, []run.AgentInput{in})
 		if err == nil {
-			return r.driver.Drive(ctx, r.w, ref.TurnID)
+			return r.drive(ctx, ref.TurnID)
 		}
 		if !errors.Is(err, turn.ErrConflict) {
-			return driver.DriveResult{}, err
+			return DriveResult{}, err
 		}
 		lastErr = err
 		if absorbed, taken := r.absorbed(ctx, in); taken {
 			return absorbed, nil
 		}
 	}
-	return driver.DriveResult{}, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, r.routeRetries, lastErr.Error())
+	return DriveResult{}, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, r.routeRetries, lastErr.Error())
 }
 
 // routeCommit is the commit half of route for callers that drive themselves:
@@ -374,6 +385,21 @@ func (r *SessionRuntime) routeCommit(ctx context.Context, in run.AgentInput) (re
 	return turn.TurnRef{}, false, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, r.routeRetries, lastErr.Error())
 }
 
+// drive runs the Turn and reads its committed answer; AlreadyDriving
+// reports a concurrent local driver of the same Run carried it, in which
+// case the answer is the status as read.
+func (r *SessionRuntime) drive(ctx context.Context, turnID turn.TurnID) (DriveResult, error) {
+	taken, err := r.driver.Drive(ctx, r.w, turnID)
+	if err != nil {
+		return DriveResult{}, err
+	}
+	resp, err := r.turns.Status(ctx, r.ref(turnID))
+	if err != nil {
+		return DriveResult{}, err
+	}
+	return DriveResult{TurnResult: resp, AlreadyDriving: taken}, nil
+}
+
 // commitRoute is the deliver-or-start half of routing: Deliver into the
 // active Turn when there is one, Start a new one when there is none.
 func (r *SessionRuntime) commitRoute(ctx context.Context, inputs []run.AgentInput) (turn.TurnRef, error) {
@@ -383,13 +409,13 @@ func (r *SessionRuntime) commitRoute(ctx context.Context, inputs []run.AgentInpu
 	}
 	if active, ok := surface.Active(); ok {
 		ref := r.ref(active.TurnID)
-		if _, err := r.turns.Deliver(ctx, r.w, turn.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
+		if _, err := r.turns.Deliver(ctx, r.w, DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
 			return turn.TurnRef{}, err
 		}
 		return ref, nil
 	}
 	ref := r.ref(r.newID())
-	if _, err := r.turns.Start(ctx, r.w, turn.StartRequest{Ref: ref, Inputs: inputs, Preset: r.preset}); err != nil {
+	if _, err := r.turns.Start(ctx, r.w, StartRequest{Ref: ref, Inputs: inputs, Preset: r.preset}); err != nil {
 		return turn.TurnRef{}, err
 	}
 	return ref, nil
@@ -397,19 +423,19 @@ func (r *SessionRuntime) commitRoute(ctx context.Context, inputs []run.AgentInpu
 
 // absorbed reports whether another driver already delivered the input; the
 // Turn that took it settles and reports there.
-func (r *SessionRuntime) absorbed(ctx context.Context, in run.AgentInput) (driver.DriveResult, bool) {
+func (r *SessionRuntime) absorbed(ctx context.Context, in run.AgentInput) (DriveResult, bool) {
 	chat, err := chatlog.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
-		return driver.DriveResult{}, false
+		return DriveResult{}, false
 	}
 	v, ok := chat.Inputs.Get(chatlog.InputID(in.ID))
 	if !ok || v.Status == chatlog.InputSubmitted {
-		return driver.DriveResult{}, false
+		return DriveResult{}, false
 	}
 	ref := r.ref(turn.TurnID(v.Input.TurnID))
-	out := driver.DriveResult{TurnResponse: turn.TurnResponse{Ref: ref}, AlreadyDriving: true}
+	out := DriveResult{TurnResult: TurnResult{Ref: ref}, AlreadyDriving: true}
 	if resp, err := r.turns.Status(ctx, ref); err == nil {
-		out.TurnResponse = resp
+		out.TurnResult = resp
 		out.AlreadyDriving = true
 	}
 	return out, true
@@ -417,14 +443,14 @@ func (r *SessionRuntime) absorbed(ctx context.Context, in run.AgentInput) (drive
 
 // drain starts the next Turn from the backlog of submitted, undelivered
 // inputs and drives it; ok is false when there is none.
-func (r *SessionRuntime) drain(ctx context.Context) (driver.DriveResult, bool, error) {
+func (r *SessionRuntime) drain(ctx context.Context) (DriveResult, bool, error) {
 	chat, err := chatlog.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
-		return driver.DriveResult{}, false, err
+		return DriveResult{}, false, err
 	}
 	pending := chat.SubmittedInputs()
 	if len(pending) == 0 {
-		return driver.DriveResult{}, false, nil
+		return DriveResult{}, false, nil
 	}
 	inputs := make([]run.AgentInput, len(pending))
 	for i, in := range pending {
@@ -437,8 +463,8 @@ func (r *SessionRuntime) drain(ctx context.Context) (driver.DriveResult, bool, e
 // settle is what follows one drive: while the settlement leaves submitted,
 // undelivered inputs, the next Turn starts from them; when the backlog is
 // drained and no Turn is active, the quiescence hook runs.
-func (r *SessionRuntime) settle(ctx context.Context, resp driver.DriveResult) ([]driver.DriveResult, error) {
-	out := []driver.DriveResult{resp}
+func (r *SessionRuntime) settle(ctx context.Context, resp DriveResult) ([]DriveResult, error) {
+	out := []DriveResult{resp}
 	if resp.AlreadyDriving {
 		// The running driver settles the Turn and drains in its own call.
 		return out, nil
@@ -472,7 +498,7 @@ func (r *SessionRuntime) driveAsync(ref turn.TurnRef) {
 	r.track()
 	go func() {
 		defer r.untrack()
-		resp, err := r.driver.Drive(r.bg, r.w, ref.TurnID)
+		resp, err := r.drive(r.bg, ref.TurnID)
 		if err != nil {
 			r.fail(ref, fmt.Errorf("driving turn %s: %w", ref.TurnID, err))
 			return
