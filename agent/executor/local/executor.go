@@ -448,7 +448,11 @@ func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenReques
 	if err != nil {
 		return Outcome{Result: modelFailure(err)}
 	}
-	return Outcome{Result: effect.ModelSucceeded{Result: result}}
+	frozenResult, err := sdkconv.FreezeModelResult(result)
+	if err != nil {
+		return Outcome{Result: effect.ModelFailed{Code: effect.FailureMalformedResult, Message: "model result cannot be frozen: " + err.Error()}}
+	}
+	return Outcome{Result: effect.ModelSucceeded{Result: frozenResult}}
 }
 
 // modelFailure classifies a model invocation error into the wire-stable

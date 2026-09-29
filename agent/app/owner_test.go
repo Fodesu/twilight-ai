@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -26,6 +27,16 @@ type recordingExecutor struct {
 	reply    string
 	outcomes map[loop.AssignmentKey]chan loop.Outcome
 	settled  map[loop.AssignmentKey]loop.Outcome
+}
+
+// frozenModel stands in for the backend boundary: the effect protocol
+// carries only frozen model results.
+func frozenModel(r sdk.ModelResult) model.ModelResult {
+	frozen, err := sdkconv.FreezeModelResult(r)
+	if err != nil {
+		panic(err)
+	}
+	return frozen
 }
 
 func (e *recordingExecutor) Validate(context.Context, loop.Assignment) (*run.ToolFailure, error) {
@@ -43,7 +54,7 @@ func (e *recordingExecutor) Dispatch(_ context.Context, a loop.Assignment) error
 	reply := e.reply
 	e.mu.Unlock()
 	go func() {
-		ch <- loop.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: reply, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}}}
+		ch <- loop.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: reply, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})}}
 	}()
 	return nil
 }

@@ -12,7 +12,6 @@ import (
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/sdk"
 )
 
 // AssignmentKind names the effect requested by an Assignment.
@@ -220,8 +219,10 @@ func (c FailureCode) Retry() run.RetryDisposition {
 	}
 }
 
-// ModelSucceeded carries the provider's complete result.
-type ModelSucceeded struct{ Result sdk.ModelResult }
+// ModelSucceeded carries the provider's complete result, frozen at the
+// backend boundary: the effect protocol never exposes sdk types, so the
+// executor's wire cannot be bound to an sdk version.
+type ModelSucceeded struct{ Result model.ModelResult }
 
 // ModelFailed is a provider or executor failure with a wire-stable code.
 // Its retry disposition is not stored: it is derived from the code
@@ -288,8 +289,8 @@ type Outcome struct {
 	Result OutcomeResult
 }
 
-// ModelResult returns the provider result of a ModelSucceeded outcome.
-func (o Outcome) ModelResult() (sdk.ModelResult, bool) {
+// ModelResult returns the frozen provider result of a ModelSucceeded outcome.
+func (o Outcome) ModelResult() (model.ModelResult, bool) {
 	r, ok := o.Result.(ModelSucceeded)
 	return r.Result, ok
 }

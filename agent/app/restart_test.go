@@ -339,7 +339,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	}
 
 	// The executor finishes the original attempt; its Outcome reaches process 2.
-	exec.complete(exec.attached[0], loop.Outcome{Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "reattached", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}}})
+	exec.complete(exec.attached[0], loop.Outcome{Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "reattached", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})}})
 	deadline := time.After(2 * time.Second)
 	for {
 		tsurf, err = p2.TurnSurface(ctx, sid)

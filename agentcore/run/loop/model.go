@@ -8,12 +8,11 @@ import (
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
+	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
-
-	"github.com/felinics/twilight/sdk"
 )
 
 func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events EventSink, snapshot *runtime.Snapshot, hint plan.PromptInput) error {
@@ -26,15 +25,15 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events E
 	if err != nil {
 		return err
 	}
-	model := p.Model
-	if model == "" {
-		model = run.ModelRef(frozenRequest.Model)
+	modelRef := p.Model
+	if modelRef == "" {
+		modelRef = run.ModelRef(frozenRequest.Model)
 	}
-	if model == "" {
+	if modelRef == "" {
 		return fmt.Errorf("agent: loop: empty model")
 	}
-	if run.ModelRef(frozenRequest.Model) != model {
-		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, model)
+	if run.ModelRef(frozenRequest.Model) != modelRef {
+		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, modelRef)
 	}
 	requestDigest, err := schema.Canonical().DigestRequest(frozenRequest)
 	if err != nil {
@@ -44,7 +43,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events E
 	stepID := schema.Identity().DeriveModelStepID(snapshot.State.RunID, cmdID)
 	res, err := l.commit(ctx, rt, snapshot.State.RunID, cmdID, snapshot.Position, run.PrepareModelRequest{
 		StepID:        stepID,
-		Model:         model,
+		Model:         modelRef,
 		Request:       frozenRequest,
 		RequestDigest: requestDigest,
 		InputIDs:      p.InputIDs,
@@ -165,7 +164,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
 	stepID := step.RefValue.ID
 	withdraw := run.RecoverModelExecution{StepID: stepID, Effect: step.Effect}
-	var result sdk.ModelResult
+	var result model.ModelResult
 	switch r := out.Result.(type) {
 	case effect.ModelSucceeded:
 		result = r.Result
@@ -195,19 +194,8 @@ func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentComma
 		// for the wrong effect. Nothing certain happened.
 		return run.SubmitModelFailure{StepID: stepID, Effect: step.Effect, Failure: run.StepFailure{Class: run.FailureProvider, Message: fmt.Sprintf("executor delivered %T for a model step", out.Result)}}, nil
 	}
-	bindings, bindErr := l.bindToolCalls(&result, step)
-	if bindErr != nil {
-		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()}
-		return run.RejectModelResult{StepID: stepID, Effect: step.Effect, Usage: sdkconv.FreezeUsage(result.Usage), Failure: failure,
-			Disposition: l.modelRejectDisposition(step, failure)}, nil
-	}
-	frozenResult, freezeErr := sdkconv.FreezeModelResult(result)
-	if freezeErr != nil {
-		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()}
-		return run.RejectModelResult{StepID: stepID, Effect: step.Effect, Usage: sdkconv.FreezeUsage(result.Usage), Failure: failure,
-			Disposition: l.modelRejectDisposition(step, failure)}, nil
-	}
-	return run.SubmitModelResult{StepID: stepID, Effect: step.Effect, Result: frozenResult, Calls: bindings, Scheduling: l.toolScheduling()}, nil
+	bindings := l.bindToolCalls(&result, step)
+	return run.SubmitModelResult{StepID: stepID, Effect: step.Effect, Result: result, Calls: bindings, Scheduling: l.toolScheduling()}, nil
 }
 
 // modelRejectDisposition applies Settings.MalformedRetries: the step's
@@ -221,11 +209,11 @@ func (l *Loop) modelRejectDisposition(step *run.ModelStep, _ run.StepFailure) ru
 	return run.ModelRejectFailRun
 }
 
-// bindToolCalls validates tool-call IDs/order/shape and produces bindings
-// from the frozen ToolSpecs (RUN-MCH-2). It never calls local.ExecutableTool.
-func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]run.ToolCallBinding, error) {
+// bindToolCalls produces bindings from the frozen ToolSpecs (RUN-MCH-2).
+// It never calls local.ExecutableTool.
+func (l *Loop) bindToolCalls(result *model.ModelResult, step *run.ModelStep) []run.ToolCallBinding {
 	if len(result.ToolCalls) == 0 {
-		return nil, nil
+		return nil
 	}
 	specByName := make(map[string]run.ToolSpec, len(step.Tools))
 	for _, s := range step.Tools {
@@ -233,11 +221,7 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 	}
 	bindings := make([]run.ToolCallBinding, len(result.ToolCalls))
 	for i, tc := range result.ToolCalls {
-		input, err := sdkconv.FreezeToolArguments(tc.Input)
-		if err != nil {
-			return nil, fmt.Errorf("tool call %d (%q) input: %w", i, tc.ToolCallID, err)
-		}
-		args := input.Canonical()
+		args := tc.Input.Canonical()
 		// The Run's CallID derives from the step and position; the provider's
 		// id is carried for the round trip only, so a provider that repeats or
 		// omits ids cannot break identity here.
@@ -260,5 +244,5 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 		}
 		bindings[i] = b
 	}
-	return bindings, nil
+	return bindings
 }

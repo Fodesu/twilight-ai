@@ -18,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/sdk"
 )
@@ -39,6 +40,16 @@ type fakeRun struct {
 	done    chan struct{}
 	release chan struct{}
 	out     effect.Outcome
+}
+
+// frozenModel stands in for the backend boundary: the effect protocol
+// carries only frozen model results.
+func frozenModel(r sdk.ModelResult) model.ModelResult {
+	frozen, err := sdkconv.FreezeModelResult(r)
+	if err != nil {
+		panic(err)
+	}
+	return frozen
 }
 
 func newFakeBackend(text string) *fakeBackend {
@@ -64,7 +75,7 @@ func (b *fakeBackend) Start(_ context.Context, ref string, a effect.Assignment) 
 		b.hub.Publish(context.Background(), effect.ProgressFrame{Key: a.Key(), Kind: effect.ProgressTextDelta, Payload: []byte(`"working"`)})
 		<-r.release
 		b.mu.Lock()
-		r.out = effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: b.text}}}
+		r.out = effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: b.text})}}
 		close(r.done)
 		b.mu.Unlock()
 		b.hub.End(a.Key())

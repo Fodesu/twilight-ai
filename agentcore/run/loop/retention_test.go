@@ -118,7 +118,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 			if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
 				t.Fatal(err)
 			}
-			result := textResult("done")
+			result := mustFreezeResult(t, textResult("done"))
 			if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: result}}, nil); err != nil {
 				t.Fatal(err)
 			}

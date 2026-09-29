@@ -220,7 +220,7 @@ func TestTargetResolvedPerEffect(t *testing.T) {
 	if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: toolCallResult("c1", "c2")}}, nil); err != nil {
+	if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: mustFreezeResult(t, toolCallResult("c1", "c2"))}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	res, err := l.Advance(ctx, rt.Bind(w), "run-1", nil)
@@ -299,7 +299,7 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 		t.Fatalf("advance while executing = %+v %v", again, err)
 	}
 
-	result := textResult("done")
+	result := mustFreezeResult(t, textResult("done"))
 	delivered, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: a.Key(), Result: ModelSucceeded{Result: result}}, nil)
 	if err != nil || delivered.Disposition != LoopFinished || delivered.Result == nil || delivered.Result.Status != RunCompleted {
 		t.Fatalf("deliver = %+v %v", delivered, err)
@@ -359,7 +359,7 @@ func TestRunOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 		t.Fatalf("read error changed Run: %+v", snapshot.State)
 	}
 	close(exec.ready)
-	exec.deliver(t, exec.last().Key(), Outcome{Result: ModelSucceeded{Result: textResult("eventual result")}})
+	exec.deliver(t, exec.last().Key(), Outcome{Result: ModelSucceeded{Result: mustFreezeResult(t, textResult("eventual result"))}})
 	select {
 	case res := <-done:
 		if res.Disposition != LoopFinished {
@@ -392,7 +392,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 		t.Fatalf("RecoverInterrupted = %d %v", n, err)
 	}
 	before := len(recordFacts(t, rt, "run-1"))
-	result := textResult("late")
+	result := mustFreezeResult(t, textResult("late"))
 	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Result: ModelSucceeded{Result: result}}, nil)
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("late deliver = %+v %v", res, err)
@@ -460,7 +460,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	}
 
 	// The attempt finishes on the executor; its Outcome reaches the new owner.
-	result := textResult("done")
+	result := mustFreezeResult(t, textResult("done"))
 	exec.deliver(t, a.Key(), Outcome{Result: ModelSucceeded{Result: result}})
 	deadline := time.After(2 * time.Second)
 	for {

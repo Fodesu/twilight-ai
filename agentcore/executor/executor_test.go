@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/sdk"
 )
@@ -24,6 +25,16 @@ type testBackend struct {
 	calls    int
 	last     effect.Assignment
 	outcomes map[effect.AssignmentKey]chan effect.Outcome
+}
+
+// frozenModel stands in for the backend boundary: the effect protocol
+// carries only frozen model results.
+func frozenModel(r sdk.ModelResult) model.ModelResult {
+	frozen, err := sdkconv.FreezeModelResult(r)
+	if err != nil {
+		panic(err)
+	}
+	return frozen
 }
 
 func newTestBackend() *testBackend {
@@ -43,7 +54,7 @@ func (b *testBackend) Dispatch(_ context.Context, a effect.Assignment) error {
 	ch := b.outcomes[a.Key()]
 	b.mu.Unlock()
 	go func() {
-		ch <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "ok"}}}
+		ch <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "ok"})}}
 	}()
 	return nil
 }
@@ -316,7 +327,7 @@ func (b *uncertainDispatchBackend) Dispatch(_ context.Context, a effect.Assignme
 func (b *uncertainDispatchBackend) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	select {
 	case <-b.ready:
-		return effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "accepted before response was lost"}}}, nil
+		return effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "accepted before response was lost"})}}, nil
 	case <-ctx.Done():
 		return effect.Outcome{}, ctx.Err()
 	}
@@ -920,7 +931,7 @@ func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	}()
 	settle := func(asg effect.Assignment, text string) {
 		backend.mu.Lock()
-		backend.outcomes[asg.Key()] <- effect.Outcome{Key: asg.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: text}}}
+		backend.outcomes[asg.Key()] <- effect.Outcome{Key: asg.Key(), Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: text})}}
 		backend.mu.Unlock()
 	}
 	settle(a, "first")

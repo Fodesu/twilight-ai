@@ -506,7 +506,7 @@ func (b *transientBackend) Start(_ context.Context, ref string, a effect.Assignm
 	defer b.mu.Unlock()
 	b.last = a
 	b.starts = append(b.starts, ref)
-	var result effect.OutcomeResult = effect.ModelSucceeded{Result: sdk.ModelResult{Text: "ok"}}
+	var result effect.OutcomeResult = effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "ok"})}
 	if a.Kind() == effect.AssignmentTool {
 		result = effect.ToolExecutionSucceeded{}
 	}

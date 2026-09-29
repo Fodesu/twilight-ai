@@ -17,6 +17,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/sdk"
 )
@@ -30,6 +31,16 @@ type okBackend struct {
 	mu       sync.Mutex
 	calls    int
 	outcomes map[effect.AssignmentKey]chan effect.Outcome
+}
+
+// frozenModel stands in for the backend boundary: the effect protocol
+// carries only frozen model results.
+func frozenModel(r sdk.ModelResult) model.ModelResult {
+	frozen, err := sdkconv.FreezeModelResult(r)
+	if err != nil {
+		panic(err)
+	}
+	return frozen
 }
 
 func newOKBackend() *okBackend {
@@ -51,7 +62,7 @@ func (b *okBackend) accept(a effect.Assignment) chan effect.Outcome {
 func (b *okBackend) Dispatch(_ context.Context, a effect.Assignment) error {
 	ch := b.accept(a)
 	go func() {
-		ch <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "ok"}}}
+		ch <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "ok"})}}
 	}()
 	return nil
 }
@@ -101,7 +112,7 @@ type holdBackend struct{ *okBackend }
 func (b *holdBackend) Dispatch(_ context.Context, a effect.Assignment) error { b.accept(a); return nil }
 func (b *holdBackend) settle(a effect.Assignment, text string) {
 	b.mu.Lock()
-	b.outcomes[a.Key()] <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: text}}}
+	b.outcomes[a.Key()] <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: text})}}
 	b.mu.Unlock()
 }
 
@@ -121,7 +132,7 @@ func (b *uncertainBackend) Dispatch(_ context.Context, a effect.Assignment) erro
 func (b *uncertainBackend) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	select {
 	case <-b.ready:
-		return effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "accepted before response was lost"}}}, nil
+		return effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "accepted before response was lost"})}}, nil
 	case <-ctx.Done():
 		return effect.Outcome{}, ctx.Err()
 	}

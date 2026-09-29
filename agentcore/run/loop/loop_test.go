@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/decision"
 	. "github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
@@ -140,6 +141,17 @@ func toolCallResult(ids ...string) sdk.ModelResult {
 		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: "echo", Input: sdk.ParseToolArguments(`{"x":1}`)})
 	}
 	return r
+}
+
+// mustFreezeResult stands in for the backend boundary: the effect
+// protocol carries only frozen model results.
+func mustFreezeResult(t *testing.T, r sdk.ModelResult) model.ModelResult {
+	t.Helper()
+	frozen, err := sdkconv.FreezeModelResult(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frozen
 }
 
 // --- tests ---

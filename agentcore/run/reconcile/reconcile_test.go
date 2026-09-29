@@ -9,10 +9,22 @@ import (
 
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/sdk"
 )
+
+// frozenModel stands in for the backend boundary: the effect protocol
+// carries only frozen model results.
+func frozenModel(r sdk.ModelResult) model.ModelResult {
+	frozen, err := sdkconv.FreezeModelResult(r)
+	if err != nil {
+		panic(err)
+	}
+	return frozen
+}
 
 // fakePort is an execution store whose Attach answers a fixed state and
 // whose GetOutcome is scripted per test.
@@ -168,7 +180,7 @@ func TestKeptOutcomeReadRetries(t *testing.T) {
 	failed := make(chan struct{})
 	ready := make(chan struct{})
 	var once sync.Once
-	result := sdk.ModelResult{Text: "eventual"}
+	result := frozenModel(sdk.ModelResult{Text: "eventual"})
 	port := &fakePort{state: effect.AttachmentActive, outcome: func(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 		select {
 		case <-ready:
@@ -219,7 +231,7 @@ func TestLifetimeStopsOutcomeWatcher(t *testing.T) {
 		if !ready {
 			return effect.Outcome{}, effect.ErrOutcomeNotReady
 		}
-		return effect.Outcome{Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "late"}}}, nil
+		return effect.Outcome{Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "late"})}}, nil
 	}}
 	delivered := make(chan effect.Outcome, 1)
 	r := &Reconciler{Executions: port, Lifetime: lifetime, Watcher: watching(t, port), Deliver: func(out effect.Outcome) { delivered <- out }}
@@ -361,7 +373,7 @@ func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
 		if !ready {
 			return effect.Outcome{}, effect.ErrOutcomeNotReady
 		}
-		return effect.Outcome{Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "recovered"}}}, nil
+		return effect.Outcome{Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "recovered"})}}, nil
 	}
 	delivered := make(chan effect.Outcome, 1)
 	r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: watching(t, port), OrphanProbe: 10 * time.Millisecond, Deliver: func(out effect.Outcome) { delivered <- out }}

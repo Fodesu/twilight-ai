@@ -9,8 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
-	"github.com/felinics/twilight/sdk"
+	"github.com/felinics/twilight/agentcore/run/model"
 )
 
 const ProtocolVersion uint16 = 1
@@ -40,7 +39,7 @@ type WireError struct {
 type OutcomeEnvelope struct {
 	ProtocolVersion uint16               `json:"protocolVersion"`
 	Key             effect.AssignmentKey `json:"key"`
-	Model           *sdk.ModelResult     `json:"model,omitempty"`
+	Model           *model.ModelResult   `json:"model,omitempty"`
 	Tool            *ToolOutcomeEnvelope `json:"tool,omitempty"`
 	Error           *WireError           `json:"error,omitempty"`
 	Cancelled       bool                 `json:"cancelled,omitempty"`
@@ -55,18 +54,13 @@ func (o *OutcomeEnvelope) Digest() (run.Digest, error) {
 // success in Model, a tool result in Tool, a failure in Error with its code,
 // a cancellation or an unknown end as the flags.
 //
-// A model result is encoded only if it freezes (sdkconv.FreezeModelResult):
-// JSON would silently rewrite invalid UTF-8 in it, so the record and the
-// wire would carry a result the provider never produced. Such a result is
-// delivered as a FailureMalformedResult failure instead (RUN-EXE-2).
+// A ModelSucceeded outcome already carries the frozen result: the freeze
+// happens at the backend boundary, so the wire shape is the agent-owned
+// model package, never an sdk type.
 func EncodeOutcome(out effect.Outcome) OutcomeEnvelope {
 	w := OutcomeEnvelope{ProtocolVersion: ProtocolVersion, Key: out.Key}
 	switch r := out.Result.(type) {
 	case effect.ModelSucceeded:
-		if _, err := sdkconv.FreezeModelResult(r.Result); err != nil {
-			w.Error = &WireError{Code: string(effect.FailureMalformedResult), Message: "model result cannot be frozen: " + err.Error()}
-			break
-		}
 		res := r.Result
 		w.Model = &res
 	case effect.ModelFailed:
