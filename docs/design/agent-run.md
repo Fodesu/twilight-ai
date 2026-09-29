@@ -85,7 +85,11 @@ Run 持久化协议保存 run-owned frozen values。模型请求、模型结果�
 
 ### 事实的 wire 形状与 codec 历史
 
-Run 事实是 Session event：EventType 为 `twilight/run/<name>`，payload 为 canonical JSON object，第一层携带 `runId` 与 payload 版本字段 `v`（见 agent-session.md「payload 版本归事件类型」与 agent-session-extension.md「payload 版本归事件类型」）。`v` 是该事实类型的 payload 版本，属于事件类型而不属于 Run：`runmod` 为每个事实类型登记一份 codec 历史（`EventDefinition.Codecs` 按版本各一个 codec，`Version` 为当前版本），当前版本由 `factCodec` 按 Run 核心今天定义的 wire 编解码，被取代的版本各保留自己的 codec（`olderFactCodecs`，版本 1..n-1 连续，缺口在构建时报错），解码旧 wire 并 upcast 到当前内存类型，Decide 与 Evolve 只面对当前类型（见「Run 协议不设版本」）。某个事实类型形状变化时，把被替换的 codec 以其旧版本号加入历史，当前版本自然加一；已发布版本的 codec 永不删除、永不修改。当前所有事实类型均为版本 1、无历史。行字段（Seq、CommitID、Index、Last、digest）由 Session kernel 提供，Run 不另设 envelope。fact codec 必须拒绝 unknown type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire。精确 identity 和 digest 使用 JSON string，整数字段使用 Session preset 的整数 wire shape。
+Run 事实是 Session event：EventType 为 `twilight/run/<name>`，payload 为 canonical JSON object，第一层携带 `runId` 与 payload 版本字段 `v`（见 agent-session.md「payload 版本归事件类型」与 agent-session-extension.md「payload 版本归事件类型」）。`v` 是该事实类型的 payload 版本，属于事件类型而不属于 Run：`runmod` 为每个事实类型登记一份 codec 历史（`EventDefinition.Codecs` 按版本各一个 codec，`Version` 为当前版本），当前版本由 `factCodec` 按 Run 核心今天定义的 wire 编解码，被取代的版本各保留自己的 codec（`olderFactCodecs`，版本 1..n-1 连续，缺口在构建时报错），解码旧 wire 并 upcast 到当前内存类型，Decide 与 Evolve 只面对当前类型（见「Run 协议不设版本」）。
+
+某个事实类型形状变化时，把被替换的 codec 以其旧版本号加入历史，当前版本自然加一；已发布版本的 codec 永不删除、永不修改。当前所有事实类型均为版本 1、无历史。
+
+行字段（Seq、CommitID、Index、Last、digest）由 Session kernel 提供，Run 不另设 envelope。fact codec 必须拒绝 unknown type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire。精确 identity 和 digest 使用 JSON string，整数字段使用 Session preset 的整数 wire shape。
 
 ```go
 type CommandEnvelope struct {
@@ -100,7 +104,11 @@ command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event �
 
 ### command 与事件组一一对应
 
-一个 command 恰产生一组事件（一次 `Append`，同一 CommitID）；其 `twilight/run/` 事件在 Run 自己的 stream 内 Index 从 0 连续递增。同一语义操作里其他模块的事实（input_delivered、turn/failed）不由 Run 附带：它们是同一个 unit of work（`agentcore/session/unit`）里那个模块自己的 Part，与 Run 的 Part 在同一 View 上准备、同一 commit 落盘。事件没有独立 EventID，`Seq` 即身份（见 agent-session.md「wire 的形状约束」）。RunStore 提交的组其 CommitID 等于 CommandID，Coordinator 写入的 Start 与 Retry 组使用该组自己的 CommitID。`RecordedAtUnixMilli` 由写入方的时钟填入，是 metadata，不参与 Run 的任何派生，也不参与重放判定（见 agent-session-extension.md「幂等重放」）。构造 command 必须使用 `schema.Wire.Envelope`；`agentcore/run` 自身不提供 `Envelope`、`Decide`、`Evolve` 或 `Digest*` 的包级函数，六个契约只在 `agentcore/run/schema` 以单值暴露（见「Run 协议不设版本」）。
+一个 command 恰产生一组事件（一次 `Append`，同一 CommitID）；其 `twilight/run/` 事件在 Run 自己的 stream 内 Index 从 0 连续递增。同一语义操作里其他模块的事实（input_delivered、turn/failed）不由 Run 附带：它们是同一个 unit of work（`agentcore/session/unit`）里那个模块自己的 Part，与 Run 的 Part 在同一 View 上准备、同一 commit 落盘。
+
+事件没有独立 EventID，`Seq` 即身份（见 agent-session.md「wire 的形状约束」）。RunStore 提交的组其 CommitID 等于 CommandID，Coordinator 写入的 Start 与 Retry 组使用该组自己的 CommitID。`RecordedAtUnixMilli` 由写入方的时钟填入，是 metadata，不参与 Run 的任何派生，也不参与重放判定（见 agent-session-extension.md「幂等重放」）。
+
+构造 command 必须使用 `schema.Wire.Envelope`；`agentcore/run` 自身不提供 `Envelope`、`Decide`、`Evolve` 或 `Digest*` 的包级函数，六个契约只在 `agentcore/run/schema` 以单值暴露（见「Run 协议不设版本」）。
 
 ### 内容只以 digest 进入 fact
 
@@ -115,7 +123,15 @@ command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event �
 | 外部响应 | `ToolCallAnswered.ResponseDigest` | `tool_response_payload` |
 | tool call 参数 | `ToolCallBinding.Arguments` | fact 本身 |
 
-正文以其 digest 的预映像信封存储（`frozen.Codec` 的 `Encode*`），因此 `sha256(bytes) == digest`，cas Key 即 digest。Run 的 `Command` Part 在构造时（进入 Writer 之前）存入命令携带的正文，`FrozenValues.Put` 同时登记 Binding（「Commit 的固定步骤」第 0 步）；命名正文的四种 fact 在 EventDefinition 上声明该 Binding 的提取，Writer 在 `Append` 之前 admission 并建立 claim（见 agent-session-extension.md「提取器随事件声明」与「claim 先于 Append」），正文的保留期与 ledger 中的 fact 一致。对话与 Turn 的投影只保存 digest，正文在读取时经 materializer 取回（见 agent-session-chatlog.md「materializer 是 IO 边界」）；因此 `run/<RunID>` 流是 canonical history，不能独立回收，正文可以迁移到冷存储但不得丢弃。`frozen.Store` 是 run 层对内容寻址存储的端口：`Put(digest, bytes)` 幂等，`Get(digest)`。它不是第二个内容寻址存储，而是 artifact `cas` ContentStore 的一个 Authority（`twilight/run/frozen`，`agentcore/session/run.FrozenValues` 适配）。Dispatch 时必须把请求复制到 executor-owned 的 durable Execution Record，或复制到 Worker 可访问的 payload store。Worker 不应在执行时反查 Authority 的 Session 或依赖某个 Worker 的本地文件。接管时继续使用相同 AssignmentKey；是否重试由 control plane 和 effect recovery policy 决定。内存与文件两种 ContentStore（`artifact.NewMemoryContentStore`、`filestore.NewContentStore`）经同一适配器服务。工具列表摘要（`DigestToolSpecs`）的预映像不区分 nil 与空列表：fact wire 省略空列表，重算方拿到的是 nil。
+正文以其 digest 的预映像信封存储（`frozen.Codec` 的 `Encode*`），因此 `sha256(bytes) == digest`，cas Key 即 digest。Run 的 `Command` Part 在构造时（进入 Writer 之前）存入命令携带的正文，`FrozenValues.Put` 同时登记 Binding（「Commit 的固定步骤」第 0 步）；命名正文的四种 fact 在 EventDefinition 上声明该 Binding 的提取，Writer 在 `Append` 之前 admission 并建立 claim（见 agent-session-extension.md「提取器随事件声明」与「claim 先于 Append」），正文的保留期与 ledger 中的 fact 一致。
+
+对话与 Turn 的投影只保存 digest，正文在读取时经 materializer 取回（见 agent-session-chatlog.md「materializer 是 IO 边界」）；因此 `run/<RunID>` 流是 canonical history，不能独立回收，正文可以迁移到冷存储但不得丢弃。
+
+`frozen.Store` 是 run 层对内容寻址存储的端口：`Put(digest, bytes)` 幂等，`Get(digest)`。它不是第二个内容寻址存储，而是 artifact `cas` ContentStore 的一个 Authority（`twilight/run/frozen`，`agentcore/session/run.FrozenValues` 适配）。
+
+Dispatch 时必须把请求复制到 executor-owned 的 durable Execution Record，或复制到 Worker 可访问的 payload store。Worker 不应在执行时反查 Authority 的 Session 或依赖某个 Worker 的本地文件。接管时继续使用相同 AssignmentKey；是否重试由 control plane 和 effect recovery policy 决定。
+
+内存与文件两种 ContentStore（`artifact.NewMemoryContentStore`、`filestore.NewContentStore`）经同一适配器服务。工具列表摘要（`DigestToolSpecs`）的预映像不区分 nil 与空列表：fact wire 省略空列表，重算方拿到的是 nil。
 
 下列 identity 稳定派生并由 Commit 验证：
 
@@ -416,7 +432,13 @@ type MachineProjection struct {
 }
 ```
 
-终态 Run 在 `RunEnded` 折叠后整体离开投影；终态结果由 `Record` 与 turn surface 提供，投影大小与活动 Run 数成正比。同一 RunID 的第二条 `created`（见「run_created 是首个事实」）在提交时由 `CreateRun` Part 用 kernel 的 stream 索引（`View.StreamHead(run/<RunID>)`）拒绝为 `ErrRunExists`，投影不保留已终结 RunID 的集合；一条 ledger 里若真出现两个同 RunID 的 Run，是 agent-session.md「按 CommitSeq 顺序读」的完整性问题。`Load(ctx, w, runID)` 是命令路径的读取：经传入 Writer 的 `Projections()` 读 owner 内存中的投影（见 agent-session-extension.md「两条折叠路径交付相同输入」），失去所有权的 owner 因此仍按自己的视图规划并在提交时被围栏；`Record(ctx, sid, runID)` 与独立进程的观察者经 `extension.NewProjectionReader` 从 Store 读取，不取得所有权（OWN-HDL-2），投影缓存（见 agent-session-extension.md「缓存条目的复用条件」）是可丢弃的派生数据，写入策略由 `agentcore/session/run` 的 `SnapshotPolicy` 决定，默认在 Run 的 `Current` 回到 `Open` 或 Run 终结时写入，并可按组计数补充。`Record` 以 `Types=[twilight/run/]` 过滤 `Read` 读取该 RunID 的全部事件（见 agent-session.md「StreamSeq 是读优化」），FoldRun 重建，该折叠即权威读取；该 Run 仍在投影中且两次读取落在同一 head 时与投影状态比对，divergence 必须失败；head 不同说明两次读取之间有提交落盘，两者各自正确，不比对。
+终态 Run 在 `RunEnded` 折叠后整体离开投影；终态结果由 `Record` 与 turn surface 提供，投影大小与活动 Run 数成正比。
+
+同一 RunID 的第二条 `created`（见「run_created 是首个事实」）在提交时由 `CreateRun` Part 用 kernel 的 stream 索引（`View.StreamHead(run/<RunID>)`）拒绝为 `ErrRunExists`，投影不保留已终结 RunID 的集合；一条 ledger 里若真出现两个同 RunID 的 Run，是 agent-session.md「按 CommitSeq 顺序读」的完整性问题。
+
+`Load(ctx, w, runID)` 是命令路径的读取：经传入 Writer 的 `Projections()` 读 owner 内存中的投影（见 agent-session-extension.md「两条折叠路径交付相同输入」），失去所有权的 owner 因此仍按自己的视图规划并在提交时被围栏；`Record(ctx, sid, runID)` 与独立进程的观察者经 `extension.NewProjectionReader` 从 Store 读取，不取得所有权（OWN-HDL-2），投影缓存（见 agent-session-extension.md「缓存条目的复用条件」）是可丢弃的派生数据，写入策略由 `agentcore/session/run` 的 `SnapshotPolicy` 决定，默认在 Run 的 `Current` 回到 `Open` 或 Run 终结时写入，并可按组计数补充。
+
+`Record` 以 `Types=[twilight/run/]` 过滤 `Read` 读取该 RunID 的全部事件（见 agent-session.md「StreamSeq 是读优化」），FoldRun 重建，该折叠即权威读取；该 Run 仍在投影中且两次读取落在同一 head 时与投影状态比对，divergence 必须失败；head 不同说明两次读取之间有提交落盘，两者各自正确，不比对。
 
 ### Commit 的固定步骤
 
@@ -451,7 +473,13 @@ unit.Commit(view):
 
 ### 幂等键与重放判定
 
-幂等键为 Session 的 `(SessionID, CommitID)` 提交索引（见 agent-session.md「Committed 与索引」「LookupCommit」与 agent-session-extension.md「幂等重放」），CommitID 等于 CommandID，RunStore 不另设幂等索引。同 CommandID 的重放返回 `CommitAlreadyApplied`、当前 snapshot 与原完整组，且不得再次 Decide 或产生外部 effect；command 不持久化，重放只按 CommandID 判定（见 agent-session.md「CommitID 命名操作」与 agent-session-extension.md「幂等重放」）：identity 有意不覆盖内容的两族（同一 effect 的两次结算、同一 ResponseID 的 approve 与 reject）在内容不同时同样返回 `CommitAlreadyApplied`，以先提交的为准，调用方从投影读取实际生效的结果。对于 start、settlement 与 recovery command，EffectID 是 CommandID 的 preimage，不同 effect 即不同 command：start 按当前 target state 评估，target 已是 Executing 时返回 `ErrStaleRuntime`；settlement 的 Effect 与 Executing 目标记录的 Effect 不符时返回 `ErrStaleRuntime`；缺少 Effect 的 command 无法派生 CommandID，返回 `ErrCommandConflict`。`DeclineToolCall` 没有 effect，其 CommandID 以 call 坐标派生，同一 call 的第二次 decline 为重放。
+幂等键为 Session 的 `(SessionID, CommitID)` 提交索引（见 agent-session.md「Committed 与索引」「LookupCommit」与 agent-session-extension.md「幂等重放」），CommitID 等于 CommandID，RunStore 不另设幂等索引。
+
+同 CommandID 的重放返回 `CommitAlreadyApplied`、当前 snapshot 与原完整组，且不得再次 Decide 或产生外部 effect；command 不持久化，重放只按 CommandID 判定（见 agent-session.md「CommitID 命名操作」与 agent-session-extension.md「幂等重放」）：identity 有意不覆盖内容的两族（同一 effect 的两次结算、同一 ResponseID 的 approve 与 reject）在内容不同时同样返回 `CommitAlreadyApplied`，以先提交的为准，调用方从投影读取实际生效的结果。
+
+对于 start、settlement 与 recovery command，EffectID 是 CommandID 的 preimage，不同 effect 即不同 command：start 按当前 target state 评估，target 已是 Executing 时返回 `ErrStaleRuntime`；settlement 的 Effect 与 Executing 目标记录的 Effect 不符时返回 `ErrStaleRuntime`；缺少 Effect 的 command 无法派生 CommandID，返回 `ErrCommandConflict`。
+
+`DeclineToolCall` 没有 effect，其 CommandID 以 call 坐标派生，同一 call 的第二次 decline 为重放。
 
 ### Run 语义提交的 ownership 围栏
 
@@ -459,15 +487,31 @@ Run 语义提交的 ownership fencing。RunStore 不签发 per-effect grant，�
 
 ### 接管处置
 
-处置只恢复同一 Run：不创建 attempt、不结束 Run；对工具 call 的 Unknown 结算是该 call 的终态事实，协议在任何路径上都不据此自动重新执行（TRN-DUR-1、TRN-DUR-4）。新 owner 取得 Writer 后，在驱动任何 Run 之前以该 Writer 调用一次 `SessionRunStore.RecoverInterrupted(ctx, w, reconciler)`。三方的分工固定：Run 机器说哪些目标是 Executing、请求了哪个 effect（`plan.RecoveryTargets`）；execution store 说该 effect 的 attempt 是否还存在（`ExecutionPort.Attach`）；`agentcore/run/reconcile` 的 `Reconciler` 是比较两侧的唯一位置，对每个目标给出 Verdict：`keep`（`active` / `terminal`，保持 Executing，后台读取 Outcome 并交付）、`defer`（`orphaned`：记录存在但没有活租约，不按 `missing` 处理，保持 Executing 并同样等待 Outcome；`Executions` 实现 `effect.Recoverer` 时 Reconciler 随即调用一次 `RecoverExecution(key)` 请求接管，此后 Outcome 读取循环在退避到上限后按 Attach 结果每个 orphaned 阶段再请求一次；放弃只经显式 `Dispose`）、`redispatch`（`missing` 且重派预算未用尽：先在 dispatch ledger 记下这一次，交 Executor 后再记送达，保持 Executing，见「重派与 dispatch ledger」）、`dispose`（`missing` 且策略为 `DisposeMissing`，或策略为 `RedispatchMissing` 而预算已尽，产生 Run 的恢复 command）。对 `missing` 的处理由显式策略 `reconcile.MissingPolicy` 决定（`DisposeMissing` 为零值；`RedispatchMissing` 要求 `Redispatch` 端口与 dispatch ledger 同时存在，缺一为 `ErrMissingPolicyPorts`），端口是否装配不反过来选择策略。处置命令由 `plan.RecoveryCommand` 按目标派生，Run 只验证该处置是否合法并记录事实；Loop、Driver 与 store 适配器都不解释 executor 的观察。若同一 effect 的 attempt 仍存在，Run 保持 Executing，结果以原 Effect 结算，属于重连同一次执行。只有执行记录被证明不存在（`missing`）或调用方明确放弃（`Reconciler.Abandon`）时，才处置；对 `missing` 的处置先调用 `Executions.Abort(key)` 在 Executor 上关闭该 key（见「Abort tombstone：同一 EffectID 的接受与关闭互斥」）：返回 `aborted` 才提交恢复 command，返回其他状态说明一次 acceptance 抢先到达，按该状态改为 `keep`/`defer`；两步之间崩溃，下一次接管处置得到 `aborted` 再次处置，恢复 CommandID 由 effect 派生，天然幂等；`Executions` 为 nil 而未声明 `Abandon` 时 Plan 返回 `ErrNoExecutionPort`，"无 executor 可问"不等于"无执行"：Executing ModelStep 提交 `RecoverModelExecution{Effect}`，回到 `Open` 并按恢复时刻重新规划；Executing tool call 提交 `SubmitToolFailure{Outcome: Unknown}`。Pending call 不处置，Waiting call 不处置。每个处置是一次普通 Commit，Run 保持 Active，同一 RunID 继续。处置的 CommandID 由 `DeriveRecoveryCommandID(Effect)` 派生，与 owner 和 Epoch 无关，任何 owner 的重复处置得到 AlreadyApplied。
+处置只恢复同一 Run：不创建 attempt、不结束 Run；对工具 call 的 Unknown 结算是该 call 的终态事实，协议在任何路径上都不据此自动重新执行（TRN-DUR-1、TRN-DUR-4）。新 owner 取得 Writer 后，在驱动任何 Run 之前以该 Writer 调用一次 `SessionRunStore.RecoverInterrupted(ctx, w, reconciler)`。
+
+三方的分工固定：Run 机器说哪些目标是 Executing、请求了哪个 effect（`plan.RecoveryTargets`）；execution store 说该 effect 的 attempt 是否还存在（`ExecutionPort.Attach`）；`agentcore/run/reconcile` 的 `Reconciler` 是比较两侧的唯一位置，对每个目标给出 Verdict：`keep`（`active` / `terminal`，保持 Executing，后台读取 Outcome 并交付）、`defer`（`orphaned`：记录存在但没有活租约，不按 `missing` 处理，保持 Executing 并同样等待 Outcome；`Executions` 实现 `effect.Recoverer` 时 Reconciler 随即调用一次 `RecoverExecution(key)` 请求接管，此后 Outcome 读取循环在退避到上限后按 Attach 结果每个 orphaned 阶段再请求一次；放弃只经显式 `Dispose`）、`redispatch`（`missing` 且重派预算未用尽：先在 dispatch ledger 记下这一次，交 Executor 后再记送达，保持 Executing，见「重派与 dispatch ledger」）、`dispose`（`missing` 且策略为 `DisposeMissing`，或策略为 `RedispatchMissing` 而预算已尽，产生 Run 的恢复 command）。对 `missing` 的处理由显式策略 `reconcile.MissingPolicy` 决定（`DisposeMissing` 为零值；`RedispatchMissing` 要求 `Redispatch` 端口与 dispatch ledger 同时存在，缺一为 `ErrMissingPolicyPorts`），端口是否装配不反过来选择策略。处置命令由 `plan.RecoveryCommand` 按目标派生，Run 只验证该处置是否合法并记录事实；Loop、Driver 与 store 适配器都不解释 executor 的观察。
+
+若同一 effect 的 attempt 仍存在，Run 保持 Executing，结果以原 Effect 结算，属于重连同一次执行。
+
+只有执行记录被证明不存在（`missing`）或调用方明确放弃（`Reconciler.Abandon`）时，才处置；对 `missing` 的处置先调用 `Executions.Abort(key)` 在 Executor 上关闭该 key（见「Abort tombstone：同一 EffectID 的接受与关闭互斥」）：返回 `aborted` 才提交恢复 command，返回其他状态说明一次 acceptance 抢先到达，按该状态改为 `keep`/`defer`；两步之间崩溃，下一次接管处置得到 `aborted` 再次处置，恢复 CommandID 由 effect 派生，天然幂等；`Executions` 为 nil 而未声明 `Abandon` 时 Plan 返回 `ErrNoExecutionPort`，"无 executor 可问"不等于"无执行"：Executing ModelStep 提交 `RecoverModelExecution{Effect}`，回到 `Open` 并按恢复时刻重新规划；Executing tool call 提交 `SubmitToolFailure{Outcome: Unknown}`。
+
+Pending call 不处置，Waiting call 不处置。每个处置是一次普通 Commit，Run 保持 Active，同一 RunID 继续。处置的 CommandID 由 `DeriveRecoveryCommandID(Effect)` 派生，与 owner 和 Epoch 无关，任何 owner 的重复处置得到 AlreadyApplied。
 
 ### Run 协议不设版本
 
-Run 的六个契约（Machine、Wire、Canonical、Snapshot、Identity、Bodies）是 `agentcore/run/schema` 的包级单值，没有版本号，也没有按版本选择的入口。理由按契约分述：Identity 派生的 CommandID、StepID、EffectID 是持久化语义，派生规则变化会使同一 effect 的重放得到另一个 CommandID，因此它不能有版本，其预映像常量归自身（与 agent-session.md「派生身份不嵌版本」同理）；Canonical 与 Bodies 的 digest 是 cas 的键，事实记录写下时的 digest，其预映像与信封的版本常量（`v1:` 前缀）归各自的字节，不是选择器；Wire 与 Machine 面对的事实形状由每个事实类型的 payload 版本 `v` 与 codec 演进（见 agent-session.md「payload 版本归事件类型」与 agent-session-extension.md「payload 版本归事件类型」），codec 把旧版本 upcast 到当前内存类型，Decide 与 Evolve 只有一份；Snapshot 是投影缓存的编码，格式不符只导致重折。`CommandEnvelope` 与 `runtime.Snapshot` 都不携带版本，machine 投影不记录每个 Run 的版本，命令不做版本比对。Run 之间因此没有"不同版本并存"的情形：新事实类型或新字段以事件类型的 `v` 发布，所有 Run 由同一份 Decide 与 Evolve 处理。
+Run 的六个契约（Machine、Wire、Canonical、Snapshot、Identity、Bodies）是 `agentcore/run/schema` 的包级单值，没有版本号，也没有按版本选择的入口。
+
+理由按契约分述：Identity 派生的 CommandID、StepID、EffectID 是持久化语义，派生规则变化会使同一 effect 的重放得到另一个 CommandID，因此它不能有版本，其预映像常量归自身（与 agent-session.md「派生身份不嵌版本」同理）；Canonical 与 Bodies 的 digest 是 cas 的键，事实记录写下时的 digest，其预映像与信封的版本常量（`v1:` 前缀）归各自的字节，不是选择器；Wire 与 Machine 面对的事实形状由每个事实类型的 payload 版本 `v` 与 codec 演进（见 agent-session.md「payload 版本归事件类型」与 agent-session-extension.md「payload 版本归事件类型」），codec 把旧版本 upcast 到当前内存类型，Decide 与 Evolve 只有一份；Snapshot 是投影缓存的编码，格式不符只导致重折。
+
+`CommandEnvelope` 与 `runtime.Snapshot` 都不携带版本，machine 投影不记录每个 Run 的版本，命令不做版本比对。Run 之间因此没有"不同版本并存"的情形：新事实类型或新字段以事件类型的 `v` 发布，所有 Run 由同一份 Decide 与 Evolve 处理。
 
 ### 5.1 不进入 ledger 的数据
 
-Executor 的 in-flight 表可以只是进程内缓存；跨 Worker 恢复所需的是 durable Execution Ledger（见「Execution Ledger」）。投影缓存是可丢弃的派生数据（见 agent-session-extension.md「缓存条目的复用条件」）；`frozen.Store` 是 Owner 侧的内容寻址旁存。Worker crash 后，观察到该 record 为 `orphaned` 的一方（持有该 Run 的 Owner，或外部控制器）调用 `RecoverExecution(key)`，接管的 Worker 从共享 Execution Store 获取同一 AssignmentKey 的 payload，并按 backend 的 Attach 结果决定继续观察、Restart 或 Unknown（见「恢复原语与恢复触发」）。Execution Record 还持久化 `ExecutionRef{Provider, Ref}`（见「ExecutionRef 与 Restart」）：backend 只按 Ref 寻址，Attach、Status、Outcome、Cancel 都经 record 的 Ref 到达它；目标到 Workspace/Runtime 的解析由 backend（provider adapter）在 `Prepare` 与 `Start` 中完成。Session 所有权与 Worker execution ownership 是两层不同的 ownership。
+Executor 的 in-flight 表可以只是进程内缓存；跨 Worker 恢复所需的是 durable Execution Ledger（见「Execution Ledger」）。投影缓存是可丢弃的派生数据（见 agent-session-extension.md「缓存条目的复用条件」）；`frozen.Store` 是 Owner 侧的内容寻址旁存。
+
+Worker crash 后，观察到该 record 为 `orphaned` 的一方（持有该 Run 的 Owner，或外部控制器）调用 `RecoverExecution(key)`，接管的 Worker 从共享 Execution Store 获取同一 AssignmentKey 的 payload，并按 backend 的 Attach 结果决定继续观察、Restart 或 Unknown（见「恢复原语与恢复触发」）。
+
+Execution Record 还持久化 `ExecutionRef{Provider, Ref}`（见「ExecutionRef 与 Restart」）：backend 只按 Ref 寻址，Attach、Status、Outcome、Cancel 都经 record 的 Ref 到达它；目标到 Workspace/Runtime 的解析由 backend（provider adapter）在 `Prepare` 与 `Start` 中完成。Session 所有权与 Worker execution ownership 是两层不同的 ownership。
 
 ## 6. Loop ports 与 policy
 
@@ -582,7 +626,11 @@ Assignment 是 Owner 交给 Executor 的工作单元：目标（RunID、StepID�
 
 ### Outcome 是 Executor 的唯一回答
 
-Outcome 是 Executor 对一个 Assignment 的唯一回答：模型 Assignment 得到 `Model` 或 `Err`，工具 Assignment 得到 sealed 的 `Tool`；`Cancelled` 表示 Executor 按要求停止了该效果；`Unknown` 表示 Executor 已明确结束该执行的恢复，外部结果仍无法确定。模型结果写入 record 或 wire 之前须能冻结（`sdkconv.FreezeModelResult`，含 UTF-8 校验）：JSON 编码会改写无效 UTF-8，因此不能冻结的结果不以 `Model` 交付，而以 `Err{Code: malformed_result}` 交付，Loop 按 `RejectModelResult` 处理并计入 `MalformedRetries`。Outcome 通过 `GetOutcome` 按 key 读取，也可以由 deployment 层通过通知唤醒读取方；每个被接受的 Assignment 最终至多提交一个 authoritative Outcome。`GetOutcome` 返回的 error 表示读取操作失败，执行状态保持原值。Worker 对读取失败退避重试并保持 lease；失去 ownership 后停止处理。Loop.Run 将读取错误返回给调用方，保留 Executing，后续可重新关联结果。Reattach 的 Attach 请求由调用 context 控制，后台结果读取由构造时传入的 Session ownership `lifetime` 控制。
+Outcome 是 Executor 对一个 Assignment 的唯一回答：模型 Assignment 得到 `Model` 或 `Err`，工具 Assignment 得到 sealed 的 `Tool`；`Cancelled` 表示 Executor 按要求停止了该效果；`Unknown` 表示 Executor 已明确结束该执行的恢复，外部结果仍无法确定。
+
+模型结果写入 record 或 wire 之前须能冻结（`sdkconv.FreezeModelResult`，含 UTF-8 校验）：JSON 编码会改写无效 UTF-8，因此不能冻结的结果不以 `Model` 交付，而以 `Err{Code: malformed_result}` 交付，Loop 按 `RejectModelResult` 处理并计入 `MalformedRetries`。
+
+Outcome 通过 `GetOutcome` 按 key 读取，也可以由 deployment 层通过通知唤醒读取方；每个被接受的 Assignment 最终至多提交一个 authoritative Outcome。`GetOutcome` 返回的 error 表示读取操作失败，执行状态保持原值。Worker 对读取失败退避重试并保持 lease；失去 ownership 后停止处理。Loop.Run 将读取错误返回给调用方，保留 Executing，后续可重新关联结果。Reattach 的 Attach 请求由调用 context 控制，后台结果读取由构造时传入的 Session ownership `lifetime` 控制。
 
 ### Dispatch 与 Attach
 
@@ -606,9 +654,15 @@ Outcome 是 Executor 对一个 Assignment 的唯一回答：模型 Assignment �
 
 ### 恢复原语与恢复触发
 
-Executor 拥有“如何恢复一次执行”的语义，不拥有“何时、对哪些、由谁触发”。前者只有 Executor 知道：`ExecutionRef`、`Backend.Attach/Restart`、ReplayPolicy、租约与 fencing epoch。Worker 因此提供两个按 key 的原语，都不进 `effect.ExecutionPort`（数据面按单个 Assignment 收发消息）：`RecoverExecution(key)` 是可选端口能力 `effect.Recoverer`（与 `effect.Acknowledger` 同一模式，Worker 与 HTTP Client 都实现），把一条租约过期或从未持有的非终态 record 接回本 Worker 的活租约并继续（「Dispatch 与 Attach」的 Attach → 观察 / Restart / Unknown），对终态记录、已在本 Worker 租约下的记录与他人活租约下的记录不做任何事；`Dispose(key)` 把一条非终态记录无条件结算为 Unknown 终态（OutcomeEnvelope 携带 `WireError{Code:"disposed"}`，经 record 的 `ExecutionRef` 找到 backend 后 best-effort `Cancel(ref)`，不要求 backend 可达），Owner 经下一次 GetOutcome 读取后按「接管处置」处置。Worker 不运行扫描或定时循环，`executionstore.Store` 也不提供全量列表：数据面只有 `ListOwned(owner)`，供同 ID 重启的 Worker 找回自己持有租约的记录并恢复 heartbeat 与 watch。
+Executor 拥有“如何恢复一次执行”的语义，不拥有“何时、对哪些、由谁触发”。前者只有 Executor 知道：`ExecutionRef`、`Backend.Attach/Restart`、ReplayPolicy、租约与 fencing epoch。Worker 因此提供两个按 key 的原语，都不进 `effect.ExecutionPort`（数据面按单个 Assignment 收发消息）：`RecoverExecution(key)` 是可选端口能力 `effect.Recoverer`（与 `effect.Acknowledger` 同一模式，Worker 与 HTTP Client 都实现），把一条租约过期或从未持有的非终态 record 接回本 Worker 的活租约并继续（「Dispatch 与 Attach」的 Attach → 观察 / Restart / Unknown），对终态记录、已在本 Worker 租约下的记录与他人活租约下的记录不做任何事；`Dispose(key)` 把一条非终态记录无条件结算为 Unknown 终态（OutcomeEnvelope 携带 `WireError{Code:"disposed"}`，经 record 的 `ExecutionRef` 找到 backend 后 best-effort `Cancel(ref)`，不要求 backend 可达），Owner 经下一次 GetOutcome 读取后按「接管处置」处置。
 
-触发恢复的是观察到 `orphaned` 的一方。发现来源是 Run 状态而不是 execution store：`plan.RecoveryTargets` 给出 Executing 的 effect，`Attach` 给出其中 `orphaned` 的那些。Owner 侧的两个触发点（见「接管处置」）：`RecoverInterrupted` 的 Reconciler 对 defer 目标调用一次 `RecoverExecution`；kept 目标在等待期间由 Reconciler 按 `OrphanProbe` 间隔（默认 15s）重新 Attach，每个 orphaned 阶段再调用一次。这两处只涉及本 Owner 自己持有的 Run 的 effect，没有间隔、放弃时限之类的策略参数。重复驱动、跨 Session 巡检与放弃（`Dispose`）属于部署：云端控制器以 Session 租约过期为发现机制，`Owner.Open` 后自然进入同一条链路；本地部署没有控制器，Core 保证“有人问时能恢复”，不保证“无人问时自动恢复”。`RecoveryDisposition=deferred` 在协议层无界（反重复执行，TRN-DUR-4），上界由部署经 `Dispose` 给出。远端 Worker 经 HTTP 控制端点 `/recover`、`/dispose`、`/acknowledge` 暴露同一组原语。
+Worker 不运行扫描或定时循环，`executionstore.Store` 也不提供全量列表：数据面只有 `ListOwned(owner)`，供同 ID 重启的 Worker 找回自己持有租约的记录并恢复 heartbeat 与 watch。
+
+触发恢复的是观察到 `orphaned` 的一方。发现来源是 Run 状态而不是 execution store：`plan.RecoveryTargets` 给出 Executing 的 effect，`Attach` 给出其中 `orphaned` 的那些。
+
+Owner 侧的两个触发点（见「接管处置」）：`RecoverInterrupted` 的 Reconciler 对 defer 目标调用一次 `RecoverExecution`；kept 目标在等待期间由 Reconciler 按 `OrphanProbe` 间隔（默认 15s）重新 Attach，每个 orphaned 阶段再调用一次。这两处只涉及本 Owner 自己持有的 Run 的 effect，没有间隔、放弃时限之类的策略参数。
+
+重复驱动、跨 Session 巡检与放弃（`Dispose`）属于部署：云端控制器以 Session 租约过期为发现机制，`Owner.Open` 后自然进入同一条链路；本地部署没有控制器，Core 保证“有人问时能恢复”，不保证“无人问时自动恢复”。`RecoveryDisposition=deferred` 在协议层无界（反重复执行，TRN-DUR-4），上界由部署经 `Dispose` 给出。远端 Worker 经 HTTP 控制端点 `/recover`、`/dispose`、`/acknowledge` 暴露同一组原语。
 
 Execution Store 是 fencing authority：所有权终止条件是记录缺失、进入终态、或 owner/fencing epoch 被新 owner 改变；租约过期不终止所有权，heartbeat 与 watch 在短暂 store 故障下继续工作（Renew 不检查过期，恢复后续租；PutOwned 要求活租约，结算随续租恢复）。
 
@@ -632,23 +686,43 @@ Worker 对模型与工具 Assignment 都调用 Restart：模型总是重放；�
 
 ### backend 选择与 ledger 的权威性
 
-backend 选择是 execution 创建的一部分：Worker 在 Dispatch 时按 `Route` 表评估一次（第一个 `Match` 为真的 provider，`Match` 为 nil 的 route 接受全部），结果以 `execution_bound` 事实持久化；此后 Attach、GetStatus、GetOutcome、Cancel、RecoverExecution、Dispose 只读折叠并按 Provider 找 backend，不再评估 Assignment 内容，也不询问任何 backend 是否认识某个 key；record 的 Provider 在本 Worker 没有对应 backend 时为 `ErrUnknownProvider`，record 不被改动。ledger 是 execution identity 的唯一来源：ledger 缺失即 execution 不存在（`missing`，见「Dispatch 与 Attach」）。ledger store 是 durable 的（`agent/store/sqlite`，一个 SQLite 文件同时承载 execution ledger 与租约、artifact Binding 与 retention claim，事务提供跨进程互斥），没有内存实现；崩溃重启后 ledger 仍在，跨进程收养经 `RecoverExecution` 完成（见「恢复原语与恢复触发」）。`Validate` 按同一 route 表选择 backend 但不持久化选择。
+backend 选择是 execution 创建的一部分：Worker 在 Dispatch 时按 `Route` 表评估一次（第一个 `Match` 为真的 provider，`Match` 为 nil 的 route 接受全部），结果以 `execution_bound` 事实持久化；此后 Attach、GetStatus、GetOutcome、Cancel、RecoverExecution、Dispose 只读折叠并按 Provider 找 backend，不再评估 Assignment 内容，也不询问任何 backend 是否认识某个 key；record 的 Provider 在本 Worker 没有对应 backend 时为 `ErrUnknownProvider`，record 不被改动。
+
+ledger 是 execution identity 的唯一来源：ledger 缺失即 execution 不存在（`missing`，见「Dispatch 与 Attach」）。ledger store 是 durable 的（`agent/store/sqlite`，一个 SQLite 文件同时承载 execution ledger 与租约、artifact Binding 与 retention claim，事务提供跨进程互斥），没有内存实现；崩溃重启后 ledger 仍在，跨进程收养经 `RecoverExecution` 完成（见「恢复原语与恢复触发」）。
+
+`Validate` 按同一 route 表选择 backend 但不持久化选择。
 
 ### 失败分类与重试
 
-Replay 与重试是两个独立的问题。Replay 是工具级能力（见「ExecutionRef 与 Restart」）：旧 attempt 的结果丢失时重新执行是否安全。重试处置是失败级属性：对一次已经知道原因的 Known 失败，是否允许执行同一 Assignment 的下一 attempt。`RetryAllowed` 的含义不是"这个错误看起来是瞬时的"，而是：当前 Known 失败已经足以确认本次 attempt 没有产生不能安全重复的外部效果。由此形成三分：`Known + RetryNever`，已知失败，不再执行；`Known + RetryAllowed`，已知失败，且确认可以重新执行；`Unknown`，不知道效果是否发生，进入 Replay 与 reconciliation 语义（见「接管处置」、TRN-DUR-4）。一个扣款工具超时不能因为类别是 `timeout` 就报 `ToolExecutionFailed{Retry: RetryAllowed}`：扣款可能已经发生，正确的回答是 `ToolExecutionUnknown`，除非工具自己的幂等机制能证明重复执行安全。同一个工具因此不存在统一的可重试性，没有工具级的 `Retry()` 声明。
+Replay 与重试是两个独立的问题。Replay 是工具级能力（见「ExecutionRef 与 Restart」）：旧 attempt 的结果丢失时重新执行是否安全。重试处置是失败级属性：对一次已经知道原因的 Known 失败，是否允许执行同一 Assignment 的下一 attempt。`RetryAllowed` 的含义不是"这个错误看起来是瞬时的"，而是：当前 Known 失败已经足以确认本次 attempt 没有产生不能安全重复的外部效果。由此形成三分：`Known + RetryNever`，已知失败，不再执行；`Known + RetryAllowed`，已知失败，且确认可以重新执行；`Unknown`，不知道效果是否发生，进入 Replay 与 reconciliation 语义（见「接管处置」、TRN-DUR-4）。
 
-模型调用是效果调用的范本：模型调用对外部世界没有效果，Known 失败从不留下可被重复的东西，唯一的问题是失败会不会过去。effect 层先把 provider 错误分类为 `FailureCode`（`effect.ClassifyModelError`：按 `sdk.HTTPStatusError` 的 HTTP 状态与传输错误映射），处置只从类别派生（`FailureCode.Retry()`：`rate_limited`、`provider_unavailable`、`connection_failed` 为 RetryAllowed，其余含未分类的 `executor_error` 为 RetryNever），`ModelFailed{Code, Message}` 不存储处置，wire 上也不携带，因此不可能出现 `Code` 与处置不一致的表示。工具调用照同一形状：`ToolFailure.Class` 用工具执行失败类别（`not_found`、`invalid_input`、`timeout`、`unavailable`、`rate_limited`、`conflict`、`internal`，未分类为 `execution_failed`）描述错误，`ToolExecutionFailed{Failure, Retry}` 由工具为这一次失败声明处置并经 wire（`ToolOutcomeEnvelope.retry`）携带，因为工具失败的安全性协议层不知道；未声明的零值 RetryUnknown 不重试，协议层不从类别推断。
+一个扣款工具超时不能因为类别是 `timeout` 就报 `ToolExecutionFailed{Retry: RetryAllowed}`：扣款可能已经发生，正确的回答是 `ToolExecutionUnknown`，除非工具自己的幂等机制能证明重复执行安全。同一个工具因此不存在统一的可重试性，没有工具级的 `Retry()` 声明。
+
+模型调用是效果调用的范本：模型调用对外部世界没有效果，Known 失败从不留下可被重复的东西，唯一的问题是失败会不会过去。effect 层先把 provider 错误分类为 `FailureCode`（`effect.ClassifyModelError`：按 `sdk.HTTPStatusError` 的 HTTP 状态与传输错误映射），处置只从类别派生（`FailureCode.Retry()`：`rate_limited`、`provider_unavailable`、`connection_failed` 为 RetryAllowed，其余含未分类的 `executor_error` 为 RetryNever），`ModelFailed{Code, Message}` 不存储处置，wire 上也不携带，因此不可能出现 `Code` 与处置不一致的表示。
+
+工具调用照同一形状：`ToolFailure.Class` 用工具执行失败类别（`not_found`、`invalid_input`、`timeout`、`unavailable`、`rate_limited`、`conflict`、`internal`，未分类为 `execution_failed`）描述错误，`ToolExecutionFailed{Failure, Retry}` 由工具为这一次失败声明处置并经 wire（`ToolOutcomeEnvelope.retry`）携带，因为工具失败的安全性协议层不知道；未声明的零值 RetryUnknown 不重试，协议层不从类别推断。
 
 Worker 对两种失败用同一条规则：读到处置为 RetryAllowed 的 Known 失败且尝试次数（`len(Superseded)+1`）未达 `WorkerOptions.Retry.MaxAttempts` 时，按 `Backoff × 已尝试次数` 等待（等待期间持续核对租约），经 `Backend.Restart` 取下一代 Ref、旧 Ref 进 `Superseded`、`Start` 后继续观察同一 record；Restart 返回同一 Ref 的 Backend（PortBackend）不能重发，按原失败结算。预算是部署配置，零值关闭重试；Run 只看到该 effect 的最终 Outcome，重试不进入 Run 事实。
 
 ### 进度帧
 
-效果执行中的临时观察经 effect 端口的进度侧到达 Owner：`ProgressPort.Progress(ctx, key, after, fn)` 按 AssignmentKey 与起始 Sequence 顺序交付 `ProgressFrame{Key, Generation, Sequence, Kind, Payload}`，直到 fn 停止、ctx 结束或 `end` 帧关闭该流；未见过的 key 为 `ErrExecutionNotFound`。Kind 有 `model_text_delta`、`model_reasoning_delta`、`tool_progress`、`reset`、`end`。帧不是事实：Worker 只在内存环形缓冲中保留每个 key 最近的一段（`ProgressHub`，默认 256 帧），被淘汰的帧丢失，订阅者由 Sequence 的空洞得知；Worker 重启后从头开始。backend 经 `ProgressSink.Publish` 发出帧（LocalExecutor 的模型 delta 与工具 progress），hub 盖上该 key 的 Generation 与 Sequence。Worker 每次为同一 effect 起下一代执行（接管重派或「失败分类与重试」的重试）先发一帧 `reset` 并使 Generation 加一：接收方丢弃此前该 effect 的全部帧并重新开始；record 进入终态时发 `end`。Outcome 不变：它仍是每个 Assignment 至多一个的原子终态回答，进度流只提示读取方去 GetOutcome。HTTP 以 `POST /progress` 暴露为 server-sent events，每帧一行 `data: <json>`；PortBackend 把内层 port 的进度原样中继，因此一条 Worker 链交付的是真正运行该效果的 Worker 的帧。`ProgressPort` 是可选能力，不实现它的 port 没有进度。
+效果执行中的临时观察经 effect 端口的进度侧到达 Owner：`ProgressPort.Progress(ctx, key, after, fn)` 按 AssignmentKey 与起始 Sequence 顺序交付 `ProgressFrame{Key, Generation, Sequence, Kind, Payload}`，直到 fn 停止、ctx 结束或 `end` 帧关闭该流；未见过的 key 为 `ErrExecutionNotFound`。Kind 有 `model_text_delta`、`model_reasoning_delta`、`tool_progress`、`reset`、`end`。
+
+帧不是事实：Worker 只在内存环形缓冲中保留每个 key 最近的一段（`ProgressHub`，默认 256 帧），被淘汰的帧丢失，订阅者由 Sequence 的空洞得知；Worker 重启后从头开始。
+
+backend 经 `ProgressSink.Publish` 发出帧（LocalExecutor 的模型 delta 与工具 progress），hub 盖上该 key 的 Generation 与 Sequence。Worker 每次为同一 effect 起下一代执行（接管重派或「失败分类与重试」的重试）先发一帧 `reset` 并使 Generation 加一：接收方丢弃此前该 effect 的全部帧并重新开始；record 进入终态时发 `end`。Outcome 不变：它仍是每个 Assignment 至多一个的原子终态回答，进度流只提示读取方去 GetOutcome。
+
+HTTP 以 `POST /progress` 暴露为 server-sent events，每帧一行 `data: <json>`；PortBackend 把内层 port 的进度原样中继，因此一条 Worker 链交付的是真正运行该效果的 Worker 的帧。`ProgressPort` 是可选能力，不实现它的 port 没有进度。
 
 ### 结算确认
 
-回收由 Owner 的确认驱动：Loop 每次结算 commit 成功后，对实现 `effect.Acknowledger` 的 Executor 调用 `Acknowledge(key)`（Worker 直接实现；HTTP Client 经 `/acknowledge`）；对非终态 record 的确认为 `ErrStateConflict`（HTTP 409），无 record 为 `ErrExecutionNotFound`，确认失败不影响结算。`Acknowledge` 提交 `outcome_acknowledged`，折叠把它记为一个事实（`Acknowledged`），Assignment、Outcome 与 `Superseded` 仍在折叠里：折叠只表达事实，不承担回收。正文的物理回收待正文进入 cas 后经 retention claim 完成（「Execution Ledger」待定项）；没有按时间回收的兜底，按龄回收属于部署的运维操作。已确认的 record 对 `Attach` 为 `terminal`、对 `GetStatus` 为其终态、对 `GetOutcome` 为 `ErrOutcomeCollected`（包装 `ErrOutcomeUnavailable`，Reconciler 视为确定答案；HTTP 为 410，Client 还原为 `ErrOutcomeUnavailable`）：Outcome 已进入 Session，不再由 Executor 交付。同一 key 的 Dispatch 重放确认已有 acceptance 且不启动任何执行。执行中的 record 不能确认。record 本身不删除。frozen 正文的回收不在本条范围内。
+回收由 Owner 的确认驱动：Loop 每次结算 commit 成功后，对实现 `effect.Acknowledger` 的 Executor 调用 `Acknowledge(key)`（Worker 直接实现；HTTP Client 经 `/acknowledge`）；对非终态 record 的确认为 `ErrStateConflict`（HTTP 409），无 record 为 `ErrExecutionNotFound`，确认失败不影响结算。
+
+`Acknowledge` 提交 `outcome_acknowledged`，折叠把它记为一个事实（`Acknowledged`），Assignment、Outcome 与 `Superseded` 仍在折叠里：折叠只表达事实，不承担回收。正文的物理回收待正文进入 cas 后经 retention claim 完成（「Execution Ledger」待定项）；没有按时间回收的兜底，按龄回收属于部署的运维操作。
+
+已确认的 record 对 `Attach` 为 `terminal`、对 `GetStatus` 为其终态、对 `GetOutcome` 为 `ErrOutcomeCollected`（包装 `ErrOutcomeUnavailable`，Reconciler 视为确定答案；HTTP 为 410，Client 还原为 `ErrOutcomeUnavailable`）：Outcome 已进入 Session，不再由 Executor 交付。
+
+同一 key 的 Dispatch 重放确认已有 acceptance 且不启动任何执行。执行中的 record 不能确认。record 本身不删除。frozen 正文的回收不在本条范围内。
 
 ### Execution Ledger
 
@@ -702,7 +776,11 @@ Watcher 还按 `Probe`（默认 `DefaultWatchProbe`=15s）对登记后仍未结�
 
 ### target 解析按 effect 发生
 
-`TargetResolver` 按 effect 调用：Loop 在每个 model effect 与每个 tool call 的 effect 进入 start barrier 之前调用一次 `ResolveTarget`，传入该 effect 的坐标 `EffectContext{Session, RunID, StepID, CallID, Effect, Kind, Tool, Placement}`，其中 `Effect` 是该 effect 启动时使用的 EffectID，`Placement` 是工具的 placement 声明（model effect 为零值）。解析器只对 `Kind == tool` 且 `Placement == PlacementWorkspace` 的 effect 解析 workspace target；Worker 的 Route 表按 `ToolAssignment.Placement` 选 backend，不按 target 是否存在。返回值复制进该 effect 的 Assignment（tool effect 的 Validate probe 携带同一 target），Loop 不解释它。nil 返回值表示该 effect 没有资源 target；`Kind` 或 `ID` 为空的返回值是错误。解析器返回错误时该 effect 不启动，Run 不写入任何事实：ModelStep 保持 Prepared，tool call 保持 Pending。同一 Run 内的不同 effect 可以解析到不同 target。target 不进入 Run 事实，只存在于 Assignment 与 Execution Record 中；core 没有 target 事实也没有默认解析器，解析器及其 Session 到资源的映射属于 application 的资源层，映射的持久性由 application 保证（APP-TGT-1、agent-workspace.md）。
+`TargetResolver` 按 effect 调用：Loop 在每个 model effect 与每个 tool call 的 effect 进入 start barrier 之前调用一次 `ResolveTarget`，传入该 effect 的坐标 `EffectContext{Session, RunID, StepID, CallID, Effect, Kind, Tool, Placement}`，其中 `Effect` 是该 effect 启动时使用的 EffectID，`Placement` 是工具的 placement 声明（model effect 为零值）。解析器只对 `Kind == tool` 且 `Placement == PlacementWorkspace` 的 effect 解析 workspace target；Worker 的 Route 表按 `ToolAssignment.Placement` 选 backend，不按 target 是否存在。
+
+返回值复制进该 effect 的 Assignment（tool effect 的 Validate probe 携带同一 target），Loop 不解释它。nil 返回值表示该 effect 没有资源 target；`Kind` 或 `ID` 为空的返回值是错误。解析器返回错误时该 effect 不启动，Run 不写入任何事实：ModelStep 保持 Prepared，tool call 保持 Pending。
+
+同一 Run 内的不同 effect 可以解析到不同 target。target 不进入 Run 事实，只存在于 Assignment 与 Execution Record 中；core 没有 target 事实也没有默认解析器，解析器及其 Session 到资源的映射属于 application 的资源层，映射的持久性由 application 保证（APP-TGT-1、agent-workspace.md）。
 
 ```go
 type EffectContext struct { Session run.Scope; RunID run.RunID; StepID run.StepID; CallID run.CallID; Effect run.EffectID; Kind AssignmentKind; Tool run.ToolRef } // 待解析 target 的 effect 坐标
