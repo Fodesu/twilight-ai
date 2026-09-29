@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agentcore/core"
 	"strings"
 	"sync"
 	"testing"
@@ -13,7 +14,6 @@ import (
 	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -69,7 +69,7 @@ func durablePorts(t testing.TB, cfg app.Config) app.Config {
 // runState reads a Run's committed state by SessionID: the lease-free read
 // (OWN-HDL-2), so a test observes without owning.
 func runState(a *app.Application, sid session.SessionID, runID run.RunID) (store.Snapshot, error) {
-	record, err := a.Owner.Runs.Record(context.Background(), sid, runID)
+	record, err := a.Core.Runs.Record(context.Background(), sid, runID)
 	if err != nil {
 		return store.Snapshot{}, err
 	}
@@ -101,7 +101,7 @@ func exampleStores(root, worker string) app.Config {
 	}
 	bindings := artifacts.Bindings()
 	return app.Config{Store: store, Content: content, Executions: records.Executions(),
-		Artifacts: owner.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}}
+		Artifacts: core.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}}
 }
 
 // buildHost is newHost for the Example functions: cfg is complete and a

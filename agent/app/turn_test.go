@@ -58,18 +58,18 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
 	h, pref, sid, s := setup(t, model, tool, app.SessionOptions{})
 
-	first, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("what is the weather?"))
+	first, err := h.Core.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("what is the weather?"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan rt.TurnResult, 1)
 	go func() {
-		resp, err := h.Owner.Turns.Start(ctx, s.Handle().Writer(), rt.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref})
+		resp, err := h.Core.Turns.Start(ctx, s.Handle().Writer(), rt.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).
-			if _, err = h.Owner.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID); err == nil {
-				resp, err = h.Owner.Turns.Status(ctx, ref1)
+			if _, err = h.Core.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID); err == nil {
+				resp, err = h.Core.Turns.Status(ctx, ref1)
 			}
 		}
 		if err != nil {
@@ -79,7 +79,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	}()
 	<-tool.started
 
-	second, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("and tomorrow?"))
+	second, err := h.Core.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("and tomorrow?"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,18 +141,18 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
 	h, pref, sid, s := setup(t, model, tool, app.SessionOptions{})
-	first, _ := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("hello"))
+	first, _ := h.Core.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("hello"))
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := h.Owner.Turns.Start(ctx, s.Handle().Writer(), rt.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref}); err == nil {
-			_, _ = h.Owner.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
+		if _, err := h.Core.Turns.Start(ctx, s.Handle().Writer(), rt.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref}); err == nil {
+			_, _ = h.Core.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
 		}
 	}()
 	<-tool.started
 
-	resp, err := h.Owner.Turns.Stop(ctx, s.Handle().Writer(), rt.StopRequest{Ref: ref1, Reason: "user"})
+	resp, err := h.Core.Turns.Stop(ctx, s.Handle().Writer(), rt.StopRequest{Ref: ref1, Reason: "user"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	<-done
 
 	// The abandoned worker's settlement was rejected; the Run is terminal.
-	record, err := h.Owner.Runs.Record(ctx, sid, resp.RunID)
+	record, err := h.Core.Runs.Record(ctx, sid, resp.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 		t.Fatalf("stopped run = %+v", record.Snapshot.State.Result)
 	}
 
-	second, _ := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("again"))
+	second, _ := h.Core.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("again"))
 	resp2, err := s.Route(ctx, []run.AgentInput{second})
 	if err != nil {
 		t.Fatal(err)
@@ -222,19 +222,19 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("hello"))
+	input, err := h.Core.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	started, err := h.Owner.Turns.Start(ctx, s.Handle().Writer(), rt.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: pref})
+	started, err := h.Core.Turns.Start(ctx, s.Handle().Writer(), rt.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: pref})
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = h.Owner.Driver.Drive(ctx, s.Handle().Writer(), ref.TurnID)
+		_, _ = h.Core.Driver.Drive(ctx, s.Handle().Writer(), ref.TurnID)
 	}()
 	t.Cleanup(func() { close(tool.release); <-done })
 	<-tool.started
@@ -246,10 +246,10 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if calls[0].Status != run.ToolExecuting || calls[1].Status != run.ToolPending || calls[2].Status != run.ToolWaiting {
 		t.Fatalf("calls before stop = %+v", calls)
 	}
-	if _, err := h.Owner.Turns.Stop(ctx, s.Handle().Writer(), rt.StopRequest{Ref: ref}); err != nil {
+	if _, err := h.Core.Turns.Stop(ctx, s.Handle().Writer(), rt.StopRequest{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	record, err := h.Owner.Runs.Record(ctx, sid, started.RunID)
+	record, err := h.Core.Runs.Record(ctx, sid, started.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if len(result.UncertainCalls) != 1 || result.UncertainCalls[0] != calls[0].CallID {
 		t.Fatalf("uncertain calls = %v", result.UncertainCalls)
 	}
-	input, err = h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("continue"))
+	input, err = h.Core.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("continue"))
 	if err != nil {
 		t.Fatal(err)
 	}

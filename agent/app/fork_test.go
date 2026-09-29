@@ -63,7 +63,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentHeader, _ := h.Owner.Store.Header(ctx, "parent")
+	parentHeader, _ := h.Core.Store.Header(ctx, "parent")
 	if header.Parent == nil || header.Parent.Segment != parentHeader.ID {
 		t.Fatalf("fork header = %+v, want an edge to the parent's segment", header)
 	}
@@ -99,10 +99,10 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	edit := open("edit", "e")
 	chat, _ = h.ChatlogSurface(ctx, "edit")
 	pending := chat.SubmittedInputs()
-	if err := h.Owner.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err != nil {
+	if err := h.Core.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Owner.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err == nil {
+	if err := h.Core.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err == nil {
 		t.Fatal("withdrawing a withdrawn input succeeded")
 	}
 	results, err := edit.Send(ctx, "how is the weather")
@@ -136,18 +136,18 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	// The children inherited the conversation, not the parent's execution:
 	// the parent's Runs are unknown to a child (SES-FRK-5), while the
 	// parent's own turn surface still settles them.
-	parentTurns, err := turn.ReadSurface(ctx, h.Owner.Projections, "parent")
+	parentTurns, err := turn.ReadSurface(ctx, h.Core.Projections, "parent")
 	if err != nil || parentTurns.Turns["p1"].End == nil {
 		t.Fatalf("parent turns = %+v %v", parentTurns.Turns, err)
 	}
 	p1Run := parentTurns.Turns["p1"].RunID
-	if _, err := h.Owner.Runs.Record(ctx, "parent", p1Run); err != nil {
+	if _, err := h.Core.Runs.Record(ctx, "parent", p1Run); err != nil {
 		t.Fatalf("parent record of its own run: %v", err)
 	}
-	if _, err := h.Owner.Runs.Record(ctx, "regen", p1Run); !errors.Is(err, runstore.ErrRunNotFound) {
+	if _, err := h.Core.Runs.Record(ctx, "regen", p1Run); !errors.Is(err, runstore.ErrRunNotFound) {
 		t.Fatalf("child record of the parent's run = %v, want ErrRunNotFound", err)
 	}
-	childTurns, err := turn.ReadSurface(ctx, h.Owner.Projections, "regen")
+	childTurns, err := turn.ReadSurface(ctx, h.Core.Projections, "regen")
 	if err != nil || childTurns.Turns["p1"].Status != turn.TurnCompleted {
 		t.Fatalf("child view of the inherited turn = %+v %v, want completed", childTurns.Turns["p1"], err)
 	}

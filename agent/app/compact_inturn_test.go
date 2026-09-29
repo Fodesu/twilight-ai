@@ -96,7 +96,7 @@ func TestCompactionRunsBetweenStepsOfATurn(t *testing.T) {
 			t.Fatalf("request %d messages = %v, want summary then a closed tool pair", i+2, texts)
 		}
 	}
-	surface, err := chatlog.ReadSurface(ctx, h.Owner.Projections, "s-steps")
+	surface, err := chatlog.ReadSurface(ctx, h.Core.Projections, "s-steps")
 	if err != nil {
 		t.Fatal(err)
 	}

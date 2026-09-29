@@ -21,6 +21,7 @@ import (
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/core"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/executor"
@@ -86,7 +87,7 @@ type Config struct {
 	// Content is the cas ContentStore of the frozen bodies (required).
 	Content artifact.ContentStore
 	// Artifacts are the binding store and retention ledger (required).
-	Artifacts owner.Artifacts
+	Artifacts core.Artifacts
 
 	Executor ExecutorConfig
 	// Executions is the record store of the Worker Build composes
@@ -97,12 +98,12 @@ type Config struct {
 	// that is still running.
 	Executions executionstore.Store
 	// MissingEffects is the takeover policy for an Executing effect the
-	// Executor holds nothing for (owner.Ports.MissingEffects): the zero
+	// Executor holds nothing for (core.Ports.MissingEffects): the zero
 	// value disposes, reconcile.RedispatchMissing redispatches within the
 	// budget and requires Redispatches.
 	MissingEffects reconcile.MissingPolicy
 	// Redispatches is the dispatch ledger RedispatchMissing writes
-	// (RUN-EXE-15, owner.Ports.Redispatches).
+	// (RUN-EXE-15, core.Ports.Redispatches).
 	Redispatches redispatch.Store
 	Presets      []Preset
 	// Registry is the preset registry; nil selects an in-memory one.
@@ -131,7 +132,7 @@ type Config struct {
 	Spawn *spawn.Options
 	// OrphanProbe is how often an effect still waiting for its Outcome is
 	// attached and, when its worker died holding it, handed to recovery
-	// (owner.Ports.OrphanProbe); zero selects the defaults.
+	// (core.Ports.OrphanProbe); zero selects the defaults.
 	OrphanProbe time.Duration
 	// Worker configures the Worker that owns execution records (lease, id,
 	// reconcile loop, clock). It applies whenever Build composes a Worker:
@@ -193,7 +194,10 @@ const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 // Application is the composition root: the Authority plus the application's
 // own services -- the preset table, the event stream and the spawn effect.
 type Application struct {
+	// Owner holds the Sessions this process owns; Core is the composed
+	// core it owns them over.
 	Owner *owner.Owner
+	Core  *core.Core
 	bus   *observe.Bus
 	spawn *spawn.Responder
 	// worker is the Worker Build composed, if any; Close stops it after the
@@ -257,7 +261,7 @@ func (app *Application) Opened(sid session.SessionID) (*Session, bool) {
 // Lease is the Session's current writer lease, read without ownership
 // (SES-OWN-5): what a gateway routes by and a controller judges expiry by.
 func (app *Application) Lease(ctx context.Context, sid session.SessionID) (session.Lease, bool, error) {
-	return app.Owner.Store.LeaseOf(ctx, sid)
+	return app.Core.Store.LeaseOf(ctx, sid)
 }
 
 func (app *Application) track(s *Session) {
@@ -360,7 +364,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if decisions == nil {
 		decisions = prompt.DefaultCatalog()
 	}
-	a, err := owner.New(owner.Ports{
+	kernel, err := core.New(core.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,
 		MissingEffects: c.MissingEffects, Redispatches: c.Redispatches, OrphanProbe: c.OrphanProbe,
 		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
@@ -369,22 +373,23 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if err != nil {
 		return nil, err
 	}
-	bus = observe.NewBus(a.Registry, c.Store)
-	app.Owner, app.bus = a, bus
+	a := owner.New(kernel)
+	bus = observe.NewBus(kernel.Registry, c.Store)
+	app.Owner, app.Core, app.bus = a, kernel, bus
 	if resolver != nil {
-		resolver.Projections = a.Projections
+		resolver.Projections = kernel.Projections
 	}
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// through the driver's planner seam (APP-CKP-1, RUN-LOP-10).
-	a.Loops.Planner = app
+	kernel.Loops.Planner = app
 	// Provisional observations of effects in flight reach the same stream
 	// as the committed facts (OBS-1, RUN-LOP-6).
-	a.Driver.Sink, a.Recovery.Sink = busSink{bus}, busSink{bus}
+	kernel.Driver.Sink, kernel.Recovery.Sink = busSink{bus}, busSink{bus}
 	if app.spawn != nil {
 		// The subagent tool waits for an external response the Responder
 		// gives (SPN-1, DRV-4).
 		app.spawn.Bind(a)
-		a.Responders.Tools = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
+		kernel.Responders.Tools = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
 	}
 	for i := range c.Presets {
 		p := &c.Presets[i]
@@ -436,7 +441,7 @@ func (app *Application) fail(sid session.SessionID, err error) {
 
 // RegisterPreset adds or replaces a decision identity after Build.
 func (app *Application) RegisterPreset(id preset.PresetID, p preset.AgentPreset) (preset.PresetRef, error) {
-	ref, err := app.Owner.Presets.Register(id, p)
+	ref, err := app.Core.Presets.Register(id, p)
 	if err != nil {
 		return preset.PresetRef{}, err
 	}
@@ -565,4 +570,4 @@ func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *ex
 type Event = observe.Event
 
 // ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1).
-type ForkRequest = owner.ForkRequest
+type ForkRequest = core.ForkRequest

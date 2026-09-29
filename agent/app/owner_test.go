@@ -160,7 +160,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fz := h.Owner.Frozen
+	fz := h.Core.Frozen
 	presetRef, err := h.RegisterPreset("remote", mustPreset("m-remote", nil, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)

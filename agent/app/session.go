@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/core"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
@@ -104,7 +105,7 @@ type Session struct {
 	Recovered int
 
 	app  *Application
-	a    *owner.Owner
+	a    *core.Core
 	h    *owner.Handle
 	sid  session.SessionID
 	opts SessionOptions
@@ -126,14 +127,14 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
 		return nil, errors.New("app: open session requires a preset ref")
 	}
-	a := app.Owner
+	a := app.Core
 	if _, err := a.Presets.Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
 	if err := a.EnsureSession(ctx, sid); err != nil {
 		return nil, err
 	}
-	h, err := a.Open(ctx, sid)
+	h, err := app.Owner.Open(ctx, sid)
 	if err != nil {
 		return nil, err
 	}

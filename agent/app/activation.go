@@ -160,7 +160,7 @@ func (app *Application) scan(ctx context.Context) {
 	for _, sid := range pending {
 		candidates[sid] = struct{}{}
 	}
-	expired, err := app.Owner.Store.ExpiredLeases(ctx, limit)
+	expired, err := app.Core.Store.ExpiredLeases(ctx, limit)
 	if err != nil {
 		app.warn(fmt.Errorf("app: scanning expired leases: %w", err))
 	}

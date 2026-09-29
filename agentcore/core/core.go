@@ -1,12 +1,14 @@
-// Package authority composes the agent core -- the fact layer (Store,
-// Writers, SessionRunStore, Coordinator), the decision layer (preset registry and
-// prompt builder catalog) and the effect layer (an Executor port) -- into
-// one Owner process (AUTH). Its exported fields are the core services a
-// caller drives a Session with; Open hands out the ownership capability
-// those services act under. It is deployment-neutral and carries no product
-// policy: what to send, when to drain a backlog, whether to drive in the
-// background and when to compact are the application's decisions.
-package owner
+// Package core composes the agent core -- the fact layer (Store, Writers,
+// SessionRunStore, Coordinator), the decision layer (preset registry and
+// prompt builder catalog) and the effect layer (an Executor port, the drive
+// chain over it) -- into one Core: the services a caller drives a Session
+// with, and the Session lifecycle over the Store that needs no ownership
+// (create, fork, collect, read). Ownership of a Session -- opening it for
+// commands and releasing it -- is the owner package's. The Core is
+// deployment-neutral and carries no product policy: what to send, when to
+// drain a backlog, whether to drive in the background and when to compact
+// are the application's decisions.
+package core
 
 import (
 	"context"
@@ -30,7 +32,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
-	"sync"
 	"time"
 )
 
@@ -44,7 +45,7 @@ type Artifacts struct {
 	Ledger   artifact.RetentionLedger
 }
 
-// Ports are the roles an Owner is composed from (OWN-PRT-1). Every field
+// Ports are the roles a Core is composed from (OWN-PRT-1). Every field
 // is an interface or a core value. The Store, the Executor, the Content
 // store and both Artifacts are required and durable (OWN-PRT-3); the other
 // nil fields take the in-process defaults documented on each.
@@ -94,8 +95,9 @@ type Ports struct {
 	CacheEvery ledger.CommitSeq
 	// Ownership configures how Writers open Sessions.
 	Ownership session.OpenOptions
-	// Fail receives failures of work the Owner does outside any caller's
-	// call, such as settling a reattached Outcome; nil discards them.
+	// Fail receives failures of work the Core's components do outside any
+	// caller's call, such as settling a reattached Outcome; nil discards
+	// them.
 	Fail func(session.SessionID, error)
 	// OrphanProbe is how often an effect still waiting is attached and, when
 	// orphaned, handed to RecoverExecution: by the Watcher of a live drive
@@ -103,9 +105,9 @@ type Ports struct {
 	OrphanProbe time.Duration
 }
 
-// Owner is the composed core (OWN-PRT-2). Exported fields are the ports
+// Core is the composed core. Exported fields are the ports
 // and core services; none is a product facade.
-type Owner struct {
+type Core struct {
 	Store     session.Stores
 	Writers   writer.Writers
 	Registry  *module.Registry
@@ -116,7 +118,7 @@ type Owner struct {
 	// Turns commits the Turn protocol and reads Turn status.
 	Turns *rt.Coordinator
 	// Loops, Driver, Recovery and Responders are the drive chain over the
-	// shared Watcher: the Owner composes them and closes the Watcher.
+	// shared Watcher: the Core composes them and Close closes the Watcher.
 	Loops      *driver.Loops
 	Driver     *driver.Driver
 	Recovery   *driver.Recovery
@@ -134,27 +136,24 @@ type Owner struct {
 	// History answers fork-boundary questions.
 	History history.History
 	Clock   func() time.Time
-
-	mu   sync.Mutex
-	open map[session.SessionID]*openSession
 }
 
-// New composes an Owner from its ports (OWN-PRT-1).
-func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a by-value options struct read once
+// New composes a Core from its ports.
+func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by-value options struct read once
 	if p.Executor == nil {
-		return nil, errors.New("owner: an Executor port is required")
+		return nil, errors.New("core: an Executor port is required")
 	}
 	if p.Store == nil {
-		return nil, errors.New("owner: a session Store is required")
+		return nil, errors.New("core: a session Store is required")
 	}
 	if p.Content == nil {
-		return nil, errors.New("owner: a content Store is required (OWN-PRT-3)")
+		return nil, errors.New("core: a content Store is required (OWN-PRT-3)")
 	}
 	if p.Artifacts.Bindings == nil || p.Artifacts.Ledger == nil {
-		return nil, errors.New("owner: a binding store and a retention ledger are required (OWN-PRT-3)")
+		return nil, errors.New("core: a binding store and a retention ledger are required (OWN-PRT-3)")
 	}
 	if p.MissingEffects == reconcile.RedispatchMissing && p.Redispatches == nil {
-		return nil, errors.New("owner: MissingEffects=redispatch requires a dispatch ledger (Ports.Redispatches, RUN-EXE-15)")
+		return nil, errors.New("core: MissingEffects=redispatch requires a dispatch ledger (Ports.Redispatches, RUN-EXE-15)")
 	}
 	store := p.Store
 	// The first-party four are trusted core; Ports.Modules are extensions
@@ -199,21 +198,20 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	}
 	decisions := p.Decisions
 	if decisions == nil {
-		return nil, errors.New("owner: a prompt builder catalog is required (Ports.Decisions); the core ships no default")
+		return nil, errors.New("core: a prompt builder catalog is required (Ports.Decisions); the core ships no default")
 	}
 	// The read model folds from the Store through the cache: reading a Session
 	// takes no ownership (OWN-HDL-2). The Writer keeps its own transactional
 	// projections for the commit critical section.
 	projections := session.NewProjectionReader(store, registry, cache)
 	content := sessionstore.NewContent(fz)
-	a := &Owner{
+	a := &Core{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
 		Turns:   &rt.Coordinator{Projections: projections, Runs: runs, Now: now},
 		Presets: presets, Executor: p.Executor, Frozen: fz, Projections: projections, Content: content,
 		Chatlog: &chatlog.Commands{Now: now},
 		History: history.History{Store: store, Registry: registry, Projections: projections},
 		Clock:   now,
-		open:    make(map[session.SessionID]*openSession),
 	}
 	a.Watcher = &effect.Watcher{Port: p.Executor, Probe: p.OrphanProbe}
 	// A nil resolver gives every effect no target (APP-TGT-1).
@@ -226,36 +224,18 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	return a, nil
 }
 
-// Close releases every generation this Owner holds -- recovery
-// listeners, then Writers -- and every outstanding Handle is stale
-// afterwards. Generations still opening or closing on another goroutine
-// finish their own release.
-func (a *Owner) Close(ctx context.Context) error {
-	a.mu.Lock()
-	var owned []session.SessionID
-	for sid, gen := range a.open {
-		if gen.state == open {
-			gen.state = closing
-			owned = append(owned, sid)
-		}
-	}
-	a.mu.Unlock()
+// Close ends every Session's recovery listeners, the settlement
+// subscription and the Writers. The owner releases the Sessions it holds
+// before this.
+func (a *Core) Close(ctx context.Context) error {
 	a.Recovery.Close()
 	a.Watcher.Close()
-	err := writer.CloseWriters(ctx, a.Writers)
-	a.mu.Lock()
-	for _, sid := range owned {
-		delete(a.open, sid)
-	}
-	a.mu.Unlock()
-	return err
+	return writer.CloseWriters(ctx, a.Writers)
 }
-
-// --- session lifecycle -------------------------------------------------------------
 
 // CreateSession creates the Session; ext are the segment's module extension
 // slots (nil for none), carried opaquely by the kernel (SES-WIR-5).
-func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, ext module.Extensions) error {
+func (a *Core) CreateSession(ctx context.Context, sid session.SessionID, ext module.Extensions) error {
 	_, err := a.Store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Ext: ext})
 	return err
 }
@@ -264,7 +244,7 @@ func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, ext mo
 // a root made here, a fork or a spawned child all count. Create alone would
 // refuse a Session whose segment fields differ (SES-CRT-1), so existence is
 // probed first.
-func (a *Owner) EnsureSession(ctx context.Context, sid session.SessionID) error {
+func (a *Core) EnsureSession(ctx context.Context, sid session.SessionID) error {
 	if _, err := a.Store.Header(ctx, sid); err == nil {
 		return nil
 	} else if !session.IsCode(err, session.ErrNotFound) {
@@ -293,12 +273,12 @@ type ForkRequest struct {
 
 // Fork creates the child Session (SES-FRK-1) and claims the artifacts its
 // inherited prefix references (EXT-WRT-8). The child is not opened.
-func (a *Owner) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
+func (a *Core) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
 	if req.Parent == "" || req.Child == "" {
-		return session.SegmentHeader{}, errors.New("owner: fork requires parent and child session ids")
+		return session.SegmentHeader{}, errors.New("core: fork requires parent and child session ids")
 	}
 	if req.Parent == req.Child {
-		return session.SegmentHeader{}, errors.New("owner: a session cannot fork itself")
+		return session.SegmentHeader{}, errors.New("core: a session cannot fork itself")
 	}
 	// A fork point inside a Turn would hand the child a Turn whose Run is
 	// the parent's execution (SES-FRK-5): semantic history branches only at
@@ -317,7 +297,7 @@ func (a *Owner) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeade
 // ForkBeforeTurn forks Parent at the commit just before turnID started
 // (OWN-FRK-2): the child holds the conversation as it was when that Turn's
 // inputs were still submitted and undelivered.
-func (a *Owner) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
+func (a *Core) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	seq, err := a.History.StartCommit(ctx, parent, turnID)
 	if err != nil {
 		return session.SegmentHeader{}, err
@@ -329,42 +309,19 @@ func (a *Owner) ForkBeforeTurn(ctx context.Context, parent session.SessionID, tu
 	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
 }
 
-// DeleteSession tombstones a Session and reclaims along its path (OWN-FRK-3,
-// SES-GC-1/2). Claims of removed segments and dropped commits are released
-// with that reclaim (SES-GC-3). A Session this Owner holds open is closed
-// first; one owned by another process is ErrOwned.
-func (a *Owner) DeleteSession(ctx context.Context, sid session.SessionID) error {
-	if gen := a.beginClose(sid, nil); gen != nil {
-		if err := a.release(ctx, sid, gen, true); err != nil {
-			return err
-		}
-	} else {
-		a.mu.Lock()
-		_, transition := a.open[sid]
-		a.mu.Unlock()
-		if transition {
-			return fmt.Errorf("%w: %s is opening or closing", ErrSessionOpen, sid)
-		}
-		if err := writer.CloseWriter(ctx, a.Writers, sid); err != nil {
-			return err
-		}
-	}
-	return writer.Delete(ctx, a.Store, a.Admission, sid)
-}
-
 // Collect reclaims the storage of deleted Sessions no live Session reaches
 // (SES-GC-2) and releases the claims of the commits it reclaimed (SES-GC-3).
-func (a *Owner) Collect(ctx context.Context) (session.CollectReport, error) {
+func (a *Core) Collect(ctx context.Context) (session.CollectReport, error) {
 	return writer.Collect(ctx, a.Store, a.Admission)
 }
 
 // --- reads by SessionID ----------------------------------------------------------------
 
 // Reading a Session needs no ownership: projections are queried by identity.
-// Commands take the Writer of an open Handle (APP-SES-1).
+// Commands take the Writer of an open owner.Handle.
 
 // Projection reads any registered projection through the Session's Writer
 // (APP-MEM-1).
-func (a *Owner) Projection(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
+func (a *Core) Projection(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
 	return a.Projections.Load(ctx, sid, id, v)
 }

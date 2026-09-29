@@ -8,6 +8,7 @@ package cloudtest_test
 import (
 	"context"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/core"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -35,7 +36,6 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
-	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/redispatch/redispatchtest"
@@ -286,7 +286,7 @@ func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activ
 		c.t.Fatal(err)
 	}
 	a, err := app.Build(app.Config{
-		Store: store, Content: content, Artifacts: owner.Artifacts{Bindings: bindings, Ledger: ledger},
+		Store: store, Content: content, Artifacts: core.Artifacts{Bindings: bindings, Ledger: ledger},
 		Redispatches: &redispatchtest.Map{}, Inbox: c.inbox,
 		Executor:    app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: c.proxyURL},
 		Workspaces:  &app.WorkspaceConfig{Store: c.wsStore, Snapshots: &wshttp.Client{BaseURL: c.backends.Tool}, SnapshotAfterTurn: true},
@@ -339,7 +339,7 @@ func (c *cluster) modelEffectKey(comp *ownerservice.Component, sid session.Sessi
 		if view.RunID == "" {
 			return false
 		}
-		rec, err := comp.App.Owner.Runs.Record(c.ctx, sid, view.RunID)
+		rec, err := comp.App.Core.Runs.Record(c.ctx, sid, view.RunID)
 		if err != nil {
 			return false
 		}

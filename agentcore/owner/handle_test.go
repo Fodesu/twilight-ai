@@ -3,6 +3,7 @@ package owner_test
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agentcore/core"
 	"testing"
 
 	"github.com/felinics/twilight/agent/executor/local"
@@ -26,7 +27,7 @@ func newAuthority(t *testing.T) *owner.Owner {
 
 // basePorts is the deployment every owner test starts from: a local
 // executor and fresh durable stores under t.TempDir().
-func basePorts(t *testing.T) owner.Ports {
+func basePorts(t *testing.T) core.Ports {
 	t.Helper()
 	catalog, err := local.NewCatalog(nil)
 	if err != nil {
@@ -45,16 +46,17 @@ func basePorts(t *testing.T) owner.Ports {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return owner.Ports{Store: filestoretest.Store(t), Content: filestoretest.Content(t, sessionstore.FrozenAuthority),
-		Artifacts: owner.Artifacts{Bindings: bindings, Ledger: ledger}, Executor: exec, Decisions: decisions}
+	return core.Ports{Store: filestoretest.Store(t), Content: filestoretest.Content(t, sessionstore.FrozenAuthority),
+		Artifacts: core.Artifacts{Bindings: bindings, Ledger: ledger}, Executor: exec, Decisions: decisions}
 }
 
-func newAuthorityFrom(t *testing.T, p *owner.Ports) *owner.Owner {
+func newAuthorityFrom(t *testing.T, p *core.Ports) *owner.Owner {
 	t.Helper()
-	a, err := owner.New(*p)
+	c, err := core.New(*p)
 	if err != nil {
 		t.Fatal(err)
 	}
+	a := owner.New(c)
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 	return a
 }
@@ -66,7 +68,7 @@ func TestHandleGenerations(t *testing.T) {
 	ctx := context.Background()
 	a := newAuthority(t)
 	const sid session.SessionID = "s-gen"
-	if err := a.CreateSession(ctx, sid, nil); err != nil {
+	if err := a.Core.CreateSession(ctx, sid, nil); err != nil {
 		t.Fatal(err)
 	}
 	first, err := a.Open(ctx, sid)
@@ -88,18 +90,18 @@ func TestHandleGenerations(t *testing.T) {
 	if err := first.Close(ctx); err != nil {
 		t.Fatalf("stale close = %v, want nil", err)
 	}
-	if _, err := a.Chatlog.Submit(ctx, second.Writer(), "in-1", run.MustParseCanonicalJSON(`{"text":"hello"}`)); err != nil {
+	if _, err := a.Core.Chatlog.Submit(ctx, second.Writer(), "in-1", run.MustParseCanonicalJSON(`{"text":"hello"}`)); err != nil {
 		t.Fatalf("commit through the live generation after a stale close: %v", err)
 	}
 	// Reading takes no ownership: it works by SessionID while the Handle is
 	// open and after it is closed.
-	if chat, err := chatlog.ReadSurface(ctx, a.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
+	if chat, err := chatlog.ReadSurface(ctx, a.Core.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
 		t.Fatalf("read while open = %d %v", chat.Inputs.Len(), err)
 	}
 	if err := second.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if chat, err := chatlog.ReadSurface(ctx, a.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
+	if chat, err := chatlog.ReadSurface(ctx, a.Core.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
 		t.Fatalf("read after close = %d %v", chat.Inputs.Len(), err)
 	}
 	// Reading did not reopen the Session: a third Open succeeds.

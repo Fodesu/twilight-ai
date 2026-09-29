@@ -64,7 +64,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.Owner.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+			if _, err := h.Core.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 				t.Fatal(err)
 			}
 			if got := cache.count() > 0; got != tc.wantBefore {
@@ -98,7 +98,7 @@ func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Owner.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+	if _, err := h.Core.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Close(ctx); err != nil {

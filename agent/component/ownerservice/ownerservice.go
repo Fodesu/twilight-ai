@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/core"
 	stdhttp "net/http"
 	"time"
 
@@ -18,7 +19,6 @@ import (
 	"github.com/felinics/twilight/agent/config"
 	wshttp "github.com/felinics/twilight/agent/workspace/http"
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
@@ -151,7 +151,7 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 	a, err := app.Build(app.Config{
 		Store:        store,
 		Content:      content,
-		Artifacts:    owner.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
+		Artifacts:    core.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
 		Redispatches: db.Redispatches(),
 		Inbox:        db.Inbox(),
 		Executor:     app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: cfg.Executor},

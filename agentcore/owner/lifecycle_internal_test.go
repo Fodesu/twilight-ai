@@ -3,6 +3,7 @@ package owner
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agentcore/core"
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/session"
@@ -11,7 +12,7 @@ import (
 // A generation that is still closing keeps Open out until its release has
 // completed (OWN-HDL-1): the table entry, not the resources, decides.
 func TestOpenRefusesWhileClosing(t *testing.T) {
-	a := &Owner{open: map[session.SessionID]*openSession{"s": {state: closing}}}
+	a := &Owner{Core: &core.Core{}, open: map[session.SessionID]*openSession{"s": {state: closing}}}
 	if _, err := a.Open(context.Background(), "s"); !errors.Is(err, ErrSessionOpen) {
 		t.Fatalf("open during closing = %v, want ErrSessionOpen", err)
 	}

@@ -162,7 +162,7 @@ func TestInboxStopAndRejections(t *testing.T) {
 	if err := s.Wait(ctx); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := h.Owner.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: status.Active})
+	resp, err := h.Core.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: status.Active})
 	if err != nil || resp.Status != turn.TurnStopped {
 		t.Fatalf("stopped turn = %+v %v", resp, err)
 	}
