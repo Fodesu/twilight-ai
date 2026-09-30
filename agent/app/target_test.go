@@ -7,6 +7,7 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agentcore/core"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -100,7 +101,7 @@ func TestTargetResolverSeam(t *testing.T) {
 			cfg := app.Config{}
 			if tc.resolver != nil {
 				tc.resolver.bind(sid, ws1)
-				cfg.TargetResolver = tc.resolver
+				cfg.Kernel.TargetResolver = tc.resolver
 			}
 			h := newHost(t, cfg, map[run.ModelRef]local.ModelInvoker{"m-1": model}, tool)
 			preset, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{tool}))
@@ -159,7 +160,7 @@ func TestForkChildTargetIsApplicationPolicy(t *testing.T) {
 	tool := &targetTool{seen: make(chan *run.TargetRef, 1)}
 	done := sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer(), done, toolCallAnswer(), done, toolCallAnswer(), done}}
-	h := newHost(t, app.Config{Store: filestoretest.Store(t), TargetResolver: resolver},
+	h := newHost(t, app.Config{Kernel: core.Ports{Store: filestoretest.Store(t), TargetResolver: resolver}},
 		map[run.ModelRef]local.ModelInvoker{"m-1": model}, tool)
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{tool}))
 	if err != nil {

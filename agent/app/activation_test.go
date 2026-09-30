@@ -66,7 +66,7 @@ func TestTurnsOfOneSessionRunOnDifferentProcesses(t *testing.T) {
 		cfg := exampleStores(root, name)
 		cfg.Inbox = inboxStore
 		cfg.Presets = []app.Preset{{ID: "b1", Value: preset}}
-		cfg.Ownership = session.OpenOptions{Owner: name, LeaseDuration: time.Minute}
+		cfg.Kernel.Ownership = session.OpenOptions{Owner: name, LeaseDuration: time.Minute}
 		cfg.Activation = &app.Activation{Preset: "b1", IdleRelease: 50 * time.Millisecond, Scan: scan,
 			Options: app.SessionOptions{InboxPoll: 50 * time.Millisecond}}
 		cfg.Warn = func(err error) { t.Logf("%s: warn: %v", name, err) }

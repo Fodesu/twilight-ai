@@ -59,13 +59,15 @@ func newOwner(t *testing.T) (*app.Application, *ownerhttp.Client) {
 		t.Fatal(err)
 	}
 	a, err := app.Build(app.Config{
-		Store:      filestoretest.Store(t),
-		Content:    filestoretest.Content(t, sessionstore.FrozenAuthority),
-		Artifacts:  core.Artifacts{Bindings: bindings, Ledger: ledger},
+		Kernel: core.Ports{
+			Store:      filestoretest.Store(t),
+			Content:    filestoretest.Content(t, sessionstore.FrozenAuthority),
+			Artifacts:  core.Artifacts{Bindings: bindings, Ledger: ledger},
+			Ownership:  session.OpenOptions{Owner: "owner-a", LeaseDuration: time.Minute},
+		},
 		Executions: storetest.NewMap(nil),
 		Inbox:      &inboxtest.Map{},
 		Workspaces: &app.WorkspaceConfig{Store: &workspacetest.Map{}, Provider: provider, Backend: local.Backend},
-		Ownership:  session.OpenOptions{Owner: "owner-a", LeaseDuration: time.Minute},
 		Executor:   app.ExecutorConfig{Models: map[run.ModelRef]executorlocal.ModelInvoker{"m-1": &echoModel{}}},
 	})
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/store/sqlite"
+	"github.com/felinics/twilight/agentcore/core"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -80,7 +81,7 @@ func TestSpawnRunsChildSessionAndReturnsReply(t *testing.T) {
 		text("parent done"),
 	}}
 	store, content := filestoretest.Store(t), durableContent(t)
-	h := newHost(t, app.Config{Store: store, Content: content, Spawn: &spawn.Options{}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+	h := newHost(t, app.Config{Kernel: core.Ports{Store: store, Content: content}, Spawn: &spawn.Options{}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	pref, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +183,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg := durablePorts(t, app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}})
+		cfg := durablePorts(t, app.Config{Kernel: core.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: takeover}}, Spawn: &spawn.Options{}})
 		// The child's own model execution belongs to process 1's Worker; process
 		// 2's clock runs an hour ahead so that record reads as orphaned, and
 		// RecoverInterrupted asks process 2's Worker (effect.Recoverer) to
@@ -282,7 +283,7 @@ func TestSpawnValidation(t *testing.T) {
 			model := &scriptedRequests{answers: []sdk.ModelResult{spawnCall(tc.args), text("recovered")}}
 			store := filestoretest.Store(t)
 			opts := spawn.Options{MaxDepth: tc.maxDepth}
-			h := newHost(t, app.Config{Store: store, Content: durableContent(t), Spawn: &opts}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+			h := newHost(t, app.Config{Kernel: core.Ports{Store: store, Content: durableContent(t)}, Spawn: &opts}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 			pref, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{opts.ExecutableTool()}))
 			if err != nil {
 				t.Fatal(err)

@@ -47,20 +47,20 @@ func newHost(t testing.TB, cfg app.Config, models map[run.ModelRef]local.ModelIn
 // ledger and the Worker's execution records. Build itself has no defaults.
 func durablePorts(t testing.TB, cfg app.Config) app.Config {
 	t.Helper()
-	if cfg.Store == nil {
-		cfg.Store = filestoretest.Store(t)
+	if cfg.Kernel.Store == nil {
+		cfg.Kernel.Store = filestoretest.Store(t)
 	}
-	if cfg.Content == nil {
-		cfg.Content = durableContent(t)
+	if cfg.Kernel.Content == nil {
+		cfg.Kernel.Content = durableContent(t)
 	}
-	if cfg.Artifacts.Bindings == nil {
-		cfg.Artifacts.Bindings, cfg.Artifacts.Ledger = sqlitetest.Artifacts(t)
+	if cfg.Kernel.Artifacts.Bindings == nil {
+		cfg.Kernel.Artifacts.Bindings, cfg.Kernel.Artifacts.Ledger = sqlitetest.Artifacts(t)
 	}
 	if cfg.Executions == nil {
 		db := sqlitetest.Open(t)
 		cfg.Executions = db.Executions()
-		if cfg.Redispatches == nil {
-			cfg.Redispatches = db.Redispatches()
+		if cfg.Kernel.Redispatches == nil {
+			cfg.Kernel.Redispatches = db.Redispatches()
 		}
 	}
 	return cfg
@@ -100,8 +100,9 @@ func exampleStores(root, worker string) app.Config {
 		panic(err)
 	}
 	bindings := artifacts.Bindings()
-	return app.Config{Store: store, Content: content, Executions: records.Executions(),
-		Artifacts: core.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}}
+	return app.Config{Kernel: core.Ports{Store: store, Content: content,
+		Artifacts: core.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}},
+		Executions: records.Executions()}
 }
 
 // buildHost is newHost for the Example functions: cfg is complete and a

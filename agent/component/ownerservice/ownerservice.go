@@ -149,16 +149,18 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 		return nil, err
 	}
 	a, err := app.Build(app.Config{
-		Store:        store,
-		Content:      content,
-		Artifacts:    core.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
-		Redispatches: db.Redispatches(),
-		Inbox:        db.Inbox(),
-		Executor:     app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: cfg.Executor},
-		Workspaces:   wsCfg,
-		Ownership:    session.OpenOptions{Owner: id, LeaseDuration: cfg.Lease.Std(), Takeover: cfg.Takeover},
-		Presets:      presets,
-		Activation:   activation,
+		Kernel: core.Ports{
+			Store:        store,
+			Content:      content,
+			Artifacts:    core.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
+			Redispatches: db.Redispatches(),
+			Ownership:    session.OpenOptions{Owner: id, LeaseDuration: cfg.Lease.Std(), Takeover: cfg.Takeover},
+		},
+		Inbox:    db.Inbox(),
+		Executor: app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: cfg.Executor},
+		Workspaces: wsCfg,
+		Presets:    presets,
+		Activation: activation,
 	})
 	if err != nil {
 		_ = db.Close()

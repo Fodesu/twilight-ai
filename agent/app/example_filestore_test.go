@@ -49,7 +49,7 @@ func Example_jsonlPrototype() {
 	// ---- process 1 ----------------------------------------------------------
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
 	cfg1 := exampleStores(root, "process-1")
-	cfg1.Clock = clock.Now
+	cfg1.Kernel.Clock = clock.Now
 	p1 := buildHost(cfg1, map[run.ModelRef]local.ModelInvoker{"m-1": model1}, tool)
 	profile1, err := p1.RegisterPreset("jsonl-agent", preset)
 	if err != nil {
@@ -114,8 +114,8 @@ func Example_jsonlPrototype() {
 
 	// ---- process 2: new store instances over the same directory --------------
 	cfg2 := exampleStores(root, "process-2")
-	cfg2.Ownership, cfg2.Clock = session.OpenOptions{Takeover: true}, clock.Now
-	store2, ok := cfg2.Store.(*filestore.Store)
+	cfg2.Kernel.Ownership, cfg2.Kernel.Clock = session.OpenOptions{Takeover: true}, clock.Now
+	store2, ok := cfg2.Kernel.Store.(*filestore.Store)
 	if !ok {
 		panic("example stores are file-backed")
 	}

@@ -286,15 +286,18 @@ func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activ
 		c.t.Fatal(err)
 	}
 	a, err := app.Build(app.Config{
-		Store: store, Content: content, Artifacts: core.Artifacts{Bindings: bindings, Ledger: ledger},
-		Redispatches: &redispatchtest.Map{}, Inbox: c.inbox,
-		Executor:    app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: c.proxyURL},
-		Workspaces:  &app.WorkspaceConfig{Store: c.wsStore, Snapshots: &wshttp.Client{BaseURL: c.backends.Tool}, SnapshotAfterTurn: true},
-		Ownership:   session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover},
-		Presets:     []app.Preset{{ID: "ws", Value: preset}},
-		Activation:  activation,
-		OrphanProbe: 200 * time.Millisecond,
-		Warn:        func(err error) { c.t.Logf("%s: warn: %v", id, err) },
+		Kernel: core.Ports{
+			Store: store, Content: content, Artifacts: core.Artifacts{Bindings: bindings, Ledger: ledger},
+			Redispatches: &redispatchtest.Map{},
+			Ownership:    session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover},
+			OrphanProbe:  200 * time.Millisecond,
+		},
+		Inbox:    c.inbox,
+		Executor: app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: c.proxyURL},
+		Workspaces: &app.WorkspaceConfig{Store: c.wsStore, Snapshots: &wshttp.Client{BaseURL: c.backends.Tool}, SnapshotAfterTurn: true},
+		Presets:    []app.Preset{{ID: "ws", Value: preset}},
+		Activation: activation,
+		Warn:       func(err error) { c.t.Logf("%s: warn: %v", id, err) },
 	})
 	if err != nil {
 		c.t.Fatal(err)

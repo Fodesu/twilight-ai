@@ -5,6 +5,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
+	"github.com/felinics/twilight/agentcore/core"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
@@ -74,7 +75,7 @@ var auditModule = module.ModuleDescriptor{
 // EXT-PRJ-2).
 func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	ctx := context.Background()
-	h := newHost(t, app.Config{Modules: []module.ModuleDescriptor{auditModule}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
+	h := newHost(t, app.Config{Kernel: core.Ports{Modules: []module.ModuleDescriptor{auditModule}}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
 	const sid session.SessionID = "s-app"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)

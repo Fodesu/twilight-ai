@@ -19,7 +19,6 @@ import (
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
-	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/core"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
@@ -33,14 +32,10 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/loop"
-	"github.com/felinics/twilight/agentcore/run/reconcile"
-	"github.com/felinics/twilight/agentcore/run/redispatch"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	stdhttp "net/http"
 	"sync"
-	"time"
 )
 
 // ExecutorMode selects the effect implementation built by Build.
@@ -76,17 +71,17 @@ type Preset struct {
 	Value preset.AgentPreset
 }
 
-// Config contains application assembly choices. It deliberately contains
-// concrete ports rather than a file format: YAML, environment variables and
-// command-line flags can be decoded into this type by an outer deployment
-// package later.
+// Config contains application assembly choices. Kernel is the core
+// assembly: stores, ports and policies core.New composes. The remaining
+// fields are the deployment profile and the product policies. The Config
+// deliberately contains concrete ports rather than a file format: YAML,
+// environment variables and command-line flags can be decoded into this
+// type by an outer deployment package later.
 type Config struct {
-	// Store is the Session kernel (required).
-	Store session.Stores
-	// Content is the cas ContentStore of the frozen bodies (required).
-	Content artifact.ContentStore
-	// Artifacts are the binding store and retention ledger (required).
-	Artifacts core.Artifacts
+	// Kernel is the core assembly: the Session store, the content and
+	// artifact stores, the preset registry, the module extensions, the
+	// projection cache and the other ports and policies core.New composes.
+	Kernel core.Ports
 
 	Executor ExecutorConfig
 	// Executions is the record store of the Worker Build composes
@@ -96,48 +91,16 @@ type Config struct {
 	// did not survive a restart would let the Owner dispose an execution
 	// that is still running.
 	Executions executionstore.Store
-	// MissingEffects is the takeover policy for an Executing effect the
-	// Executor holds nothing for (core.Ports.MissingEffects): the zero
-	// value disposes, reconcile.RedispatchMissing redispatches within the
-	// budget and requires Redispatches.
-	MissingEffects reconcile.MissingPolicy
-	// Redispatches is the dispatch ledger RedispatchMissing writes
-	// (RUN-EXE-15, core.Ports.Redispatches).
-	Redispatches redispatch.Store
-	Presets      []Preset
-	// Registry is the preset registry; nil selects an in-memory one.
-	Registry preset.Registry
-	// Decisions resolve each preset's PromptBuilderRef; nil selects this
-	// agent's catalog, prompt.DefaultPromptBuilders().
-	Decisions *decision.Catalog
-
-	Ownership session.OpenOptions
-	// TargetResolver resolves the opaque resource target of each effect
-	// (RUN-LOP-9). The application's resource layer owns it; nil gives every
-	// effect no target (APP-TGT-1).
-	TargetResolver loop.TargetResolver
-	// Modules are application modules registered after the first-party four
-	// (EXT-APP).
-	Modules []module.ModuleDescriptor
-	// Observers are notified of every applied group besides the event stream.
-	Observers []writer.CommitObserver
-	Clock     func() time.Time
-	// Cache and CacheEvery configure the projection cache (APP-MEM-2).
-	Cache      session.ProjectionCache
-	CacheEvery ledger.CommitSeq
-	// Warn receives failures of background work; nil discards them.
-	Warn func(error)
-	// Spawn enables the subagent tool (SPN); nil leaves it unavailable.
-	Spawn *spawn.Options
-	// OrphanProbe is how often an effect still waiting for its Outcome is
-	// attached and, when its worker died holding it, handed to recovery
-	// (core.Ports.OrphanProbe); zero selects the defaults.
-	OrphanProbe time.Duration
 	// Worker configures the Worker that owns execution records (lease, id,
 	// reconcile loop, clock). It applies whenever Build composes a Worker:
 	// the local mode always does; a supplied Port or the remote mode do when
 	// Spawn is set, so the spawn Backend can be routed beside them.
 	Worker executor.WorkerOptions
+	Presets []Preset
+	// Warn receives failures of background work; nil discards them.
+	Warn func(error)
+	// Spawn enables the subagent tool (SPN); nil leaves it unavailable.
+	Spawn *spawn.Options
 	// Inbox is the durable command inbox of the Sessions (APP-INB-1): the
 	// way a caller that does not hold a Session reaches its owner. Nil
 	// leaves Enqueue and ApplyPending unavailable (ErrNoInbox); like every
@@ -201,7 +164,6 @@ type Application struct {
 	// warn receives failures of background work.
 	warn func(error)
 	inbox      inbox.Store
-	ownership  session.OpenOptions
 	activation *Activation
 	bg         context.Context
 	bgCancel   context.CancelFunc
@@ -277,19 +239,18 @@ func (app *Application) untrack(s *Session) {
 // Build assembles an application from typed dependencies and a
 // deployment-neutral executor profile.
 func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
-	if c.Store == nil {
+	if c.Kernel.Store == nil {
 		return nil, errors.New("app: a session Store is required")
 	}
-	if c.Content == nil {
+	if c.Kernel.Content == nil {
 		return nil, errors.New("app: a content Store is required (OWN-PRT-3)")
 	}
-	content := c.Content
 	warn := c.Warn
 	if warn == nil {
 		warn = func(error) {}
 	}
-	app := &Application{warn: warn, inbox: c.Inbox, workspaces: c.Workspaces, bindings: workspace.Commands{Now: c.Clock},
-		ownership: c.Ownership, refs: make(map[preset.PresetID]preset.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session),
+	app := &Application{warn: warn, inbox: c.Inbox, workspaces: c.Workspaces, bindings: workspace.Commands{Now: c.Kernel.Clock},
+		refs: make(map[preset.PresetID]preset.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session),
 		activating: make(map[session.SessionID]chan struct{})}
 	app.bg, app.bgCancel = context.WithCancel(context.Background())
 	// Build is transactional: a failure after a resource with a lifetime
@@ -315,7 +276,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		app.spawn = spawn.NewResponder(*c.Spawn)
 	}
 	// One progress hub serves the Worker and every local backend it routes
-	// to (RUN-EXE-12); the driver's sink relays its frames onto the Bus.
+	// to (RUN-EXE-12); the Core relays its frames onto the event stream.
 	if c.Worker.Progress == nil {
 		c.Worker.Progress = executor.NewProgressHub(0)
 	}
@@ -329,13 +290,13 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		if c.Workspaces.Store == nil {
 			return nil, errors.New("app: Workspaces requires a workspace Store")
 		}
-		c.Modules = append([]module.ModuleDescriptor{workspace.Module}, c.Modules...)
-		if c.TargetResolver == nil {
+		c.Kernel.Modules = append([]module.ModuleDescriptor{workspace.Module}, c.Kernel.Modules...)
+		if c.Kernel.TargetResolver == nil {
 			resolver = &workspace.Resolver{}
-			c.TargetResolver = resolver
+			c.Kernel.TargetResolver = resolver
 		}
-		if c.Decisions == nil {
-			c.Decisions = prompt.CatalogWith(prompt.WorkspacePreface)
+		if c.Kernel.Decisions == nil {
+			c.Kernel.Decisions = prompt.CatalogWith(prompt.WorkspacePreface)
 		}
 		if c.Workspaces.Provider != nil {
 			backend, err := sandbox.New(sandbox.Options{Workspaces: c.Workspaces.Store, Provider: c.Workspaces.Provider,
@@ -358,9 +319,8 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if err != nil {
 		return nil, err
 	}
-	decisions := c.Decisions
-	if decisions == nil {
-		decisions = prompt.DefaultCatalog()
+	if c.Kernel.Decisions == nil {
+		c.Kernel.Decisions = prompt.DefaultCatalog()
 	}
 	// The subagent tool waits for an external response the Responder gives
 	// (SPN-1, DRV-4); the Responder opens children through the Owner, which
@@ -369,16 +329,15 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if app.spawn != nil {
 		responders = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
 	}
-	kernel, err := core.New(core.Ports{
-		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,
-		MissingEffects: c.MissingEffects, Redispatches: c.Redispatches, OrphanProbe: c.OrphanProbe,
-		Executor: port, Worker: wc, TargetResolver: c.TargetResolver, Observers: c.Observers, Modules: c.Modules,
-		// The Sessions' compaction policy runs between the steps of a Turn
-		// (APP-CKP-1, RUN-LOP-10); provisional observations of effects in
-		// flight reach the Core's event stream (OBS-1).
-		Planner: app, Responders: responders,
-		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
-	})
+	c.Kernel.Worker = wc
+	c.Kernel.Executor = port
+	// The Sessions' compaction policy runs between the steps of a Turn
+	// (APP-CKP-1, RUN-LOP-10); provisional observations of effects in
+	// flight reach the Core's event stream (OBS-1).
+	c.Kernel.Planner = app
+	c.Kernel.Responders = responders
+	c.Kernel.Fail = app.fail
+	kernel, err := core.New(c.Kernel)
 	if err != nil {
 		return nil, err
 	}

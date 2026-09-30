@@ -8,6 +8,7 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/sdkconv"
+	"github.com/felinics/twilight/agentcore/core"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -156,7 +157,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	ctx := context.Background()
 	exec := &recordingExecutor{reply: "hello from the executor"}
 	content := durableContent(t)
-	h, err := app.Build(durablePorts(t, app.Config{Executor: app.ExecutorConfig{Port: exec}, Content: content}))
+	h, err := app.Build(durablePorts(t, app.Config{Kernel: core.Ports{Content: content}, Executor: app.ExecutorConfig{Port: exec}}))
 	if err != nil {
 		t.Fatal(err)
 	}

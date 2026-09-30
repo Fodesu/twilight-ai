@@ -52,7 +52,7 @@ func Example_recoverableTurn() {
 
 	// ---- process 1 ----------------------------------------------------------
 	cfg1 := exampleStores(root, "process-1")
-	cfg1.Clock = clock.Now
+	cfg1.Kernel.Clock = clock.Now
 	p1 := buildHost(cfg1, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	if err := p1.CreateSession(ctx, sid); err != nil {
 		panic(err)
@@ -85,7 +85,7 @@ func Example_recoverableTurn() {
 
 	// ---- process 2 ----------------------------------------------------------
 	cfg2 := exampleStores(root, "process-2")
-	cfg2.Ownership, cfg2.Clock = session.OpenOptions{Takeover: true}, clock.Now
+	cfg2.Kernel.Ownership, cfg2.Kernel.Clock = session.OpenOptions{Takeover: true}, clock.Now
 	p2 := buildHost(cfg2, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	// The preset is re-registered from the same public configuration, so the
 	// ref the Session recorded still resolves.
