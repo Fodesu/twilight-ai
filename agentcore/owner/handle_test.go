@@ -25,7 +25,7 @@ import (
 // newAuthority is the deployment every owner test starts from: a local
 // executor, fresh durable stores under t.TempDir(), and the Kernel plus
 // Execution assembled over them.
-func newAuthority(t *testing.T) *owner.Owner {
+func newAuthority(t *testing.T) (*owner.Owner, *sessionkernel.Kernel) {
 	t.Helper()
 	catalog, err := local.NewCatalog(nil)
 	if err != nil {
@@ -50,7 +50,8 @@ func newAuthority(t *testing.T) *owner.Owner {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x, err := rt.NewExecution(rt.ExecutionConfig{Executor: exec, Decisions: decisions}, k)
+	x, err := rt.NewExecution(rt.ExecutionConfig{Executor: exec, Decisions: decisions},
+		rt.ExecutionSources{Runs: k.Runs, Projections: k.Projections, Content: k.Content})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +62,7 @@ func newAuthority(t *testing.T) *owner.Owner {
 		_ = k.Close(context.Background())
 		exec.Close()
 	})
-	return a
+	return a, k
 }
 
 // OWN-HDL-1: one generation of ownership at a time. A second Open of an
@@ -69,9 +70,9 @@ func newAuthority(t *testing.T) *owner.Owner {
 // close the generation that replaced it; reads need no Handle.
 func TestHandleGenerations(t *testing.T) {
 	ctx := context.Background()
-	a := newAuthority(t)
+	a, k := newAuthority(t)
 	const sid session.SessionID = "s-gen"
-	if err := a.Kernel.CreateSession(ctx, sid, nil); err != nil {
+	if err := k.CreateSession(ctx, sid, nil); err != nil {
 		t.Fatal(err)
 	}
 	first, err := a.Open(ctx, sid)
@@ -93,18 +94,18 @@ func TestHandleGenerations(t *testing.T) {
 	if err := first.Close(ctx); err != nil {
 		t.Fatalf("stale close = %v, want nil", err)
 	}
-	if _, err := a.Kernel.Chatlog.Submit(ctx, second.Writer(), "in-1", run.MustParseCanonicalJSON(`{"text":"hello"}`)); err != nil {
+	if _, err := k.Chatlog.Submit(ctx, second.Writer(), "in-1", run.MustParseCanonicalJSON(`{"text":"hello"}`)); err != nil {
 		t.Fatalf("commit through the live generation after a stale close: %v", err)
 	}
 	// Reading takes no ownership: it works by SessionID while the Handle is
 	// open and after it is closed.
-	if chat, err := chatlog.ReadSurface(ctx, a.Kernel.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
+	if chat, err := chatlog.ReadSurface(ctx, k.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
 		t.Fatalf("read while open = %d %v", chat.Inputs.Len(), err)
 	}
 	if err := second.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if chat, err := chatlog.ReadSurface(ctx, a.Kernel.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
+	if chat, err := chatlog.ReadSurface(ctx, k.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
 		t.Fatalf("read after close = %d %v", chat.Inputs.Len(), err)
 	}
 	// Reading did not reopen the Session: a third Open succeeds.
@@ -140,13 +141,12 @@ func (g *gatedWriters) Writer(ctx context.Context, sid session.SessionID) (write
 // closing behind Close (the Application.Close order).
 func TestCloseWaitsForInFlightOpen(t *testing.T) {
 	ctx := context.Background()
-	a := newAuthority(t)
-	k := a.Kernel
+	a, k := newAuthority(t)
 	if err := k.CreateSession(ctx, "s-inflight", nil); err != nil {
 		t.Fatal(err)
 	}
 	gate := make(chan struct{})
-	k.Writers = &gatedWriters{Writers: k.Writers, gate: gate, started: make(chan struct{}, 1)}
+	a.Writers = &gatedWriters{Writers: a.Writers, gate: gate, started: make(chan struct{}, 1)}
 	opened := make(chan error, 1)
 	go func() {
 		h, err := a.Open(ctx, "s-inflight")
@@ -156,7 +156,7 @@ func TestCloseWaitsForInFlightOpen(t *testing.T) {
 		}
 		opened <- h.Close(ctx)
 	}()
-	<-k.Writers.(*gatedWriters).started
+	<-a.Writers.(*gatedWriters).started
 	closed := make(chan error, 1)
 	go func() { closed <- a.Close(ctx) }()
 	select {

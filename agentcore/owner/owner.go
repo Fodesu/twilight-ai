@@ -40,11 +40,15 @@ type openSession struct {
 	w     writer.Writer
 }
 
-// Owner holds the Sessions this process owns: the Kernel keeps their
-// durable state, the Execution advances them.
+// Owner holds the Sessions this process owns over the Session-side ports
+// they commit through; the Execution advances them.
 type Owner struct {
-	Kernel    *sessionkernel.Kernel
-	Execution *runtime.Execution
+	// Writers opens and closes the Sessions' Writers.
+	Writers writer.Writers
+	// Maintenance deletes Sessions; Admission releases their artifacts.
+	Maintenance session.Maintenance
+	Admission   writer.Admission
+	Execution   *runtime.Execution
 
 	mu   sync.Mutex
 	open map[session.SessionID]*openSession
@@ -55,9 +59,11 @@ type Owner struct {
 	inflight sync.WaitGroup
 }
 
-// New returns an Owner over k and x with no Session open.
+// New returns an Owner over the Kernel's Session ports and the Execution x,
+// with no Session open.
 func New(k *sessionkernel.Kernel, x *runtime.Execution) *Owner {
-	return &Owner{Kernel: k, Execution: x, open: make(map[session.SessionID]*openSession)}
+	return &Owner{Writers: k.Writers, Maintenance: k.Store, Admission: k.Admission, Execution: x,
+		open: make(map[session.SessionID]*openSession)}
 }
 
 // Handle is the ownership capability of one open generation: its Writer is
@@ -88,7 +94,7 @@ func (a *Owner) Open(ctx context.Context, sid session.SessionID) (*Handle, error
 	}
 	a.open[sid] = gen
 	a.mu.Unlock()
-	w, err := a.Kernel.Writers.Writer(ctx, sid)
+	w, err := a.Writers.Writer(ctx, sid)
 	if err != nil {
 		_ = a.release(context.WithoutCancel(ctx), sid, gen, false)
 		return nil, err
@@ -127,7 +133,7 @@ func (a *Owner) release(ctx context.Context, sid session.SessionID, gen *openSes
 	var err error
 	if closeWriter {
 		a.Execution.Stop(sid)
-		err = writer.CloseWriter(ctx, a.Kernel.Writers, sid)
+		err = writer.CloseWriter(ctx, a.Writers, sid)
 	}
 	a.mu.Lock()
 	if a.open[sid] == gen {
@@ -152,11 +158,11 @@ func (a *Owner) DeleteSession(ctx context.Context, sid session.SessionID) error 
 		if transition {
 			return fmt.Errorf("%w: %s is opening or closing", ErrSessionOpen, sid)
 		}
-		if err := writer.CloseWriter(ctx, a.Kernel.Writers, sid); err != nil {
+		if err := writer.CloseWriter(ctx, a.Writers, sid); err != nil {
 			return err
 		}
 	}
-	return writer.Delete(ctx, a.Kernel.Store, a.Kernel.Admission, sid)
+	return writer.Delete(ctx, a.Maintenance, a.Admission, sid)
 }
 
 // Close refuses new Opens, waits for the ones in flight and releases every

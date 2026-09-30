@@ -358,7 +358,9 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	c.Execution.Planner = app
 	c.Execution.Responders = responders
 	c.Execution.Fail = app.fail
-	exec, err := rt.NewExecution(c.Execution, kernel)
+	exec, err := rt.NewExecution(c.Execution, rt.ExecutionSources{
+		Runs: kernel.Runs, Projections: kernel.Projections, Content: kernel.Content,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +370,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		resolver.Projections = kernel.Projections
 	}
 	if app.spawn != nil {
-		app.spawn.Bind(app.Owner)
+		app.spawn.Bind(app.Owner, kernel)
 	}
 	for i := range c.Presets {
 		p := &c.Presets[i]

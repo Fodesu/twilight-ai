@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/observe"
@@ -14,15 +15,25 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 )
 
+// ExecutionSources are the Session-side services the drive chain reads;
+// a composition root assembles them over the same Kernel the Sessions
+// live in.
+type ExecutionSources struct {
+	// Runs is the Run module's Session adapter.
+	Runs *sessionstore.SessionRunStore
+	// Projections reads the Sessions' folded state.
+	Projections session.ProjectionReader
+	// Content materializes the frozen bodies projections name.
+	Content chatlog.ContentResolver
+}
+
 // ExecutionConfig composes one Execution: the effect port it drives, the
-// decision identities it resolves and the policies of the drive chain. The
-// Session-side services the chain reads (Runs, projections, content, the
-// event stream) come from the Kernel the Execution is assembled over.
+// decision identities it resolves and the policies of the drive chain.
 type ExecutionConfig struct {
 	// Executor is the effect layer port (RUN-EXE-3): required.
 	Executor effect.ExecutionPort
@@ -87,10 +98,11 @@ type Execution struct {
 	Progress *observe.Progresses
 }
 
-// NewExecution assembles the execution side over k, the Session kernel of
-// the same process. The two assemble independently (sessionkernel.New and
-// NewExecution); pairing them is the composition root's act.
-func NewExecution(cfg ExecutionConfig, k *sessionkernel.Kernel) (*Execution, error) { //nolint:gocritic // hugeParam: ExecutionConfig is a by-value options struct read once
+// NewExecution assembles the execution side over the Session-side sources
+// of the same process. The kernel and the execution side assemble
+// independently (sessionkernel.New and NewExecution); pairing them is the
+// composition root's act.
+func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error) { //nolint:gocritic // hugeParam: ExecutionConfig is a by-value options struct read once
 	if cfg.Executor == nil {
 		return nil, errors.New("runtime: an Executor port is required")
 	}
@@ -118,14 +130,14 @@ func NewExecution(cfg ExecutionConfig, k *sessionkernel.Kernel) (*Execution, err
 	}
 	// A nil resolver gives every effect no target (APP-TGT-1).
 	loops := &driver.Loops{Executor: cfg.Executor, Presets: presets, Decisions: cfg.Decisions, Targets: cfg.TargetResolver,
-		Sources: decision.Sources{Projections: k.Projections, Content: k.Content}, Watcher: x.Watcher, Planner: cfg.Planner}
-	x.Recovery = &driver.Recovery{Runs: k.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: report,
+		Sources: decision.Sources{Projections: src.Projections, Content: src.Content}, Watcher: x.Watcher, Planner: cfg.Planner}
+	x.Recovery = &driver.Recovery{Runs: src.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: report,
 		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, OrphanProbe: cfg.OrphanProbe, Sink: progressSink{x.Progress}}
 	var responders *driver.Responders
 	if len(cfg.Responders) > 0 {
-		responders = &driver.Responders{Runs: k.Runs, Tools: cfg.Responders, Fail: report}
+		responders = &driver.Responders{Runs: src.Runs, Tools: cfg.Responders, Fail: report}
 	}
-	x.Driver = &driver.Driver{Runs: k.Runs, Loops: loops, Recovery: x.Recovery, Responders: responders, Sink: progressSink{x.Progress}}
+	x.Driver = &driver.Driver{Runs: src.Runs, Loops: loops, Recovery: x.Recovery, Responders: responders, Sink: progressSink{x.Progress}}
 	return x, nil
 }
 

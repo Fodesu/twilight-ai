@@ -67,6 +67,9 @@ type Responder struct {
 	// ownership Handle, and the Kernel's Turns and Chatlog commands and the
 	// Execution's Driver run through that Handle's Writer.
 	a *owner.Owner
+	// k is the Session kernel the child Sessions are created, forked and
+	// read through.
+	k *sessionkernel.Kernel
 
 	mu       sync.Mutex
 	inflight map[session.SessionID]context.CancelFunc
@@ -80,7 +83,10 @@ func NewResponder(opts Options) *Responder {
 }
 
 // Bind supplies the authority. It must precede the first Respond.
-func (r *Responder) Bind(a *owner.Owner) { r.a = a }
+func (r *Responder) Bind(a *owner.Owner, k *sessionkernel.Kernel) {
+	r.a = a
+	r.k = k
+}
 
 // Close cancels every child drive; their Turns stay active and resume on
 // the next open of the parent, when the Driver asks for the answer again.
@@ -144,14 +150,14 @@ func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *driver.W
 		return run.CanonicalJSON{}, fmt.Errorf("drive subagent: %w", err)
 	}
 	ref := turn.TurnRef{SessionID: child, TurnID: turnID}
-	status, err := r.a.Kernel.Turns.Status(ctx, ref)
+	status, err := r.k.Turns.Status(ctx, ref)
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
 	if status.Status != turn.TurnCompleted {
 		return run.CanonicalJSON{}, fmt.Errorf("subagent %s turn %s ended %s", child, turnID, status.Status)
 	}
-	reply, err := chatlog.LastAssistantText(ctx, r.a.Kernel.Projections, r.a.Kernel.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
+	reply, err := chatlog.LastAssistantText(ctx, r.k.Projections, r.k.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
@@ -190,7 +196,7 @@ func (r *Responder) depthOf(ctx context.Context, sid session.SessionID) (int, er
 }
 
 func (r *Responder) provenance(ctx context.Context, sid session.SessionID) (Provenance, bool, error) {
-	header, err := r.a.Kernel.Store.Header(ctx, sid)
+	header, err := r.k.Store.Header(ctx, sid)
 	if err != nil {
 		if session.IsCode(err, session.ErrNotFound) {
 			return Provenance{}, false, nil
@@ -214,28 +220,28 @@ func (r *Responder) create(ctx context.Context, parent session.SessionID, runID 
 	if err != nil {
 		return Provenance{}, err
 	}
-	now := r.a.Kernel.Clock().UnixMilli()
+	now := r.k.Clock().UnixMilli()
 	switch args.Mode {
 	case Fork:
 		turnID, err := r.callingTurn(ctx, parent, runID)
 		if err != nil {
 			return Provenance{}, err
 		}
-		at, err := r.a.Kernel.History.PrefixCommit(ctx, parent, turnID)
+		at, err := r.k.History.PrefixCommit(ctx, parent, turnID)
 		if err != nil {
 			return Provenance{}, err
 		}
-		_, err = writer.Fork(ctx, r.a.Kernel.Store, r.a.Kernel.Registry, writer.ForkRequest{Parent: parent, At: at, Child: child, CreatedAtUnixMilli: now, Ext: ext})
+		_, err = writer.Fork(ctx, r.k.Store, r.k.Registry, writer.ForkRequest{Parent: parent, At: at, Child: child, CreatedAtUnixMilli: now, Ext: ext})
 		return prov, err
 	default:
-		_, err := r.a.Kernel.Store.Create(ctx, session.CreateRequest{SessionID: child, CreatedAtUnixMilli: now, Ext: ext})
+		_, err := r.k.Store.Create(ctx, session.CreateRequest{SessionID: child, CreatedAtUnixMilli: now, Ext: ext})
 		return prov, err
 	}
 }
 
 // callingTurn is the parent Turn that owns the Run the call belongs to.
 func (r *Responder) callingTurn(ctx context.Context, parent session.SessionID, runID run.RunID) (turn.TurnID, error) {
-	surface, err := turn.ReadSurface(ctx, r.a.Kernel.Projections, parent)
+	surface, err := turn.ReadSurface(ctx, r.k.Projections, parent)
 	if err != nil {
 		return "", err
 	}
@@ -257,7 +263,7 @@ func (r *Responder) childPreset(ctx context.Context, parent session.SessionID, r
 	if err != nil {
 		return preset.PresetRef{}, err
 	}
-	surface, err := turn.ReadSurface(ctx, r.a.Kernel.Projections, parent)
+	surface, err := turn.ReadSurface(ctx, r.k.Projections, parent)
 	if err != nil {
 		return preset.PresetRef{}, err
 	}
@@ -270,14 +276,14 @@ func (r *Responder) childPreset(ctx context.Context, parent session.SessionID, r
 // the parent learned of it. A child runs exactly one Turn per task: the
 // only submitted input is the task itself.
 func (r *Responder) settle(ctx context.Context, h *owner.Handle, pref preset.PresetRef, task string) (turn.TurnID, error) {
-	turns, err := turn.ReadSurface(ctx, r.a.Kernel.Projections, h.ID())
+	turns, err := turn.ReadSurface(ctx, r.k.Projections, h.ID())
 	if err != nil {
 		return "", err
 	}
 	if active, ok := turns.Active(); ok {
 		return r.driveTurn(ctx, h, active.TurnID)
 	}
-	chat, err := chatlog.ReadSurface(ctx, r.a.Kernel.Projections, h.ID())
+	chat, err := chatlog.ReadSurface(ctx, r.k.Projections, h.ID())
 	if err != nil {
 		return "", err
 	}
@@ -296,7 +302,7 @@ func (r *Responder) settle(ctx context.Context, h *owner.Handle, pref preset.Pre
 			return turns.Order[len(turns.Order)-1], nil
 		}
 	}
-	in, err := r.a.Kernel.Chatlog.Submit(ctx, h.Writer(), chatlog.NewInputID(), input.Text(task))
+	in, err := r.k.Chatlog.Submit(ctx, h.Writer(), chatlog.NewInputID(), input.Text(task))
 	if err != nil {
 		return "", err
 	}
@@ -305,7 +311,7 @@ func (r *Responder) settle(ctx context.Context, h *owner.Handle, pref preset.Pre
 
 func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, pref preset.PresetRef, inputs []run.AgentInput) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turn.NewTurnID()}
-	if _, err := r.a.Kernel.Turns.Start(ctx, h.Writer(), sessionkernel.StartRequest{Ref: ref, Inputs: inputs, Preset: pref}); err != nil {
+	if _, err := r.k.Turns.Start(ctx, h.Writer(), sessionkernel.StartRequest{Ref: ref, Inputs: inputs, Preset: pref}); err != nil {
 		return "", err
 	}
 	return r.driveTurn(ctx, h, ref.TurnID)
@@ -325,7 +331,7 @@ func (r *Responder) driveTurn(ctx context.Context, h *owner.Handle, turnID turn.
 		if taken {
 			return "", fmt.Errorf("subagent %s is driven elsewhere", h.ID())
 		}
-		resp, err := r.a.Kernel.Turns.Status(ctx, ref)
+		resp, err := r.k.Turns.Status(ctx, ref)
 		if err != nil {
 			return "", err
 		}
@@ -344,7 +350,7 @@ func (r *Responder) driveTurn(ctx context.Context, h *owner.Handle, turnID turn.
 func (r *Responder) awaitRecovery(ctx context.Context, ref turn.TurnRef) error {
 	delay := 10 * time.Millisecond
 	for {
-		resp, err := r.a.Kernel.Turns.Status(ctx, ref)
+		resp, err := r.k.Turns.Status(ctx, ref)
 		if err != nil {
 			return err
 		}
