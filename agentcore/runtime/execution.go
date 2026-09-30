@@ -64,8 +64,9 @@ type ExecutionConfig struct {
 	// gives every effect no target (APP-TGT-1).
 	TargetResolver loop.TargetResolver
 	// Fail receives failures of work the Execution's components do outside
-	// any caller's call, such as settling a reattached Outcome; nil
-	// discards them.
+	// any caller's call, such as settling a reattached Outcome. The callback
+	// decides whether a failure reaches the Progress stream; when nil, the
+	// Execution publishes each failure to Progress itself.
 	Fail func(session.SessionID, error)
 	// OrphanProbe is how often an effect still waiting is attached and, when
 	// orphaned, handed to RecoverExecution: by the Watcher of a live drive
@@ -119,14 +120,11 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 	x := &Execution{Executor: cfg.Executor, Presets: presets, Progress: observe.NewProgresses()}
 	x.Watcher = &effect.Watcher{Port: cfg.Executor, Probe: cfg.OrphanProbe}
 	// Failures the components report outside any caller's call reach the
-	// caller's callback and the Session's transient stream (OBS-1).
-	fail := cfg.Fail
-	if fail == nil {
-		fail = func(session.SessionID, error) {}
-	}
-	report := func(sid session.SessionID, err error) {
-		fail(sid, err)
-		x.Progress.Failed(sid, err)
+	// caller's callback, which owns their delivery to the transient stream;
+	// without one they reach the stream directly (OBS-1).
+	report := cfg.Fail
+	if report == nil {
+		report = x.Progress.Failed
 	}
 	// A nil resolver gives every effect no target (APP-TGT-1).
 	loops := &driver.Loops{Executor: cfg.Executor, Presets: presets, Decisions: cfg.Decisions, Targets: cfg.TargetResolver,
