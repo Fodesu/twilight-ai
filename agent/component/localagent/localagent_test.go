@@ -13,7 +13,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
-	rt "github.com/felinics/twilight/agentcore/runtime"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
 )
@@ -35,7 +35,7 @@ func TestComposeRollsBackOnFailure(t *testing.T) {
 				Content:   filestoretest.Content(t, sessionstore.FrozenAuthority),
 				Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: ledger},
 			},
-			Execution: rt.ExecutionConfig{Redispatches: db.Redispatches()},
+			Execution: execution.Config{Redispatches: db.Redispatches()},
 			Presets:   []app.Preset{{ID: "", Value: p}},
 		},
 		Models:     map[run.ModelRef]local.ModelInvoker{},

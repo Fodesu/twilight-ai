@@ -9,7 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
-	rt "github.com/felinics/twilight/agentcore/runtime"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
@@ -163,7 +163,7 @@ func TestForkChildTargetIsApplicationPolicy(t *testing.T) {
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer(), done, toolCallAnswer(), done, toolCallAnswer(), done}}
 	h := newHost(t, app.Config{
 		Kernel:    sessionkernel.Ports{Store: filestoretest.Store(t)},
-		Execution: rt.ExecutionConfig{TargetResolver: resolver}},
+		Execution: execution.Config{TargetResolver: resolver}},
 		map[run.ModelRef]local.ModelInvoker{"m-1": model}, tool)
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{tool}))
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/chatlog"
-	"github.com/felinics/twilight/agentcore/driver"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
@@ -53,7 +53,7 @@ func (o Options) depth() int {
 	return o.MaxDepth
 }
 
-// Responder is the subagent tool's driver.Responder (SPN-1, DRV-4): a spawn
+// Responder is the subagent tool's execution.Responder (SPN-1, DRV-4): a spawn
 // call waits for an external response, and this answers it by creating the
 // child Session (or continuing the one on record), driving it through the
 // authority to a settled Turn and returning the child's reply. Every step
@@ -99,11 +99,11 @@ func (r *Responder) Close() {
 	}
 }
 
-// Respond is driver.Responder. Argument, preset and depth errors are
+// Respond is execution.Responder. Argument, preset and depth errors are
 // returned before any child exists, so the call is rejected and no Session
 // is created (SPN-3); a child on record for different arguments is a
 // conflict.
-func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *driver.WaitingCall) (run.CanonicalJSON, error) {
+func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *execution.WaitingCall) (run.CanonicalJSON, error) {
 	if r.a == nil {
 		return run.CanonicalJSON{}, errors.New("spawn: responder is not bound to an authority")
 	}
@@ -324,7 +324,7 @@ func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, pref pre
 func (r *Responder) driveTurn(ctx context.Context, h *owner.Handle, turnID turn.TurnID) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turnID}
 	for {
-		taken, err := r.a.Execution.Driver.Drive(ctx, h.Writer(), turnID)
+		taken, err := r.a.Execution.Drive(ctx, h.Writer(), turnID)
 		if err != nil {
 			return "", err
 		}
@@ -381,4 +381,4 @@ func newestInput(chat *chatlog.Surface) (chatlog.InputView, bool) {
 	return best, found
 }
 
-var _ driver.Responder = (*Responder)(nil)
+var _ execution.Responder = (*Responder)(nil)

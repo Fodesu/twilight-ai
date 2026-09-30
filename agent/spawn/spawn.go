@@ -1,5 +1,5 @@
 // Package spawn is the reference agent's subagent capability (SPN), built on
-// the core's Waiting(ExternalResponse) and driver.Responders seam: the tool
+// the core's Waiting(ExternalResponse) and execution.Responders seam: the tool
 // a model calls to delegate a task, the argument and result shapes, the
 // deterministic child Session identity, and the provenance record that makes
 // a spawn call recoverable after a crash.
@@ -154,7 +154,7 @@ func ArgumentsConflict(prov Provenance, args Arguments) bool {
 
 // Tool is the model-facing definition of the spawn tool for preset
 // catalogs. Its ResponsePolicy is ExternalResponse: a call waits, and the
-// Responder the Driver holds for the tool answers it (SPN-1, DRV-4). Execute
+// Responder the Engine holds for the tool answers it (SPN-1, DRV-4). Execute
 // never runs.
 func Tool(ref run.ToolRef) local.ExecutableTool { return tool{ref: ref} }
 

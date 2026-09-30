@@ -104,8 +104,8 @@ func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 }
 
 // Summarizer asks a preset's model for the compaction summary. The call is
-// an effect like any other and goes through the effect port (APP-CKP-1):
-// the request is frozen and dispatched as a model Assignment outside any
+// an effect like any other and goes through the effect layer (APP-CKP-1):
+// the request is frozen and performed as a model Assignment outside any
 // Run, so the Owner holds no model client and a remote executor serves
 // it the same way. A crash while it generates writes nothing.
 type Summarizer struct {
@@ -113,16 +113,21 @@ type Summarizer struct {
 	ResolvePreset func(preset.PresetRef) (preset.AgentPreset, error)
 	// Content stores frozen request bodies.
 	Content frozen.Store
-	// Executor performs the model effect.
-	Executor effect.ExecutionPort
-	// Watcher is where the summary's one effect is waited for: the Owner's
-	// shared Watcher over Executor, so compaction opens no subscription of
-	// its own (RUN-EXE-17).
-	Watcher *effect.Watcher
+	// Effects performs the one model effect and waits for its Outcome.
+	Effects Effects
+}
+
+// Effects performs one effect outside any Run: dispatched, awaited and
+// acknowledged in one call.
+type Effects interface {
+	Once(ctx context.Context, a effect.Assignment) (effect.Outcome, error)
 }
 
 // Summarize renders entries and asks the preset's model for the summary.
 func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, presetRef preset.PresetRef, entries []chatlog.Materialized) (string, error) {
+	if s.Effects == nil {
+		return "", errors.New("compaction: Summarizer requires Effects")
+	}
 	ap, err := s.ResolvePreset(presetRef)
 	if err != nil {
 		return "", err
@@ -148,19 +153,8 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	a := effect.Assignment{Session: run.Scope(sid), RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
 		Effect: run.EffectID(randomHex(16)),
 		Body:   effect.ModelAssignment{Model: ap.Model, Request: &store, RequestDigest: digest}}
-	if err := s.Executor.Dispatch(ctx, a); err != nil {
-		return "", err
-	}
-	// One effect, nothing else to do until it answers: the synchronous form
-	// of read-plus-notice (effect.AwaitOutcome), not a held request.
-	if s.Watcher == nil {
-		return "", errors.New("compaction: Summarizer requires the Owner's Watcher")
-	}
-	out, err := s.Watcher.Await(ctx, a.Key())
+	out, err := s.Effects.Once(ctx, a)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			_ = s.Executor.Cancel(context.WithoutCancel(ctx), a.Key())
-		}
 		return "", err
 	}
 	switch r := out.Result.(type) {

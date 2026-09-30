@@ -15,7 +15,7 @@ import (
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/decision"
-	"github.com/felinics/twilight/agentcore/driver"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
@@ -23,7 +23,6 @@ import (
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
@@ -49,11 +48,11 @@ type Config struct {
 	// content and artifact stores, the module extensions, the projection
 	// cache and the other ports and policies sessionkernel.New composes.
 	Kernel sessionkernel.Ports
-	// Execution is the execution side's assembly: the effect port, the
+	// Execution is the execution side's assembly: the effect ports, the
 	// decision catalog, the preset registry, the takeover policy and the
-	// other drive-chain policies runtime.NewExecution composes over the
-	// Kernel. New fills the Planner, the Responders and Fail.
-	Execution rt.ExecutionConfig
+	// other drive-chain policies the Engine composes over the Kernel. New
+	// fills the Planner, the Responders, Fail and Notify.
+	Execution execution.Config
 
 	Presets []Preset
 	// Warn receives failures of background work; nil discards them.
@@ -106,7 +105,7 @@ type Application struct {
 	// state and Execution is what advances them.
 	Owner     *owner.Owner
 	Kernel    *sessionkernel.Kernel
-	Execution *rt.Execution
+	Execution execution.Engine
 	spawn     *spawn.Responder
 	// warn receives failures of background work.
 	warn       func(error)
@@ -137,7 +136,7 @@ type Application struct {
 	sessions map[session.SessionID]*Session
 }
 
-// BeforePrepare is driver.Planner (RUN-LOP-10, APP-CKP-1): between two steps
+// BeforePrepare is the between-steps hook (RUN-LOP-10, APP-CKP-1): between two steps
 // of a Run, while it is Open, the Session's automatic compaction policy runs
 // against the context the next model request will read. Failures reach
 // CompactWarn and never stop the drive.
@@ -186,7 +185,7 @@ func (app *Application) untrack(s *Session) {
 // root that composed it (a local agent component, a cloud owner service)
 // closes it and whatever it stands on after this Application.
 func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
-	if c.Execution.Executor == nil {
+	if c.Execution.Executor.Execution == nil {
 		return nil, errors.New("app: an effect port is required (Config.Execution.Executor); composing it is the deployment root's act")
 	}
 	warn := c.Warn
@@ -250,17 +249,19 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 	// The subagent tool waits for an external response the Responder gives
 	// (SPN-1, DRV-4); the Responder opens children through the Owner, which
 	// it is bound to once the Owner exists, before any Respond can run.
-	var responders map[run.ToolRef]driver.Responder
+	var responders map[run.ToolRef]execution.Responder
 	if app.spawn != nil {
-		responders = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
+		responders = map[run.ToolRef]execution.Responder{c.Spawn.ToolRef(): app.spawn}
 	}
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// (APP-CKP-1, RUN-LOP-10); provisional observations of effects in
-	// flight reach the transient stream (OBS-1).
+	// flight reach the transient stream (OBS-1). A settlement the Engine
+	// makes on its own wakes the open Session, which advances from it.
 	c.Execution.Planner = app
 	c.Execution.Responders = responders
 	c.Execution.Fail = app.fail
-	exec, err := rt.NewExecution(c.Execution, rt.ExecutionSources{
+	c.Execution.Notify = app.wakeAdvance
+	exec, err := execution.New(c.Execution, execution.Sources{
 		Runs: kernel.Runs, Projections: kernel.Projections, Content: kernel.Content,
 	})
 	if err != nil {
@@ -307,17 +308,25 @@ func (app *Application) rollback() {
 
 // fail reports a failure of the application's own background work (a
 // settlement that errored, a snapshot that failed) to Warn and, as an
-// Event, to the Session's subscribers (OBS-1). The Execution's components
-// report through their own Fail callback, which NewExecution wires to the
-// same stream.
+// Event, to the Session's subscribers (OBS-1). The Engine's components
+// report through the same callback.
 func (app *Application) fail(sid session.SessionID, err error) {
 	app.warn(err)
-	app.Execution.Progress.Failed(sid, err)
+	app.Execution.Progress().Failed(sid, err)
+}
+
+// wakeAdvance is the Engine's Notify: a settlement it made outside any
+// drive of this process is advanced from by the Session holding sid open.
+// A Session not open here is left to its next open.
+func (app *Application) wakeAdvance(sid session.SessionID) {
+	if s, ok := app.Opened(sid); ok {
+		s.wakeAdvance()
+	}
 }
 
 // RegisterPreset adds or replaces a decision identity after Build.
 func (app *Application) RegisterPreset(id preset.PresetID, p preset.AgentPreset) (preset.PresetRef, error) {
-	ref, err := app.Execution.Presets.Register(id, p)
+	ref, err := app.Execution.Presets().Register(id, p)
 	if err != nil {
 		return preset.PresetRef{}, err
 	}
@@ -343,7 +352,7 @@ func (app *Application) PresetRef(id preset.PresetID) (preset.PresetRef, error) 
 // transient progress and failures. Committed events keep their commit
 // order; transient items may interleave and may be lost.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
-	return mergeEvents(ctx, app.Kernel.Bus.Subscribe(ctx, sid), app.Execution.Progress.Subscribe(ctx, sid))
+	return mergeEvents(ctx, app.Kernel.Bus.Subscribe(ctx, sid), app.Execution.Progress().Subscribe(ctx, sid))
 }
 
 // EventsFrom is the catch-up form of Events: the Session's committed events
@@ -355,7 +364,7 @@ func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, f
 	if err != nil {
 		return nil, err
 	}
-	return mergeEvents(ctx, committed, app.Execution.Progress.Subscribe(ctx, sid)), nil
+	return mergeEvents(ctx, committed, app.Execution.Progress().Subscribe(ctx, sid)), nil
 }
 
 // mergeEvents forwards both observation streams into one channel until ctx

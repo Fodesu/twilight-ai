@@ -19,10 +19,11 @@ import (
 	"github.com/felinics/twilight/agent/executor/http"
 	wshttp "github.com/felinics/twilight/agent/workspace/http"
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
-	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
@@ -159,13 +160,13 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 			Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
 			Ownership: session.OpenOptions{Owner: id, LeaseDuration: cfg.Lease.Std(), Takeover: cfg.Takeover},
 		},
-		Execution:  rt.ExecutionConfig{Redispatches: db.Redispatches()},
+		Execution:  execution.Config{Redispatches: db.Redispatches()},
 		Inbox:      db.Inbox(),
 		Workspaces: wsCfg,
 		Presets:    presets,
 		Activation: activation,
 	}
-	appCfg.Execution.Executor = &http.Client{BaseURL: cfg.Executor}
+	appCfg.Execution.Executor = effect.PortsOf(&http.Client{BaseURL: cfg.Executor})
 	a, err := app.New(appCfg)
 	if err != nil {
 		_ = db.Close()

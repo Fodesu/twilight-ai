@@ -119,9 +119,9 @@ func Compose(c Config) (*Agent, error) { //nolint:gocritic // hugeParam: Config 
 		}
 		routes = append(routes, local.Route(backend))
 	} else if len(routes) == 0 {
-		c.Execution.Executor = port
+		c.Execution.Executor = effect.PortsOf(port)
 	}
-	if c.Execution.Executor == nil {
+	if c.Execution.Executor.Execution == nil {
 		// A Worker owns the execution records (RUN-EXE-8): the local
 		// executor always, a Port with routes beside it.
 		if c.Executions == nil {
@@ -134,7 +134,7 @@ func Compose(c Config) (*Agent, error) { //nolint:gocritic // hugeParam: Config 
 			return nil, err
 		}
 		ag.Worker = w
-		c.Execution.Executor = w
+		c.Execution.Executor = effect.PortsOf(w)
 	}
 	application, err := app.New(c.Config)
 	if err != nil {

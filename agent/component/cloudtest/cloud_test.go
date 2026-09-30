@@ -40,7 +40,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/redispatch/redispatchtest"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
-	rt "github.com/felinics/twilight/agentcore/runtime"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
@@ -292,7 +292,7 @@ func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activ
 			Store: store, Content: content, Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: ledger},
 			Ownership: session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover},
 		},
-		Execution:  rt.ExecutionConfig{Redispatches: &redispatchtest.Map{}, OrphanProbe: 200 * time.Millisecond},
+		Execution:  execution.Config{Redispatches: &redispatchtest.Map{}, OrphanProbe: 200 * time.Millisecond},
 		Inbox:      c.inbox,
 		Workspaces: &app.WorkspaceConfig{Store: c.wsStore, Snapshots: &wshttp.Client{BaseURL: c.backends.Tool}, SnapshotAfterTurn: true},
 		Presets:    []app.Preset{{ID: "ws", Value: preset}},
@@ -301,7 +301,7 @@ func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activ
 	}
 	// The effect port is the deployment's decision: the owner process drives
 	// the model and tool backends through their gateway proxy.
-	appCfg.Execution.Executor = &executorhttp.Client{BaseURL: c.proxyURL}
+	appCfg.Execution.Executor = effect.PortsOf(&executorhttp.Client{BaseURL: c.proxyURL})
 	a, err := app.New(appCfg)
 	if err != nil {
 		c.t.Fatal(err)

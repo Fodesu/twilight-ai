@@ -126,7 +126,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
 		return nil, errors.New("app: open session requires a preset ref")
 	}
-	if _, err := app.Execution.Presets.Resolve(opts.Preset); err != nil {
+	if _, err := app.Execution.Presets().Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
 	if err := app.Kernel.EnsureSession(ctx, sid); err != nil {
@@ -138,7 +138,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	}
 	s := &Session{Recovered: h.Recovered, app: app, h: h, sid: sid, opts: opts}
 	s.rt, err = rt.New(rt.Config{
-		Writer: h.Writer(), Driver: app.Execution.Driver, Turns: app.Kernel.Turns, Chatlog: app.Kernel.Chatlog, Projections: app.Kernel.Projections,
+		Writer: h.Writer(), Engine: app.Execution, Turns: app.Kernel.Turns, Chatlog: app.Kernel.Chatlog, Projections: app.Kernel.Projections,
 		Preset: opts.Preset, NewTurnID: opts.NewTurnID,
 		RouteRetries: opts.RouteRetries, TurnBudget: opts.TurnBudget,
 	})
@@ -314,6 +314,21 @@ func (s *Session) backgroundFailed(ref turn.TurnRef, err error) {
 	s.app.fail(ref.SessionID, fmt.Errorf("app: %w", err))
 }
 
+// wakeAdvance advances the Session from a settlement made outside its own
+// drives -- a reattached Outcome, an answered wait -- in the background, the
+// way SubmitInput advances the Turn an input landed in.
+func (s *Session) wakeAdvance() {
+	s.host.run(func(ctx context.Context) {
+		st, ok, err := s.rt.Resume(ctx)
+		if err != nil {
+			s.backgroundFailed(turn.TurnRef{SessionID: s.sid}, fmt.Errorf("advancing after a settlement: %w", err))
+		}
+		if ok && st.Quiescent {
+			s.quiescentPolicies(ctx)
+		}
+	})
+}
+
 // BindWorkspace binds the Session to the Workspace: from the next tool call
 // on, its workspace-placed tools run there. A Session that inherited the
 // binding from its fork parent makes it its own.
@@ -463,7 +478,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, erro
 		return "", false, err
 	}
 	summary, err := compaction.Summarizer{
-		ResolvePreset: s.app.Execution.Presets.Resolve, Content: s.app.Kernel.Frozen, Executor: s.app.Execution.Executor, Watcher: s.app.Execution.Watcher,
+		ResolvePreset: s.app.Execution.Presets().Resolve, Content: s.app.Kernel.Frozen, Effects: s.app.Execution,
 	}.Summarize(ctx, s.sid, s.opts.Preset, materialized)
 	if err != nil {
 		return "", false, err

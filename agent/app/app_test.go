@@ -7,6 +7,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
 // The product layer assembles over any effect port the deployment root
@@ -20,7 +21,7 @@ func TestNewAcceptsEffectPort(t *testing.T) {
 	cfg := durablePorts(t, app.Config{
 		Presets: []app.Preset{{ID: "default", Value: p}},
 	})
-	cfg.Execution.Executor = &recordingExecutor{reply: "hello from the executor"}
+	cfg.Execution.Executor = effect.PortsOf(&recordingExecutor{reply: "hello from the executor"})
 	a, err := app.New(cfg.Config)
 	if err != nil {
 		t.Fatal(err)

@@ -15,7 +15,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
-	rt "github.com/felinics/twilight/agentcore/runtime"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
@@ -168,7 +168,7 @@ func TestRestartRedispatchesMissingEffect(t *testing.T) {
 	again := &scriptedRequests{}
 	p2 := newHost(t, app.Config{
 		Kernel:    sessionkernel.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}},
-		Execution: rt.ExecutionConfig{MissingEffects: reconcile.RedispatchMissing}},
+		Execution: execution.Config{MissingEffects: reconcile.RedispatchMissing}},
 		map[run.ModelRef]local.ModelInvoker{"m-1": again})
 	if _, err := p2.RegisterPreset("a1", ap); err != nil {
 		t.Fatal(err)
