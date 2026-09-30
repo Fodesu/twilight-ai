@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/workspace"
+	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/inbox"
@@ -23,11 +24,14 @@ import (
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/frozen"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/lifecycle"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
+	"github.com/felinics/twilight/agentcore/turn"
 	"sync"
+	"time"
 )
 
 // Preset is an authority-side decision identity to register during Build.
@@ -36,22 +40,23 @@ type Preset struct {
 	Value preset.AgentPreset
 }
 
-// Config contains the product assembly: the Session kernel, the execution
-// side and the conversation policies. Deployment topology -- which process
-// runs the model and tool backends, whether an execution Worker owns the
-// records here -- is the composition root's choice; the root fills
+// Config contains the product assembly: the Session-side ports, the
+// execution side and the conversation policies. Deployment topology -- which
+// process runs the model and tool backends, whether an execution Worker owns
+// the records here -- is the composition root's choice; the root fills
 // Execution.Executor with the port it decided on and closes whatever it
 // composed around it. The Config deliberately contains concrete ports
 // rather than a file format: YAML, environment variables and command-line
 // flags can be decoded into this type by an outer deployment package later.
 type Config struct {
-	// Kernel is the session kernel's assembly: the Session store, the
-	// content and artifact stores, the module extensions, the projection
-	// cache and the other ports and policies sessionkernel.New composes.
-	Kernel sessionkernel.Ports
+	// Sessions are the Session-side ports: the Session store, the content
+	// and artifact stores, the module extensions, the projection cache and
+	// the other ports and policies the application composes its Session
+	// services from.
+	Sessions SessionPorts
 	// Execution is the execution side's assembly: the effect ports, the
 	// decision catalog, the preset registry, the takeover policy and the
-	// other drive-chain policies the Engine composes over the Kernel. New
+	// other drive-chain policies the Engine composes over the Sessions. New
 	// fills the Planner, the Responders, Fail and Notify.
 	Execution execution.Config
 
@@ -96,16 +101,40 @@ type WorkspaceConfig struct {
 // applications that need to recognize the built-in compaction request.
 const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 
-// Application is the product assembly: the Session kernel, the execution
+// Application is the product assembly: the Session-side services, the execution
 // side over it and the ownership authority -- plus the application's own
 // services, the preset table, the event stream and the spawn effect. The
 // Worker and the other deployment components around the effect port close
 // at the composition root, after this.
 type Application struct {
-	// Owner holds the Sessions this process owns; Kernel is their durable
-	// state and Execution is what advances them.
+	// The Session-side services this application composed; every command
+	// commits through their Writers and every read folds through their
+	// Projections.
+	Store    session.Stores
+	Writers  writer.Writers
+	Registry *module.Registry
+	// Runs is the Run module's Session adapter: the Run core's store bound
+	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
+	Runs *sessionstore.SessionRunStore
+	// Turns commits the Turn protocol and reads Turn status.
+	Turns *turn.Coordinator
+	// Bus is the committed event stream, decoded, in commit order. It
+	// carries facts only; transient observations are not part of it.
+	Bus    *observe.Bus
+	Frozen frozen.Store
+	// Projections reads every projection without ownership.
+	Projections session.ProjectionReader
+	// Content materializes the frozen bodies projections name.
+	Content chatlog.ContentResolver
+	// Chatlog commits the chatlog's own facts.
+	Chatlog *chatlog.Commands
+	// Lifecycle creates, forks and reclaims Sessions over the Store.
+	Lifecycle lifecycle.Lifecycle
+	Clock     func() time.Time
+
+	// Owner holds the Sessions this process owns; Execution is what advances
+	// them.
 	Owner     *owner.Owner
-	Kernel    *sessionkernel.Kernel
 	Execution execution.Engine
 	spawn     *spawn.Responder
 	// warn receives failures of background work.
@@ -164,7 +193,7 @@ func (app *Application) Opened(sid session.SessionID) (*Session, bool) {
 // Lease is the Session's current writer lease, read without ownership
 // (SES-OWN-5): what a gateway routes by and a controller judges expiry by.
 func (app *Application) Lease(ctx context.Context, sid session.SessionID) (session.Lease, bool, error) {
-	return app.Kernel.Store.LeaseOf(ctx, sid)
+	return app.Store.LeaseOf(ctx, sid)
 }
 
 func (app *Application) track(s *Session) {
@@ -193,7 +222,7 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 	if warn == nil {
 		warn = func(error) {}
 	}
-	app := &Application{warn: warn, inbox: c.Inbox, workspaces: c.Workspaces, bindings: workspace.Commands{Now: c.Kernel.Clock},
+	app := &Application{warn: warn, inbox: c.Inbox, workspaces: c.Workspaces, bindings: workspace.Commands{Now: c.Sessions.Clock},
 		refs: make(map[preset.PresetID]preset.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session),
 		activating: make(map[session.SessionID]chan struct{})}
 	app.bg, app.bgCancel = context.WithCancel(context.Background())
@@ -226,7 +255,7 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 		if c.Workspaces.Store == nil {
 			return nil, errors.New("app: Workspaces requires a workspace Store")
 		}
-		c.Kernel.Modules = append([]module.ModuleDescriptor{workspace.Module}, c.Kernel.Modules...)
+		c.Sessions.Modules = append([]module.ModuleDescriptor{workspace.Module}, c.Sessions.Modules...)
 		if c.Execution.TargetResolver == nil {
 			resolver = &workspace.Resolver{}
 			c.Execution.TargetResolver = resolver
@@ -242,11 +271,9 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 	if c.Execution.Decisions == nil {
 		c.Execution.Decisions = prompt.DefaultCatalog()
 	}
-	kernel, err := sessionkernel.New(c.Kernel)
-	if err != nil {
+	if err := app.composeSessions(c.Sessions); err != nil {
 		return nil, err
 	}
-	app.Kernel = kernel
 	// The subagent tool waits for an external response the Responder gives
 	// (SPN-1); the Responder opens children through this application, which
 	// it is bound to below, before any Respond can run.
@@ -263,15 +290,15 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 	c.Execution.Fail = app.fail
 	c.Execution.Notify = app.wakeAdvance
 	exec, err := execution.New(c.Execution, execution.Sources{
-		Runs: kernel.Runs, Projections: kernel.Projections, Content: kernel.Content,
+		Runs: app.Runs, Projections: app.Projections, Content: app.Content,
 	})
 	if err != nil {
 		return nil, err
 	}
 	app.Execution = exec
-	app.Owner = owner.New(kernel.Writers)
+	app.Owner = owner.New(app.Writers)
 	if resolver != nil {
-		resolver.Projections = kernel.Projections
+		resolver.Projections = app.Projections
 	}
 	if app.spawn != nil {
 		app.spawn.Bind(children{app})
@@ -294,7 +321,7 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 }
 
 // rollback releases what a failed New created, in reverse order of
-// creation: the execution side and the Kernel (its Writers). Nothing was
+// creation: the execution side and the Writers. Nothing was
 // opened yet, so there is no ownership to release; the effect port and
 // whatever the root composed around it are the root's to release.
 func (app *Application) rollback() {
@@ -302,9 +329,7 @@ func (app *Application) rollback() {
 	if app.Execution != nil {
 		app.Execution.Close()
 	}
-	if app.Kernel != nil {
-		_ = app.Kernel.Close(context.Background())
-	}
+	_ = app.closeSessions(context.Background())
 }
 
 // fail reports a failure of the application's own background work (a
@@ -349,11 +374,11 @@ func (app *Application) PresetRef(id preset.PresetID) (preset.PresetRef, error) 
 }
 
 // Events subscribes to one Session's observation stream from this moment
-// on (OBS-1): the Kernel's committed stream merged with the Execution's
+// on (OBS-1): the committed stream merged with the Execution's
 // transient progress and failures. Committed events keep their commit
 // order; transient items may interleave and may be lost.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
-	return mergeEvents(ctx, app.Kernel.Bus.Subscribe(ctx, sid), app.Execution.Progress().Subscribe(ctx, sid))
+	return mergeEvents(ctx, app.Bus.Subscribe(ctx, sid), app.Execution.Progress().Subscribe(ctx, sid))
 }
 
 // EventsFrom is the catch-up form of Events: the Session's committed events
@@ -361,7 +386,7 @@ func (app *Application) Events(ctx context.Context, sid session.SessionID) <-cha
 // from now on. A client that keeps the last Position it handled resumes
 // here after a disconnect without a gap.
 func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, from ledger.CommitSeq) (<-chan Event, error) {
-	committed, err := app.Kernel.Bus.SubscribeFrom(ctx, sid, from)
+	committed, err := app.Bus.SubscribeFrom(ctx, sid, from)
 	if err != nil {
 		return nil, err
 	}
@@ -440,10 +465,8 @@ func (app *Application) Close(ctx context.Context) error {
 	if app.Execution != nil {
 		app.Execution.Close()
 	}
-	if app.Kernel != nil {
-		if cerr := app.Kernel.Close(ctx); cerr != nil && err == nil {
-			err = cerr
-		}
+	if cerr := app.closeSessions(ctx); cerr != nil && err == nil {
+		err = cerr
 	}
 	return err
 }

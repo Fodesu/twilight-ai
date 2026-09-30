@@ -17,7 +17,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"net/http/httptest"
@@ -61,10 +60,10 @@ func newOwner(t *testing.T) (*app.Application, *ownerhttp.Client) {
 	}
 	a, err := localagent.Compose(localagent.Config{
 		Config: app.Config{
-			Kernel: sessionkernel.Ports{
+			Sessions: app.SessionPorts{
 				Store:     filestoretest.Store(t),
 				Content:   filestoretest.Content(t, sessionstore.FrozenAuthority),
-				Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: ledger},
+				Artifacts: app.Artifacts{Bindings: bindings, Ledger: ledger},
 				Ownership: session.OpenOptions{Owner: "owner-a", LeaseDuration: time.Minute},
 			},
 			Inbox:      &inboxtest.Map{},

@@ -13,7 +13,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -69,7 +68,7 @@ func (echoTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.
 func TestCompactionRunsBetweenStepsOfATurn(t *testing.T) {
 	ctx := context.Background()
 	model := &stepModel{answers: []sdk.ModelResult{toolCallAnswer(), toolCallAnswer()}}
-	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Store: filestoretest.Store(t), Content: durableContent(t), Ownership: session.OpenOptions{Takeover: true}}},
+	h := newHost(t, app.Config{Sessions: app.SessionPorts{Store: filestoretest.Store(t), Content: durableContent(t), Ownership: session.OpenOptions{Takeover: true}}},
 		map[run.ModelRef]local.ModelInvoker{"m-1": model}, echoTool{})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{echoTool{}}))
 	if err != nil {
@@ -97,7 +96,7 @@ func TestCompactionRunsBetweenStepsOfATurn(t *testing.T) {
 			t.Fatalf("request %d messages = %v, want summary then a closed tool pair", i+2, texts)
 		}
 	}
-	surface, err := chatlog.ReadSurface(ctx, h.Kernel.Projections, "s-steps")
+	surface, err := chatlog.ReadSurface(ctx, h.Projections, "s-steps")
 	if err != nil {
 		t.Fatal(err)
 	}

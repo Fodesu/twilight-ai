@@ -15,7 +15,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -158,13 +157,13 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	ctx := context.Background()
 	exec := &recordingExecutor{reply: "hello from the executor"}
 	content := durableContent(t)
-	cfg := durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Content: content}})
+	cfg := durablePorts(t, app.Config{Sessions: app.SessionPorts{Content: content}})
 	cfg.Port = exec
 	h, err := localagent.Compose(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fz := h.Kernel.Frozen
+	fz := h.Frozen
 	presetRef, err := h.RegisterPreset("remote", mustPreset("m-remote", nil, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)

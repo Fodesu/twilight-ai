@@ -15,7 +15,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 )
 
 // A Compose that fails after the Worker exists releases it: the Worker's
@@ -30,10 +29,10 @@ func TestComposeRollsBackOnFailure(t *testing.T) {
 	db := sqlitetest.Open(t)
 	cfg := localagent.Config{
 		Config: app.Config{
-			Kernel: sessionkernel.Ports{
+			Sessions: app.SessionPorts{
 				Store:     filestoretest.Store(t),
 				Content:   filestoretest.Content(t, sessionstore.FrozenAuthority),
-				Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: ledger},
+				Artifacts: app.Artifacts{Bindings: bindings, Ledger: ledger},
 			},
 			Execution: execution.Config{Redispatches: db.Redispatches()},
 			Presets:   []app.Preset{{ID: "", Value: p}},

@@ -18,7 +18,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -62,7 +61,7 @@ func messageTexts(req sdk.Request) []string {
 // a restart shares both, since the ledger names the frozen bodies by digest.
 func openCompactSession(t *testing.T, store session.Stores, content artifact.ContentStore, model *compactAwareModel, opts app.SessionOptions) (*localagent.Agent, *app.Session) {
 	t.Helper()
-	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+	h := newHost(t, app.Config{Sessions: app.SessionPorts{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +214,7 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content,
+	cfg := durablePorts(t, app.Config{Sessions: app.SessionPorts{Store: store, Content: content,
 		Ownership: session.OpenOptions{Takeover: true}}})
 	cfg.Port = worker
 	cfg.Executions = records

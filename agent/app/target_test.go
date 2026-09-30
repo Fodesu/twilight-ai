@@ -12,7 +12,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -162,7 +161,7 @@ func TestForkChildTargetIsApplicationPolicy(t *testing.T) {
 	done := sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer(), done, toolCallAnswer(), done, toolCallAnswer(), done}}
 	h := newHost(t, app.Config{
-		Kernel:    sessionkernel.Ports{Store: filestoretest.Store(t)},
+		Sessions:  app.SessionPorts{Store: filestoretest.Store(t)},
 		Execution: execution.Config{TargetResolver: resolver}},
 		map[run.ModelRef]local.ModelInvoker{"m-1": model}, tool)
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{tool}))

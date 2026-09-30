@@ -8,7 +8,6 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"sync"
 	"testing"
 )
@@ -56,7 +55,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cache := newCountingCache()
-			h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Cache: cache, CacheEvery: tc.every}}, nil)
+			h := newHost(t, app.Config{Sessions: app.SessionPorts{Cache: cache, CacheEvery: tc.every}}, nil)
 			const sid session.SessionID = "s-interval"
 			if err := h.EnsureSession(ctx, sid); err != nil {
 				t.Fatal(err)
@@ -65,7 +64,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.Kernel.Chatlog.Submit(ctx, owned.Handle.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+			if _, err := h.Chatlog.Submit(ctx, owned.Handle.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 				t.Fatal(err)
 			}
 			if got := cache.count() > 0; got != tc.wantBefore {
@@ -90,7 +89,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	ctx := context.Background()
 	cache := newCountingCache()
-	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Cache: cache, CacheEvery: 1}}, nil)
+	h := newHost(t, app.Config{Sessions: app.SessionPorts{Cache: cache, CacheEvery: 1}}, nil)
 	const sid session.SessionID = "s-machine"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
@@ -99,7 +98,7 @@ func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Kernel.Chatlog.Submit(ctx, owned.Handle.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+	if _, err := h.Chatlog.Submit(ctx, owned.Handle.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Close(ctx); err != nil {

@@ -22,13 +22,13 @@ import (
 
 // Fork creates a child session from a parent's ledger prefix (OWN-FRK-1).
 func (app *Application) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
-	return app.Kernel.Lifecycle.Fork(ctx, req)
+	return app.Lifecycle.Fork(ctx, req)
 }
 
 // ForkBeforeTurn forks a session at the commit before the named turn started
 // (OWN-FRK-2), so the turn's inputs can be regenerated or edited in the child.
 func (app *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
-	return app.Kernel.Lifecycle.ForkBeforeTurn(ctx, parent, turnID, child)
+	return app.Lifecycle.ForkBeforeTurn(ctx, parent, turnID, child)
 }
 
 // DeleteSession tombstones a session and reclaims along its path (OWN-FRK-3).
@@ -50,47 +50,44 @@ func (app *Application) DeleteSession(ctx context.Context, sid session.SessionID
 	if err := owned.Close(ctx); err != nil {
 		return err
 	}
-	return app.Kernel.Lifecycle.Delete(ctx, sid)
+	return app.Lifecycle.Delete(ctx, sid)
 }
 
 // Collect reclaims segments no live path still names, and truncates the rest to the greatest remaining span (SES-GC-2).
 func (app *Application) Collect(ctx context.Context) (session.CollectReport, error) {
-	return app.Kernel.Lifecycle.Collect(ctx)
+	return app.Lifecycle.Collect(ctx)
 }
 
 // ChatlogSurface reads the chatlog surface of a Session.
 func (app *Application) ChatlogSurface(ctx context.Context, sid session.SessionID) (chatlog.Surface, error) {
-	return chatlog.ReadSurface(ctx, app.Kernel.Projections, sid)
+	return chatlog.ReadSurface(ctx, app.Projections, sid)
 }
 
 // TurnSurface reads the turn surface of a Session.
 func (app *Application) TurnSurface(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error) {
-	return turn.ReadSurface(ctx, app.Kernel.Projections, sid)
+	return turn.ReadSurface(ctx, app.Projections, sid)
 }
 
 // Projection reads any registered projection of a Session (APP-MEM-1).
 func (app *Application) Projection(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
-	return app.Kernel.Projection(ctx, sid, id, v)
+	return app.Projections.Load(ctx, sid, id, v)
 }
-
-// Content materializes the frozen bodies projections name (CHT-MAT-1).
-func (app *Application) Content() chatlog.ContentResolver { return app.Kernel.Content }
 
 // CreateSession creates the Session.
 func (app *Application) CreateSession(ctx context.Context, sid session.SessionID) error {
-	return app.Kernel.Lifecycle.Create(ctx, sid, nil)
+	return app.Lifecycle.Create(ctx, sid, nil)
 }
 
 // EnsureSession creates the stream when it does not exist yet.
 func (app *Application) EnsureSession(ctx context.Context, sid session.SessionID) error {
-	return app.Kernel.Lifecycle.Ensure(ctx, sid)
+	return app.Lifecycle.Ensure(ctx, sid)
 }
 
 // Reply is the settled Turn's last assistant text (CHT-MAT-1): the
 // conversation's reply, empty when the Turn produced none. That a reply is
 // the last assistant text is this agent's convention, not a kernel fact.
 func (app *Application) Reply(ctx context.Context, ref turn.TurnRef) (string, error) {
-	return chatlog.LastAssistantText(ctx, app.Kernel.Projections, app.Kernel.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
+	return chatlog.LastAssistantText(ctx, app.Projections, app.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
 }
 
 // --- workspaces ---------------------------------------------------------------------
@@ -118,7 +115,7 @@ func (app *Application) Workspace(ctx context.Context, sid session.SessionID) (w
 	if app.workspaces == nil {
 		return workspace.Binding{}, ErrNoWorkspaces
 	}
-	return workspace.Read(ctx, app.Kernel.Projections, sid)
+	return workspace.Read(ctx, app.Projections, sid)
 }
 
 // --- presets ------------------------------------------------------------------------

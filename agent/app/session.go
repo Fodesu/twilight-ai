@@ -128,7 +128,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if _, err := app.Execution.Presets().Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
-	if err := app.Kernel.Lifecycle.Ensure(ctx, sid); err != nil {
+	if err := app.Lifecycle.Ensure(ctx, sid); err != nil {
 		return nil, err
 	}
 	return app.openOwned(ctx, sid, opts)
@@ -146,7 +146,7 @@ func (app *Application) openOwned(ctx context.Context, sid session.SessionID, op
 	h := owned.Handle
 	s := &Session{Recovered: owned.Recovered, app: app, h: h, sid: sid, opts: opts}
 	s.rt, err = rt.New(rt.Config{
-		Writer: h.Writer(), Engine: app.Execution, Turns: app.Kernel.Turns, Chatlog: app.Kernel.Chatlog, Projections: app.Kernel.Projections,
+		Writer: h.Writer(), Engine: app.Execution, Turns: app.Turns, Chatlog: app.Chatlog, Projections: app.Projections,
 		Preset: opts.Preset, NewTurnID: opts.NewTurnID,
 		RouteRetries: opts.RouteRetries, TurnBudget: opts.TurnBudget,
 	})
@@ -195,7 +195,7 @@ func (s *Session) Wait(ctx context.Context) error { return s.host.wait(ctx) }
 
 // Status reports the active Turn and the Turns awaiting Retry or Settle.
 func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
-	surface, err := turn.ReadSurface(ctx, s.app.Kernel.Projections, s.sid)
+	surface, err := turn.ReadSurface(ctx, s.app.Projections, s.sid)
 	if err != nil {
 		return SessionStatus{}, err
 	}
@@ -484,17 +484,17 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, erro
 	if withinWindow {
 		return "", false, nil
 	}
-	materialized, err := chatlog.NewMaterializer(s.app.Kernel.Content).Entries(ctx, cctx.Entries)
+	materialized, err := chatlog.NewMaterializer(s.app.Content).Entries(ctx, cctx.Entries)
 	if err != nil {
 		return "", false, err
 	}
 	summary, err := compaction.Summarizer{
-		ResolvePreset: s.app.Execution.Presets().Resolve, Content: s.app.Kernel.Frozen, Effects: s.app.Execution,
+		ResolvePreset: s.app.Execution.Presets().Resolve, Content: s.app.Frozen, Effects: s.app.Execution,
 	}.Summarize(ctx, s.sid, s.opts.Preset, materialized)
 	if err != nil {
 		return "", false, err
 	}
-	id, err := s.app.Kernel.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, turn.RequireQuiescentRun)
+	id, err := s.app.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, turn.RequireQuiescentRun)
 	if err != nil {
 		return "", false, err
 	}

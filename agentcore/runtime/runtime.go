@@ -2,7 +2,7 @@
 // SessionRuntime admits inputs into Turns and advances the Session to its
 // next quiescent point through the Engine it is given. The Turn protocol
 // itself -- the Coordinator, the quiescence guards, the request and result
-// vocabulary -- is the session kernel's; this package re-exports that
+// vocabulary -- is the Turn module's; this package re-exports that
 // vocabulary for the hosts. Every call runs on the caller's goroutine and
 // ctx; which calls run in the background, what a reply is and which
 // policies run at quiescence are the host's decisions, taken on the
@@ -24,7 +24,7 @@ import (
 )
 
 // Turns is the Turn protocol the runtime routes inputs into and reads
-// status back from: the session kernel's Commands and Reader.
+// status back from: the Turn module's Commands and Reader.
 type Turns interface {
 	turn.Commands
 	turn.Reader

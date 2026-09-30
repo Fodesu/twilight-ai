@@ -11,7 +11,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"strings"
 	"testing"
@@ -74,7 +73,7 @@ var auditModule = module.ModuleDescriptor{
 // EXT-PRJ-2).
 func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	ctx := context.Background()
-	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Modules: []module.ModuleDescriptor{auditModule}}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
+	h := newHost(t, app.Config{Sessions: app.SessionPorts{Modules: []module.ModuleDescriptor{auditModule}}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
 	const sid session.SessionID = "s-app"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
@@ -89,7 +88,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := owned.Handle.Writer()
-	in, err := h.Kernel.Chatlog.Submit(ctx, w, "in-1", agentinput.Text("hello"))
+	in, err := h.Chatlog.Submit(ctx, w, "in-1", agentinput.Text("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +102,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
-	if _, err := h.Kernel.Turns.Start(ctx, w, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
+	if _, err := h.Turns.Start(ctx, w, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
 		Inputs: []run.AgentInput{in}, Preset: preset}); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +137,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	}
 
 	// Both sources coexist in one commit ledger.
-	page, err := h.Kernel.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
+	page, err := h.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
 	if err != nil {
 		t.Fatal(err)
 	}

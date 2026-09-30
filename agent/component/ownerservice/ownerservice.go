@@ -26,7 +26,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 )
 
 // Config is the owner service's document.
@@ -154,10 +153,10 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 	// The owner process drives effects through the worker's port and holds
 	// no Worker of its own: execution records live where the effects run.
 	appCfg := app.Config{
-		Kernel: sessionkernel.Ports{
+		Sessions: app.SessionPorts{
 			Store:     store,
 			Content:   content,
-			Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
+			Artifacts: app.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
 			Ownership: session.OpenOptions{Owner: id, LeaseDuration: cfg.Lease.Std(), Takeover: cfg.Takeover},
 		},
 		Execution:  execution.Config{Redispatches: db.Redispatches()},

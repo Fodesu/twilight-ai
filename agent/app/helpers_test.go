@@ -3,7 +3,6 @@ package app_test
 import (
 	"context"
 	"errors"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"strings"
 	"sync"
 	"testing"
@@ -61,14 +60,14 @@ func newLocalHost(t testing.TB, cfg localagent.Config, models map[run.ModelRef]l
 // the models and the execution record store).
 func durablePorts(t testing.TB, cfg app.Config) localagent.Config {
 	t.Helper()
-	if cfg.Kernel.Store == nil {
-		cfg.Kernel.Store = filestoretest.Store(t)
+	if cfg.Sessions.Store == nil {
+		cfg.Sessions.Store = filestoretest.Store(t)
 	}
-	if cfg.Kernel.Content == nil {
-		cfg.Kernel.Content = durableContent(t)
+	if cfg.Sessions.Content == nil {
+		cfg.Sessions.Content = durableContent(t)
 	}
-	if cfg.Kernel.Artifacts.Bindings == nil {
-		cfg.Kernel.Artifacts.Bindings, cfg.Kernel.Artifacts.Ledger = sqlitetest.Artifacts(t)
+	if cfg.Sessions.Artifacts.Bindings == nil {
+		cfg.Sessions.Artifacts.Bindings, cfg.Sessions.Artifacts.Ledger = sqlitetest.Artifacts(t)
 	}
 	if cfg.Execution.Redispatches == nil {
 		cfg.Execution.Redispatches = sqlitetest.Open(t).Redispatches()
@@ -79,7 +78,7 @@ func durablePorts(t testing.TB, cfg app.Config) localagent.Config {
 // runState reads a Run's committed state by SessionID: the lease-free read
 // (OWN-HDL-2), so a test observes without owning.
 func runState(a *localagent.Agent, sid session.SessionID, runID run.RunID) (store.Snapshot, error) {
-	record, err := a.Kernel.Runs.Record(context.Background(), sid, runID)
+	record, err := a.Runs.Record(context.Background(), sid, runID)
 	if err != nil {
 		return store.Snapshot{}, err
 	}
@@ -110,8 +109,8 @@ func exampleStores(root, worker string) localagent.Config {
 		panic(err)
 	}
 	bindings := artifacts.Bindings()
-	return localagent.Config{Config: app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content,
-		Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}}},
+	return localagent.Config{Config: app.Config{Sessions: app.SessionPorts{Store: store, Content: content,
+		Artifacts: app.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}}},
 		Executions: records.Executions()}
 }
 

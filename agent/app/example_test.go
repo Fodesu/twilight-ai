@@ -51,7 +51,7 @@ func Example_recoverableTurn() {
 
 	// ---- process 1 ----------------------------------------------------------
 	cfg1 := exampleStores(root, "process-1")
-	cfg1.Kernel.Clock = clock.Now
+	cfg1.Sessions.Clock = clock.Now
 	p1 := buildHost(cfg1, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	if err := p1.CreateSession(ctx, sid); err != nil {
 		panic(err)
@@ -64,14 +64,14 @@ func Example_recoverableTurn() {
 	if err != nil {
 		panic(err)
 	}
-	input, err := p1.Kernel.Chatlog.Submit(ctx, owned1.Handle.Writer(), "in-1", agentinput.Text("what is the weather?"))
+	input, err := p1.Chatlog.Submit(ctx, owned1.Handle.Writer(), "in-1", agentinput.Text("what is the weather?"))
 	if err != nil {
 		panic(err)
 	}
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "turn-1"}
 	startDone := make(chan error, 1)
 	go func() {
-		_, err := p1.Kernel.Turns.Start(ctx, owned1.Handle.Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
+		_, err := p1.Turns.Start(ctx, owned1.Handle.Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
 			Preset: profile1})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).
@@ -84,7 +84,7 @@ func Example_recoverableTurn() {
 
 	// ---- process 2 ----------------------------------------------------------
 	cfg2 := exampleStores(root, "process-2")
-	cfg2.Kernel.Ownership, cfg2.Kernel.Clock = session.OpenOptions{Takeover: true}, clock.Now
+	cfg2.Sessions.Ownership, cfg2.Sessions.Clock = session.OpenOptions{Takeover: true}, clock.Now
 	p2 := buildHost(cfg2, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	// The preset is re-registered from the same public configuration, so the
 	// ref the Session recorded still resolves.
@@ -104,13 +104,13 @@ func Example_recoverableTurn() {
 	if _, err := p2.Execution.Drive(ctx, owned.Handle.Writer(), ref1.TurnID); err != nil {
 		panic(err)
 	}
-	resp, err := p2.Kernel.Turns.Status(ctx, ref1)
+	resp, err := p2.Turns.Status(ctx, ref1)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("process 2: turn %s, disposition %s\n", resp.Status, resp.Disposition)
 
-	record, err := p2.Kernel.Runs.Record(ctx, sid, runID)
+	record, err := p2.Runs.Record(ctx, sid, runID)
 	if err != nil {
 		panic(err)
 	}
@@ -122,7 +122,7 @@ func Example_recoverableTurn() {
 	close(tool.block)
 	err = <-startDone
 	fmt.Printf("process 1: %v\n", errorsIsOwnershipLost(err))
-	after, _ := p2.Kernel.Runs.Record(ctx, sid, runID)
+	after, _ := p2.Runs.Record(ctx, sid, runID)
 	fmt.Printf("stream unchanged by the fenced worker: %v\n", len(after.Facts) == len(record.Facts))
 
 	// Output:

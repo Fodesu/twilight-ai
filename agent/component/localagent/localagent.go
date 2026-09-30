@@ -21,7 +21,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
-// Config composes the local agent: the product assembly (Kernel, Execution
+// Config composes the local agent: the product assembly (Sessions, Execution
 // policies, presets, inbox, activation, workspaces) plus this deployment's
 // choices -- the effect implementation, the Worker over it and the sandbox
 // backend.

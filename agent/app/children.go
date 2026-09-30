@@ -27,19 +27,19 @@ func (c children) Open(ctx context.Context, sid session.SessionID, pref preset.P
 }
 
 func (c children) Create(ctx context.Context, sid session.SessionID, ext module.Extensions) error {
-	return c.app.Kernel.Lifecycle.Create(ctx, sid, ext)
+	return c.app.Lifecycle.Create(ctx, sid, ext)
 }
 
 // ForkBeforeInputs forks parent at the last commit before turnID and its
 // inputs: the conversation as it stood before that Turn was asked, under
 // the same quiescence guard every fork passes.
 func (c children) ForkBeforeInputs(ctx context.Context, parent session.SessionID, turnID turn.TurnID, sid session.SessionID, ext module.Extensions) error {
-	_, err := c.app.Kernel.Lifecycle.ForkBeforeInputs(ctx, parent, turnID, sid, ext)
+	_, err := c.app.Lifecycle.ForkBeforeInputs(ctx, parent, turnID, sid, ext)
 	return err
 }
 
 func (c children) Header(ctx context.Context, sid session.SessionID) (session.SegmentHeader, error) {
-	return c.app.Kernel.Store.Header(ctx, sid)
+	return c.app.Store.Header(ctx, sid)
 }
 
 func (c children) TurnSurface(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error) {
@@ -49,7 +49,7 @@ func (c children) TurnSurface(ctx context.Context, sid session.SessionID) (turn.
 // AwaitingRecovery reads the Turn's disposition: waiting_for_recovery is a
 // Run with an execution in flight that no process here drives.
 func (c children) AwaitingRecovery(ctx context.Context, ref turn.TurnRef) (bool, error) {
-	res, err := c.app.Kernel.Turns.Status(ctx, ref)
+	res, err := c.app.Turns.Status(ctx, ref)
 	if err != nil {
 		return false, err
 	}

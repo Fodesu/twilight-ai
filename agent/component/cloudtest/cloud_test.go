@@ -43,7 +43,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -288,8 +287,8 @@ func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activ
 		c.t.Fatal(err)
 	}
 	appCfg := app.Config{
-		Kernel: sessionkernel.Ports{
-			Store: store, Content: content, Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: ledger},
+		Sessions: app.SessionPorts{
+			Store: store, Content: content, Artifacts: app.Artifacts{Bindings: bindings, Ledger: ledger},
 			Ownership: session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover},
 		},
 		Execution:  execution.Config{Redispatches: &redispatchtest.Map{}, OrphanProbe: 200 * time.Millisecond},
@@ -346,7 +345,7 @@ func (c *cluster) modelEffectKey(comp *ownerservice.Component, sid session.Sessi
 		if view.RunID == "" {
 			return false
 		}
-		rec, err := comp.App.Kernel.Runs.Record(c.ctx, sid, view.RunID)
+		rec, err := comp.App.Runs.Record(c.ctx, sid, view.RunID)
 		if err != nil {
 			return false
 		}

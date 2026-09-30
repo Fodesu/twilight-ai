@@ -21,7 +21,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -52,7 +51,7 @@ func spawnOutput(t *testing.T, h *localagent.Agent, sid session.SessionID) (spaw
 		}
 		tr, _ := chat.ToolResults.Get(chatlog.ToolResultID(e.ID))
 		entry := chatlog.Entry{Kind: chatlog.EntryToolResult, ID: e.ID, Digest: tr.Digest, ToolResult: &tr}
-		m, err := chatlog.NewMaterializer(h.Content()).Entry(ctx, &entry)
+		m, err := chatlog.NewMaterializer(h.Content).Entry(ctx, &entry)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +81,7 @@ func TestSpawnRunsChildSessionAndReturnsReply(t *testing.T) {
 		text("parent done"),
 	}}
 	store, content := filestoretest.Store(t), durableContent(t)
-	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content}, Spawn: &spawn.Options{}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+	h := newHost(t, app.Config{Sessions: app.SessionPorts{Store: store, Content: content}, Spawn: &spawn.Options{}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	pref, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +183,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg := durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: takeover}}, Spawn: &spawn.Options{}})
+		cfg := durablePorts(t, app.Config{Sessions: app.SessionPorts{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: takeover}}, Spawn: &spawn.Options{}})
 		// The child's own model execution belongs to process 1's Worker; process
 		// 2's clock runs an hour ahead so that record reads as orphaned, and
 		// RecoverInterrupted asks process 2's Worker (effect.Recoverer) to
@@ -288,7 +287,7 @@ func TestSpawnValidation(t *testing.T) {
 			model := &scriptedRequests{answers: []sdk.ModelResult{spawnCall(tc.args), text("recovered")}}
 			store := filestoretest.Store(t)
 			opts := spawn.Options{MaxDepth: tc.maxDepth}
-			h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: durableContent(t)}, Spawn: &opts}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+			h := newHost(t, app.Config{Sessions: app.SessionPorts{Store: store, Content: durableContent(t)}, Spawn: &opts}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 			pref, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{opts.ExecutableTool()}))
 			if err != nil {
 				t.Fatal(err)

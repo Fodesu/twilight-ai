@@ -14,7 +14,6 @@ import (
 	runstore "github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -33,7 +32,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 		{Text: "edited answer", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}},
 	}}
 	store, content := filestoretest.Store(t), durableContent(t)
-	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+	h := newHost(t, app.Config{Sessions: app.SessionPorts{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +64,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentHeader, _ := h.Kernel.Store.Header(ctx, "parent")
+	parentHeader, _ := h.Store.Header(ctx, "parent")
 	if header.Parent == nil || header.Parent.Segment != parentHeader.ID {
 		t.Fatalf("fork header = %+v, want an edge to the parent's segment", header)
 	}
@@ -101,10 +100,10 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	edit := open("edit", "e")
 	chat, _ = h.ChatlogSurface(ctx, "edit")
 	pending := chat.SubmittedInputs()
-	if err := h.Kernel.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err != nil {
+	if err := h.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Kernel.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err == nil {
+	if err := h.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err == nil {
 		t.Fatal("withdrawing a withdrawn input succeeded")
 	}
 	results, err = edit.Send(ctx, "how is the weather")
@@ -138,18 +137,18 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	// The children inherited the conversation, not the parent's execution:
 	// the parent's Runs are unknown to a child (SES-FRK-5), while the
 	// parent's own turn surface still settles them.
-	parentTurns, err := turn.ReadSurface(ctx, h.Kernel.Projections, "parent")
+	parentTurns, err := turn.ReadSurface(ctx, h.Projections, "parent")
 	if err != nil || parentTurns.Turns["p1"].End == nil {
 		t.Fatalf("parent turns = %+v %v", parentTurns.Turns, err)
 	}
 	p1Run := parentTurns.Turns["p1"].RunID
-	if _, err := h.Kernel.Runs.Record(ctx, "parent", p1Run); err != nil {
+	if _, err := h.Runs.Record(ctx, "parent", p1Run); err != nil {
 		t.Fatalf("parent record of its own run: %v", err)
 	}
-	if _, err := h.Kernel.Runs.Record(ctx, "regen", p1Run); !errors.Is(err, runstore.ErrRunNotFound) {
+	if _, err := h.Runs.Record(ctx, "regen", p1Run); !errors.Is(err, runstore.ErrRunNotFound) {
 		t.Fatalf("child record of the parent's run = %v, want ErrRunNotFound", err)
 	}
-	childTurns, err := turn.ReadSurface(ctx, h.Kernel.Projections, "regen")
+	childTurns, err := turn.ReadSurface(ctx, h.Projections, "regen")
 	if err != nil || childTurns.Turns["p1"].Status != turn.TurnCompleted {
 		t.Fatalf("child view of the inherited turn = %+v %v, want completed", childTurns.Turns["p1"], err)
 	}
@@ -174,7 +173,7 @@ func lastReply(t *testing.T, h *localagent.Agent, sid session.SessionID) string 
 	entries := state.(chatlog.Context).Entries
 	for i := len(entries) - 1; i >= 0; i-- {
 		if entries[i].Kind == chatlog.EntryAssistant {
-			m, err := chatlog.NewMaterializer(h.Content()).Entry(context.Background(), &entries[i])
+			m, err := chatlog.NewMaterializer(h.Content).Entry(context.Background(), &entries[i])
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -192,7 +191,7 @@ func TestForkInsideActiveTurnIsRefused(t *testing.T) {
 	const sid session.SessionID = "s-fork-active"
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
 	store := filestoretest.Store(t)
-	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Store: store}}, map[run.ModelRef]local.ModelInvoker{"m-1": gate})
+	h := newHost(t, app.Config{Sessions: app.SessionPorts{Store: store}}, map[run.ModelRef]local.ModelInvoker{"m-1": gate})
 	presetRef, err := h.RegisterPreset("a1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)

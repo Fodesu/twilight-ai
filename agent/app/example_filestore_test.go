@@ -49,7 +49,7 @@ func Example_jsonlPrototype() {
 	// ---- process 1 ----------------------------------------------------------
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
 	cfg1 := exampleStores(root, "process-1")
-	cfg1.Kernel.Clock = clock.Now
+	cfg1.Sessions.Clock = clock.Now
 	p1 := buildHost(cfg1, map[run.ModelRef]local.ModelInvoker{"m-1": model1}, tool)
 	profile1, err := p1.RegisterPreset("jsonl-agent", preset)
 	if err != nil {
@@ -87,7 +87,7 @@ func Example_jsonlPrototype() {
 	fmt.Printf("steer: in-2 %s to turn-1 while its tool call executes\n", steered.Status)
 
 	// Queue: in-3 is only submitted; nothing delivers it into the running Turn.
-	if _, err := p1.Kernel.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", agentinput.Text("book a table")); err != nil {
+	if _, err := p1.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", agentinput.Text("book a table")); err != nil {
 		panic(err)
 	}
 	chat, _ = p1.ChatlogSurface(ctx, sid)
@@ -114,8 +114,8 @@ func Example_jsonlPrototype() {
 
 	// ---- process 2: new store instances over the same directory --------------
 	cfg2 := exampleStores(root, "process-2")
-	cfg2.Kernel.Ownership, cfg2.Kernel.Clock = session.OpenOptions{Takeover: true}, clock.Now
-	store2, ok := cfg2.Kernel.Store.(*filestore.Store)
+	cfg2.Sessions.Ownership, cfg2.Sessions.Clock = session.OpenOptions{Takeover: true}, clock.Now
+	store2, ok := cfg2.Sessions.Store.(*filestore.Store)
 	if !ok {
 		panic("example stores are file-backed")
 	}
@@ -132,7 +132,7 @@ func Example_jsonlPrototype() {
 	if _, err := p2.Execution.Drive(ctx, owned.Handle.Writer(), "turn-2"); err != nil {
 		panic(err)
 	}
-	resp2, err := p2.Kernel.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
+	resp2, err := p2.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
 	if err != nil {
 		panic(err)
 	}
