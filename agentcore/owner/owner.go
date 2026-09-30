@@ -2,8 +2,8 @@
 // holds: Open acquires a Session's Writer, runs the takeover disposition
 // and hands out the Handle every command runs through; one generation of
 // ownership exists at a time, and Close releases it. The services a Handle
-// is driven with are the Core's; this package adds nothing but the
-// ownership table.
+// is driven with are the Kernel's and the Execution's; this package adds
+// nothing but the ownership table.
 package owner
 
 import (
@@ -12,9 +12,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/felinics/twilight/agentcore/core"
+	"github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 )
 
 // ErrSessionOpen reports an Open of a Session this Owner already holds, or
@@ -35,17 +36,19 @@ type openSession struct {
 	w     writer.Writer
 }
 
-// Owner holds the Sessions this process owns over one Core.
+// Owner holds the Sessions this process owns: the Kernel keeps their
+// durable state, the Execution advances them.
 type Owner struct {
-	Core *core.Core
+	Kernel    *sessionkernel.Kernel
+	Execution *runtime.Execution
 
 	mu   sync.Mutex
 	open map[session.SessionID]*openSession
 }
 
-// New returns an Owner over c with no Session open.
-func New(c *core.Core) *Owner {
-	return &Owner{Core: c, open: make(map[session.SessionID]*openSession)}
+// New returns an Owner over k and x with no Session open.
+func New(k *sessionkernel.Kernel, x *runtime.Execution) *Owner {
+	return &Owner{Kernel: k, Execution: x, open: make(map[session.SessionID]*openSession)}
 }
 
 // Handle is the ownership capability of one open generation: its Writer is
@@ -69,20 +72,20 @@ func (a *Owner) Open(ctx context.Context, sid session.SessionID) (*Handle, error
 	}
 	a.open[sid] = gen
 	a.mu.Unlock()
-	w, err := a.Core.Writers.Writer(ctx, sid)
+	w, err := a.Kernel.Writers.Writer(ctx, sid)
 	if err != nil {
 		_ = a.release(context.WithoutCancel(ctx), sid, gen, false)
 		return nil, err
 	}
 	gen.w = w
-	n, err := a.Core.Recovery.Open(ctx, w)
+	n, err := a.Execution.Open(ctx, w)
 	if err != nil {
 		_ = a.release(context.WithoutCancel(ctx), sid, gen, true)
 		return nil, err
 	}
 	// Waits a previous owner left with a Responder are answered by this
 	// one: the Responder continues from its durable state.
-	a.Core.Driver.ResumeWaiting(ctx, w)
+	a.Execution.ResumeWaiting(ctx, w)
 	a.mu.Lock()
 	gen.state = open
 	a.mu.Unlock()
@@ -107,8 +110,8 @@ func (a *Owner) beginClose(sid session.SessionID, gen *openSession) *openSession
 func (a *Owner) release(ctx context.Context, sid session.SessionID, gen *openSession, closeWriter bool) error {
 	var err error
 	if closeWriter {
-		a.Core.Recovery.Stop(sid)
-		err = writer.CloseWriter(ctx, a.Core.Writers, sid)
+		a.Execution.Stop(sid)
+		err = writer.CloseWriter(ctx, a.Kernel.Writers, sid)
 	}
 	a.mu.Lock()
 	if a.open[sid] == gen {
@@ -133,18 +136,18 @@ func (a *Owner) DeleteSession(ctx context.Context, sid session.SessionID) error 
 		if transition {
 			return fmt.Errorf("%w: %s is opening or closing", ErrSessionOpen, sid)
 		}
-		if err := writer.CloseWriter(ctx, a.Core.Writers, sid); err != nil {
+		if err := writer.CloseWriter(ctx, a.Kernel.Writers, sid); err != nil {
 			return err
 		}
 	}
-	return writer.Delete(ctx, a.Core.Store, a.Core.Admission, sid)
+	return writer.Delete(ctx, a.Kernel.Store, a.Kernel.Admission, sid)
 }
 
 // Close releases every generation this Owner holds: the recovery
 // listeners and the Writer of each. Every outstanding Handle is stale
 // afterwards; generations still opening or closing on another goroutine
-// finish their own release. The Core stays open: it is the host's to
-// close, after this.
+// finish their own release. The Kernel and the Execution stay open: they
+// are the host's to close, after this.
 func (a *Owner) Close(ctx context.Context) error {
 	a.mu.Lock()
 	var owned []*openSession

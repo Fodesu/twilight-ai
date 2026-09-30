@@ -129,7 +129,7 @@ func Example_jsonlPrototype() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed\n", owned.Recovered)
 
-	if _, err := p2.Core.Driver.Drive(ctx, owned.Writer(), "turn-2"); err != nil {
+	if _, err := p2.Core.Execution.Driver.Drive(ctx, owned.Writer(), "turn-2"); err != nil {
 		panic(err)
 	}
 	resp2, err := p2.Core.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})

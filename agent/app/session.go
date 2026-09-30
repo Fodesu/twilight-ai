@@ -128,7 +128,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 		return nil, errors.New("app: open session requires a preset ref")
 	}
 	a := app.Core
-	if _, err := a.Presets.Resolve(opts.Preset); err != nil {
+	if _, err := a.Execution.Presets.Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
 	if err := a.EnsureSession(ctx, sid); err != nil {
@@ -140,7 +140,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	}
 	s := &Session{Recovered: h.Recovered, app: app, a: a, h: h, sid: sid, opts: opts}
 	s.rt, err = rt.New(rt.Config{
-		Writer: h.Writer(), Driver: a.Driver, Turns: a.Turns, Chatlog: a.Chatlog, Projections: a.Projections,
+		Writer: h.Writer(), Driver: a.Execution.Driver, Turns: a.Turns, Chatlog: a.Chatlog, Projections: a.Projections,
 		Preset: opts.Preset, NewTurnID: opts.NewTurnID,
 		RouteRetries: opts.RouteRetries, TurnBudget: opts.TurnBudget,
 	})
@@ -465,7 +465,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, erro
 		return "", false, err
 	}
 	summary, err := compaction.Summarizer{
-		ResolvePreset: s.a.Presets.Resolve, Content: s.a.Frozen, Executor: s.a.Executor, Watcher: s.a.Watcher,
+		ResolvePreset: s.a.Execution.Presets.Resolve, Content: s.a.Frozen, Executor: s.a.Execution.Executor, Watcher: s.a.Execution.Watcher,
 	}.Summarize(ctx, s.sid, s.opts.Preset, materialized)
 	if err != nil {
 		return "", false, err

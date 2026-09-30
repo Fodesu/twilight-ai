@@ -108,7 +108,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 		Inputs: []run.AgentInput{in}, Preset: preset}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Core.Driver.Drive(ctx, w, "t1"); err != nil {
+	if _, err := h.Core.Execution.Driver.Drive(ctx, w, "t1"); err != nil {
 		t.Fatal(err)
 	}
 

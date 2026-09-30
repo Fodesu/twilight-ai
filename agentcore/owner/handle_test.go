@@ -3,7 +3,6 @@ package owner_test
 import (
 	"context"
 	"errors"
-	"github.com/felinics/twilight/agentcore/core"
 	"testing"
 
 	"github.com/felinics/twilight/agent/executor/local"
@@ -13,21 +12,18 @@ import (
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/owner"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 )
 
+// newAuthority is the deployment every owner test starts from: a local
+// executor, fresh durable stores under t.TempDir(), and the Kernel plus
+// Execution assembled over them.
 func newAuthority(t *testing.T) *owner.Owner {
-	t.Helper()
-	p := basePorts(t)
-	return newAuthorityFrom(t, &p)
-}
-
-// basePorts is the deployment every owner test starts from: a local
-// executor and fresh durable stores under t.TempDir().
-func basePorts(t *testing.T) core.Ports {
 	t.Helper()
 	catalog, err := local.NewCatalog(nil)
 	if err != nil {
@@ -41,25 +37,27 @@ func basePorts(t *testing.T) core.Ports {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindings, ledger := artifacttest.Stores(t)
+	bindings, retention := artifacttest.Stores(t)
 	decisions, err := decision.NewCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return core.Ports{Store: filestoretest.Store(t), Content: filestoretest.Content(t, sessionstore.FrozenAuthority),
-		Artifacts: core.Artifacts{Bindings: bindings, Ledger: ledger}, Executor: exec, Decisions: decisions}
-}
-
-func newAuthorityFrom(t *testing.T, p *core.Ports) *owner.Owner {
-	t.Helper()
-	c, err := core.New(*p)
+	k, err := sessionkernel.New(sessionkernel.Ports{
+		Store: filestoretest.Store(t), Content: filestoretest.Content(t, sessionstore.FrozenAuthority),
+		Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: retention}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := owner.New(c)
+	x, err := rt.NewExecution(rt.ExecutionConfig{Executor: exec, Decisions: decisions}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := owner.New(k, x)
 	t.Cleanup(func() {
 		_ = a.Close(context.Background())
-		_ = c.Close(context.Background())
+		x.Close()
+		_ = k.Close(context.Background())
+		exec.Close()
 	})
 	return a
 }
@@ -71,7 +69,7 @@ func TestHandleGenerations(t *testing.T) {
 	ctx := context.Background()
 	a := newAuthority(t)
 	const sid session.SessionID = "s-gen"
-	if err := a.Core.CreateSession(ctx, sid, nil); err != nil {
+	if err := a.Kernel.CreateSession(ctx, sid, nil); err != nil {
 		t.Fatal(err)
 	}
 	first, err := a.Open(ctx, sid)
@@ -93,18 +91,18 @@ func TestHandleGenerations(t *testing.T) {
 	if err := first.Close(ctx); err != nil {
 		t.Fatalf("stale close = %v, want nil", err)
 	}
-	if _, err := a.Core.Chatlog.Submit(ctx, second.Writer(), "in-1", run.MustParseCanonicalJSON(`{"text":"hello"}`)); err != nil {
+	if _, err := a.Kernel.Chatlog.Submit(ctx, second.Writer(), "in-1", run.MustParseCanonicalJSON(`{"text":"hello"}`)); err != nil {
 		t.Fatalf("commit through the live generation after a stale close: %v", err)
 	}
 	// Reading takes no ownership: it works by SessionID while the Handle is
 	// open and after it is closed.
-	if chat, err := chatlog.ReadSurface(ctx, a.Core.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
+	if chat, err := chatlog.ReadSurface(ctx, a.Kernel.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
 		t.Fatalf("read while open = %d %v", chat.Inputs.Len(), err)
 	}
 	if err := second.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if chat, err := chatlog.ReadSurface(ctx, a.Core.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
+	if chat, err := chatlog.ReadSurface(ctx, a.Kernel.Projections, sid); err != nil || chat.Inputs.Len() != 1 {
 		t.Fatalf("read after close = %d %v", chat.Inputs.Len(), err)
 	}
 	// Reading did not reopen the Session: a third Open succeeds.

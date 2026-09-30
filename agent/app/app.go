@@ -342,7 +342,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		return nil, err
 	}
 	app.Core = kernel
-	app.Owner = owner.New(kernel)
+	app.Owner = owner.New(kernel.Kernel, kernel.Execution)
 	if resolver != nil {
 		resolver.Projections = kernel.Projections
 	}
@@ -389,7 +389,7 @@ func (app *Application) fail(sid session.SessionID, err error) {
 
 // RegisterPreset adds or replaces a decision identity after Build.
 func (app *Application) RegisterPreset(id preset.PresetID, p preset.AgentPreset) (preset.PresetRef, error) {
-	ref, err := app.Core.Presets.Register(id, p)
+	ref, err := app.Core.Execution.Presets.Register(id, p)
 	if err != nil {
 		return preset.PresetRef{}, err
 	}

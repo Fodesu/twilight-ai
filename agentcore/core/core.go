@@ -1,10 +1,9 @@
-// Package core composes the agent core -- the session kernel (fact layer,
-// projections, Turn protocol, content) and the execution side over it (the
-// settlement subscription, the drive chain, the execution port, the decision
-// identities) -- into one Core for hosts that run both sides in one process.
-// The composition is a convenience for single-process deployments; the two
-// sides assemble independently (sessionkernel.New and runtime.NewExecution)
-// and which process hosts which is a deployment choice.
+// Package core composes the agent core for a single-process host: the
+// session kernel (agentcore/sessionkernel) and the execution side over it
+// (agentcore/runtime's Execution). The composition is a convenience for
+// hosts that run both sides in one process; the two assemble independently
+// (sessionkernel.New and runtime.NewExecution) and which process hosts
+// which is a deployment choice.
 package core
 
 import (
@@ -19,13 +18,13 @@ import (
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
-	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
+	"github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
@@ -134,19 +133,10 @@ type Core struct {
 	// Worker is the composed execution Worker, nil when the Core drives the
 	// Executor port directly; it closes with the Core, after its services.
 	Worker *executor.Worker
-	// Watcher is the settlement subscription every Loop and Reconciler of
-	// this Core waits on; a host component that waits for an effect of its
-	// own (compaction's summary) shares it instead of subscribing again.
-	Watcher *effect.Watcher
-	// Driver drives an active Turn; Recovery runs the takeover disposition
-	// when a Session opens and ends its listeners when it closes. Both sit
-	// on the Loops and the Watcher the Core built and closes.
-	Driver   *driver.Driver
-	Recovery *driver.Recovery
-	// Presets is the registry of decision identities the Loops resolve and
-	// the Turn protocol starts Turns under.
-	Presets  preset.Registry
-	Executor effect.ExecutionPort
+	// Execution is the execution side assembled over the Kernel: the
+	// settlement subscription, the drive chain, the decision identities and
+	// the effect port.
+	Execution *runtime.Execution
 }
 
 // New composes a Core from its ports: the session kernel assembles the
@@ -154,12 +144,6 @@ type Core struct {
 func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by-value options struct read once
 	if p.Executor == nil && p.Worker == nil {
 		return nil, errors.New("core: an Executor port or a Worker is required")
-	}
-	if p.Decisions == nil {
-		return nil, errors.New("core: a prompt builder catalog is required (Ports.Decisions); the core ships no default")
-	}
-	if p.MissingEffects == reconcile.RedispatchMissing && p.Redispatches == nil {
-		return nil, errors.New("core: MissingEffects=redispatch requires a dispatch ledger (Ports.Redispatches, RUN-EXE-15)")
 	}
 	kernel, err := sessionkernel.New(sessionkernel.Ports{
 		Store: p.Store, Content: p.Content, Artifacts: p.Artifacts,
@@ -181,38 +165,16 @@ func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by
 		}
 		worker, executorPort = w, w
 	}
-	presets := p.Presets
-	if presets == nil {
-		presets = preset.NewMemory()
+	exec, err := runtime.NewExecution(runtime.ExecutionConfig{
+		Executor: executorPort, Presets: p.Presets, Decisions: p.Decisions,
+		MissingEffects: p.MissingEffects, Redispatches: p.Redispatches,
+		Planner: p.Planner, Responders: p.Responders, TargetResolver: p.TargetResolver,
+		Fail: p.Fail, OrphanProbe: p.OrphanProbe,
+	}, kernel)
+	if err != nil {
+		return nil, err
 	}
-	sink := busSink{kernel.Bus}
-	a := &Core{Kernel: kernel, Worker: worker, Presets: presets, Executor: executorPort}
-	a.Watcher = &effect.Watcher{Port: executorPort, Probe: p.OrphanProbe}
-	// A nil resolver gives every effect no target (APP-TGT-1).
-	loops := &driver.Loops{Executor: executorPort, Presets: presets, Decisions: p.Decisions, Targets: p.TargetResolver,
-		Sources: decision.Sources{Projections: kernel.Projections, Content: kernel.Content}, Watcher: a.Watcher, Planner: p.Planner}
-	a.Recovery = &driver.Recovery{Runs: kernel.Runs, Executor: executorPort, Loops: loops, Watcher: a.Watcher, Fail: p.Fail,
-		MissingEffects: p.MissingEffects, Redispatches: p.Redispatches, OrphanProbe: p.OrphanProbe, Sink: sink}
-	var responders *driver.Responders
-	if len(p.Responders) > 0 {
-		responders = &driver.Responders{Runs: kernel.Runs, Tools: p.Responders, Fail: p.Fail}
-	}
-	a.Driver = &driver.Driver{Runs: kernel.Runs, Loops: loops, Recovery: a.Recovery, Responders: responders, Sink: sink}
-	return a, nil
-}
-
-// busSink is the drive's loop.EventSink: provisional observations become
-// transient Bus events; committed observations are already on the Bus from
-// the Writer, so they are dropped here.
-type busSink struct{ bus *observe.Bus }
-
-func (s busSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic // hugeParam: EventSink contract takes the Event by value
-	if s.bus == nil || e.Durability != loop.EventProvisional {
-		return nil
-	}
-	s.bus.Publish(session.SessionID(e.Session), observe.Progress{RunID: e.RunID, Effect: e.Effect, Generation: e.Generation,
-		Sequence: e.Sequence, Kind: string(e.Kind), Payload: e.Payload})
-	return nil
+	return &Core{Kernel: kernel, Worker: worker, Execution: exec}, nil
 }
 
 // NewRegistry builds the module registry of a Core: the first-party
@@ -227,8 +189,7 @@ func NewRegistry(extensions []module.ModuleDescriptor) (*module.Registry, error)
 // Worker the drives may still be settling outcomes through. The owner
 // releases the Sessions it holds before this.
 func (a *Core) Close(ctx context.Context) error {
-	a.Recovery.Close()
-	a.Watcher.Close()
+	a.Execution.Close()
 	err := a.Kernel.Close(ctx)
 	if a.Worker != nil {
 		a.Worker.Close()

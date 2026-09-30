@@ -76,7 +76,7 @@ func Example_recoverableTurn() {
 			Preset: profile1})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).
-			_, err = p1.Core.Driver.Drive(ctx, owned1.Writer(), ref1.TurnID)
+			_, err = p1.Core.Execution.Driver.Drive(ctx, owned1.Writer(), ref1.TurnID)
 		}
 		startDone <- err
 	}()
@@ -102,7 +102,7 @@ func Example_recoverableTurn() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", owned.Recovered, chat.ToolResults.Len(), toolResultStatus(&chat))
 
-	if _, err := p2.Core.Driver.Drive(ctx, owned.Writer(), ref1.TurnID); err != nil {
+	if _, err := p2.Core.Execution.Driver.Drive(ctx, owned.Writer(), ref1.TurnID); err != nil {
 		panic(err)
 	}
 	resp, err := p2.Core.Turns.Status(ctx, ref1)

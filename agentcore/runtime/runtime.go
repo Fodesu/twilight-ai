@@ -1,12 +1,14 @@
 // Package runtime is the conversation's execution over the fact and effect
-// layers: the Coordinator commits the Turn protocol's cross-module commands
-// (Turn facts, chatlog deliveries and Run commands in one unit), the
-// quiescence guards judge when a Session admits work that moves the
-// context, and the SessionRuntime admits inputs into Turns and advances
-// the Session to its next quiescent point. Every call runs on the caller's
-// goroutine and ctx; which calls run in the background, what a reply is
-// and which policies run at quiescence are the host's decisions, taken on
-// the Settlement each call returns.
+// layers: the SessionRuntime admits inputs into Turns and advances the
+// Session to its next quiescent point, and the Execution assembles the
+// drive chain (the settlement subscription, the Driver, the Recovery, the
+// decision identities, the effect port) over one Session kernel. The Turn
+// protocol itself -- the Coordinator, the quiescence guards, the request
+// and result vocabulary -- is the session kernel's (agentcore/sessionkernel);
+// this package re-exports that vocabulary for the hosts and the runtime.
+// Every call runs on the caller's goroutine and ctx; which calls run in
+// the background, what a reply is and which policies run at quiescence are
+// the host's decisions, taken on the Settlement each call returns.
 package runtime
 
 import (
