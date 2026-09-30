@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/environment/local"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
@@ -31,7 +32,7 @@ func shellCall(command string) sdk.ModelResult {
 }
 
 type workspaceHost struct {
-	h         *app.Application
+	h         *localagent.Agent
 	presetRef preset.PresetRef
 	store     *workspacetest.Map
 	root      string
@@ -51,8 +52,15 @@ func newWorkspaceHostWith(t *testing.T, model executorlocal.ModelInvoker, cfg ap
 		t.Fatal(err)
 	}
 	store := &workspacetest.Map{}
-	cfg.Workspaces = &app.WorkspaceConfig{Store: store, Provider: provider, Backend: local.Backend, SnapshotAfterTurn: snapshotAfterTurn}
-	h := newHost(t, cfg, map[run.ModelRef]executorlocal.ModelInvoker{"m-1": model})
+	cfg.Workspaces = &app.WorkspaceConfig{Store: store, SnapshotAfterTurn: snapshotAfterTurn}
+	lcfg := durablePorts(t, cfg)
+	lcfg.Models = map[run.ModelRef]executorlocal.ModelInvoker{"m-1": model}
+	lcfg.Executions = sqlitetest.Open(t).Executions()
+	lcfg.Sandbox = &localagent.SandboxConfig{Provider: provider, Backend: local.Backend}
+	h, err := localagent.Compose(lcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defs, err := app.WorkspaceTools(nil)
 	if err != nil {
 		t.Fatal(err)

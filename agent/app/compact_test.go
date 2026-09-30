@@ -9,15 +9,16 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -59,7 +60,7 @@ func messageTexts(req sdk.Request) []string {
 
 // openCompactSession opens one process over the store and the content store:
 // a restart shares both, since the ledger names the frozen bodies by digest.
-func openCompactSession(t *testing.T, store session.Stores, content artifact.ContentStore, model *compactAwareModel, opts app.SessionOptions) (*app.Application, *app.Session) {
+func openCompactSession(t *testing.T, store session.Stores, content artifact.ContentStore, model *compactAwareModel, opts app.SessionOptions) (*localagent.Agent, *app.Session) {
 	t.Helper()
 	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}}, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
@@ -209,12 +210,16 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), []executor.Route{local.Route(backend)})
+	records := sqlitetest.Open(t).Executions()
+	worker, err := executor.NewWorker(ctx, records, []executor.Route{local.Route(backend)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := app.Build(durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content,
-		Ownership: session.OpenOptions{Takeover: true}}, Executor: app.ExecutorConfig{Port: worker}}))
+	cfg := durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content,
+		Ownership: session.OpenOptions{Takeover: true}}})
+	cfg.Port = worker
+	cfg.Executions = records
+	h, err := localagent.Compose(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

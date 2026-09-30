@@ -4,11 +4,11 @@ import (
 	"context"
 	"github.com/felinics/twilight/agent/app"
 	agentinput "github.com/felinics/twilight/agent/input"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"sync"
 	"testing"
 )

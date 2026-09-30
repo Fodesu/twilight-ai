@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -18,6 +18,7 @@ import (
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -281,7 +282,9 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec := &reattachingExecutor{recordingExecutor: recordingExecutor{reply: "reattached"}, reads: make(chan context.Context, 4)}
-	p2, err := app.Build(durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, Executor: app.ExecutorConfig{Port: exec}}))
+	cfg := durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}})
+	cfg.Port = exec
+	p2, err := localagent.Compose(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +416,9 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 				t.Fatal(err)
 			}
 			exec := &reattachingExecutor{reads: make(chan context.Context, 4)}
-			h, err := app.Build(durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, Executor: app.ExecutorConfig{Port: exec}}))
+			cfg := durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}})
+			cfg.Port = exec
+			h, err := localagent.Compose(cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -458,7 +463,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 	}
 }
 
-func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID run.RunID) sessionstore.Record {
+func mustRecord(t *testing.T, h *localagent.Agent, sid session.SessionID, runID run.RunID) sessionstore.Record {
 	t.Helper()
 	rec, err := h.Kernel.Runs.Record(context.Background(), sid, runID)
 	if err != nil {
@@ -475,8 +480,8 @@ func TestBuildRejectsRedispatchWithoutDispatchLedger(t *testing.T) {
 	cfg.Executions = sqlitetest.Open(t).Executions()
 	cfg.Execution.Redispatches = nil
 	cfg.Execution.MissingEffects = reconcile.RedispatchMissing
-	cfg.Executor = app.ExecutorConfig{Models: map[run.ModelRef]local.ModelInvoker{}}
-	if _, err := app.Build(cfg); err == nil {
-		t.Fatal("Build accepted RedispatchMissing without a dispatch ledger")
+	cfg.Models = map[run.ModelRef]local.ModelInvoker{}
+	if _, err := localagent.Compose(cfg); err == nil {
+		t.Fatal("Compose accepted RedispatchMissing without a dispatch ledger")
 	}
 }

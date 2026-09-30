@@ -7,16 +7,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
@@ -144,7 +144,7 @@ func toolResultStatus(s *chatlog.Surface) string {
 	return status
 }
 
-func waitForExecutingCall(ctx context.Context, h *app.Application, sid session.SessionID, turnID turn.TurnID) run.RunID {
+func waitForExecutingCall(ctx context.Context, h *localagent.Agent, sid session.SessionID, turnID turn.TurnID) run.RunID {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		surface, err := h.TurnSurface(ctx, sid)

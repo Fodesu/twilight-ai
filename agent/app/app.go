@@ -11,18 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agent/context/compaction"
-	"github.com/felinics/twilight/agent/environment"
-	"github.com/felinics/twilight/agent/executor/http"
-	"github.com/felinics/twilight/agent/executor/local"
-	"github.com/felinics/twilight/agent/executor/sandbox"
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/spawn"
-	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
-	"github.com/felinics/twilight/agentcore/executor"
-	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
@@ -30,41 +23,12 @@ import (
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/effect"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
-	stdhttp "net/http"
 	"sync"
 )
-
-// ExecutorMode selects the effect implementation built by Build.
-type ExecutorMode string
-
-const (
-	// ExecutorLocal runs model and tool effects in this process.
-	ExecutorLocal ExecutorMode = "local"
-	// ExecutorRemote forwards effects to an executor/http Server.
-	ExecutorRemote ExecutorMode = "remote"
-)
-
-// ExecutorConfig describes how the application obtains its effect Port. Port
-// takes precedence when supplied, which is useful for tests and custom
-// transports. Local and Remote are the standard deployment profiles.
-type ExecutorConfig struct {
-	Mode ExecutorMode
-	Port effect.ExecutionPort
-
-	// Models and Tools are required for ExecutorLocal. They are ignored by
-	// ExecutorRemote because implementations live in the worker process.
-	Models map[run.ModelRef]local.ModelInvoker
-	Tools  []local.ExecutableTool
-
-	// Endpoint and HTTP configure ExecutorRemote.
-	Endpoint string
-	HTTP     *stdhttp.Client
-}
 
 // Preset is an authority-side decision identity to register during Build.
 type Preset struct {
@@ -72,37 +36,25 @@ type Preset struct {
 	Value preset.AgentPreset
 }
 
-// Config contains application assembly choices. Kernel is the session
-// kernel's assembly and Execution the execution side's; the two compose
-// independently (sessionkernel.New and runtime.NewExecution) and Build
-// pairs them. The remaining fields are the deployment profile and the
-// product policies. The Config deliberately contains concrete ports rather
-// than a file format: YAML, environment variables and command-line flags
-// can be decoded into this type by an outer deployment package later.
+// Config contains the product assembly: the Session kernel, the execution
+// side and the conversation policies. Deployment topology -- which process
+// runs the model and tool backends, whether an execution Worker owns the
+// records here -- is the composition root's choice; the root fills
+// Execution.Executor with the port it decided on and closes whatever it
+// composed around it. The Config deliberately contains concrete ports
+// rather than a file format: YAML, environment variables and command-line
+// flags can be decoded into this type by an outer deployment package later.
 type Config struct {
 	// Kernel is the session kernel's assembly: the Session store, the
 	// content and artifact stores, the module extensions, the projection
 	// cache and the other ports and policies sessionkernel.New composes.
 	Kernel sessionkernel.Ports
-	// Execution is the execution side's assembly: the decision catalog,
-	// the preset registry, the takeover policy and the other drive-chain
-	// policies runtime.NewExecution composes over the Kernel. Build fills
-	// the effect port, the Planner, the Responders and Fail.
+	// Execution is the execution side's assembly: the effect port, the
+	// decision catalog, the preset registry, the takeover policy and the
+	// other drive-chain policies runtime.NewExecution composes over the
+	// Kernel. New fills the Planner, the Responders and Fail.
 	Execution rt.ExecutionConfig
 
-	Executor ExecutorConfig
-	// Executions is the record store of the Worker Build composes
-	// (RUN-EXE-8): required whenever a Worker is composed (the local mode
-	// always; a supplied Port or the remote mode when Spawn is set), unused
-	// otherwise. Like every store it is durable (OWN-PRT-3); a record that
-	// did not survive a restart would let the Owner dispose an execution
-	// that is still running.
-	Executions executionstore.Store
-	// Worker configures the Worker that owns execution records (lease, id,
-	// reconcile loop, clock). It applies whenever Build composes a Worker:
-	// the local mode always does; a supplied Port or the remote mode do when
-	// Spawn is set, so the spawn Backend can be routed beside them.
-	Worker executor.WorkerOptions
 	Presets []Preset
 	// Warn receives failures of background work; nil discards them.
 	Warn func(error)
@@ -124,23 +76,14 @@ type Config struct {
 	Workspaces *WorkspaceConfig
 }
 
-// WorkspaceConfig composes the workspace layer (APP-WSP-3).
+// WorkspaceConfig composes the workspace layer's product side (APP-WSP-3).
 type WorkspaceConfig struct {
 	// Store holds the Workspace records and RuntimeBindings (required).
 	Store workspace.Store
-	// Provider materializes and attaches environments; required whenever
-	// Build composes a Worker (the workspace backend runs beside it).
-	Provider environment.Provider
-	// Backend is the Provider's identity in RuntimeBindings (required with
-	// Provider).
-	Backend environment.Backend
-	// Tools are the workspace-placed tools the backend serves; nil selects
-	// tools.Default().
-	Tools []tools.Tool
-	// Snapshots takes the Snapshots (APP-WSP-7): nil with Provider set
-	// selects the composed backend; a process without the backend (the
-	// remote executor mode) hands in the tool backend's client
-	// (agent/workspace/http.Client).
+	// Snapshots takes the Snapshots (APP-WSP-7): the composition root that
+	// runs the sandbox backend composes it and leaves this nil; a process
+	// without the backend (the cloud owner) hands in the tool backend's
+	// client (agent/workspace/http.Client).
 	Snapshots workspace.Snapshotter
 	// SnapshotAfterTurn takes a Snapshot of a Session's bound Workspace
 	// after every quiescent settlement and records it on the
@@ -149,32 +92,24 @@ type WorkspaceConfig struct {
 	SnapshotAfterTurn bool
 }
 
-func (c *WorkspaceConfig) tools() []tools.Tool {
-	if c.Tools == nil {
-		return tools.Default()
-	}
-	return c.Tools
-}
-
 // CompactorSystemPrompt is kept here for deterministic model test doubles and
 // applications that need to recognize the built-in compaction request.
 const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 
-// Application is the composition root: the Session kernel, the execution
-// side over it, the ownership authority and the Worker that owns the
-// execution records -- plus the application's own services, the preset
-// table, the event stream and the spawn effect.
+// Application is the product assembly: the Session kernel, the execution
+// side over it and the ownership authority -- plus the application's own
+// services, the preset table, the event stream and the spawn effect. The
+// Worker and the other deployment components around the effect port close
+// at the composition root, after this.
 type Application struct {
 	// Owner holds the Sessions this process owns; Kernel is their durable
-	// state, Execution is what advances them, and Worker owns the execution
-	// records of the effects dispatched here.
+	// state and Execution is what advances them.
 	Owner     *owner.Owner
 	Kernel    *sessionkernel.Kernel
 	Execution *rt.Execution
-	Worker    *executor.Worker
 	spawn     *spawn.Responder
 	// warn receives failures of background work.
-	warn func(error)
+	warn       func(error)
 	inbox      inbox.Store
 	activation *Activation
 	bg         context.Context
@@ -185,9 +120,7 @@ type Application struct {
 	activating map[session.SessionID]chan struct{}
 	// workspaces is the workspace layer's configuration, nil when absent.
 	workspaces *WorkspaceConfig
-	// sandbox is the workspace backend this process composed, if any;
-	// snapshots is where snapshots are taken, here or remotely.
-	sandbox   *sandbox.Backend
+	// snapshots is where snapshots are taken, composed by the root.
 	snapshots workspace.Snapshotter
 	// bindings writes the Session's workspace binding facts.
 	bindings workspace.Commands
@@ -248,9 +181,14 @@ func (app *Application) untrack(s *Session) {
 	}
 }
 
-// Build assembles an application from typed dependencies and a
-// deployment-neutral executor profile.
-func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
+// New assembles the application from its product dependencies. The effect
+// port -- the deployment decision -- arrives in c.Execution.Executor; the
+// root that composed it (a local agent component, a cloud owner service)
+// closes it and whatever it stands on after this Application.
+func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
+	if c.Execution.Executor == nil {
+		return nil, errors.New("app: an effect port is required (Config.Execution.Executor); composing it is the deployment root's act")
+	}
 	warn := c.Warn
 	if warn == nil {
 		warn = func(error) {}
@@ -276,21 +214,13 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	}
 	// The subagent tool is answered by a Responder on the Driver (SPN-1,
 	// DRV-4), not executed: it drives children through the Authority, so it
-	// is bound after New. No Worker route is involved.
-	var routes []executor.Route
+	// is bound once the Owner exists. No effect route is involved.
 	if c.Spawn != nil {
 		app.spawn = spawn.NewResponder(*c.Spawn)
 	}
-	// One progress hub serves the Worker and every local backend it routes
-	// to (RUN-EXE-12); the Execution relays its frames onto the event stream.
-	if c.Worker.Progress == nil {
-		c.Worker.Progress = executor.NewProgressHub(0)
-	}
 	// The workspace layer (APP-WSP-3): the binding module joins the
-	// registry, the resolver answers RUN-LOP-9 from the binding projection
-	// once the Authority exists, the prompt gets its workspace preface, and
-	// the workspace backend takes the workspace-placed tool calls of the
-	// Worker Build composes.
+	// registry, the resolver answers RUN-LOP-9 from the binding projection,
+	// and the prompt gets its workspace preface.
 	var resolver *workspace.Resolver
 	if c.Workspaces != nil {
 		if c.Workspaces.Store == nil {
@@ -304,26 +234,10 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		if c.Execution.Decisions == nil {
 			c.Execution.Decisions = prompt.CatalogWith(prompt.WorkspacePreface)
 		}
-		if c.Workspaces.Provider != nil {
-			backend, err := sandbox.New(sandbox.Options{Workspaces: c.Workspaces.Store, Provider: c.Workspaces.Provider,
-				Backend: c.Workspaces.Backend, Tools: c.Workspaces.tools(), Progress: c.Worker.Progress})
-			if err != nil {
-				return nil, err
-			}
-			app.sandbox = backend
-			routes = append(routes, sandbox.Route(backend))
-		}
 		app.snapshots = c.Workspaces.Snapshots
-		if app.snapshots == nil && app.sandbox != nil {
-			app.snapshots = app.sandbox
-		}
 		if c.Workspaces.SnapshotAfterTurn && app.snapshots == nil {
-			return nil, errors.New("app: Workspaces.SnapshotAfterTurn requires Snapshots or Provider")
+			return nil, errors.New("app: Workspaces.SnapshotAfterTurn requires a Snapshotter")
 		}
-	}
-	port, workerRoutes, composeWorker, err := buildExecutor(&c, routes)
-	if err != nil {
-		return nil, err
 	}
 	if c.Execution.Decisions == nil {
 		c.Execution.Decisions = prompt.DefaultCatalog()
@@ -333,17 +247,6 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		return nil, err
 	}
 	app.Kernel = kernel
-	// The Worker owns the execution records of the effects dispatched here
-	// (RUN-EXE-8); it is a deployment component, so it composes at this
-	// root, not inside the core subsystems.
-	if composeWorker {
-		w, err := executor.NewWorker(context.Background(), c.Executions, workerRoutes, c.Worker)
-		if err != nil {
-			return nil, err
-		}
-		app.Worker = w
-		port = w
-	}
 	// The subagent tool waits for an external response the Responder gives
 	// (SPN-1, DRV-4); the Responder opens children through the Owner, which
 	// it is bound to once the Owner exists, before any Respond can run.
@@ -353,8 +256,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	}
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// (APP-CKP-1, RUN-LOP-10); provisional observations of effects in
-	// flight reach the event stream (OBS-1).
-	c.Execution.Executor = port
+	// flight reach the transient stream (OBS-1).
 	c.Execution.Planner = app
 	c.Execution.Responders = responders
 	c.Execution.Fail = app.fail
@@ -389,23 +291,17 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	return app, nil
 }
 
-// rollback releases what a failed Build created, in reverse order of
-// creation: the execution side, the Worker, the Kernel (its Writers) and
-// the sandbox. Nothing was opened yet, so there is no ownership to release.
+// rollback releases what a failed New created, in reverse order of
+// creation: the execution side and the Kernel (its Writers). Nothing was
+// opened yet, so there is no ownership to release; the effect port and
+// whatever the root composed around it are the root's to release.
 func (app *Application) rollback() {
 	app.bgCancel()
-	ctx := context.Background()
 	if app.Execution != nil {
 		app.Execution.Close()
 	}
-	if app.Worker != nil {
-		app.Worker.Close()
-	}
 	if app.Kernel != nil {
-		_ = app.Kernel.Close(ctx)
-	}
-	if app.sandbox != nil {
-		_ = app.sandbox.Close(ctx)
+		_ = app.Kernel.Close(context.Background())
 	}
 }
 
@@ -523,9 +419,9 @@ func (app *Application) Close(ctx context.Context) error {
 		err = werr
 	}
 	// Ownership is released first, then the execution side, then the
-	// Writers and, last, the Worker the drives may still be settling
-	// outcomes through (RUN-EXE-8, SPN-4). Records keep their leases until
-	// they expire and the next incarnation adopts them.
+	// Writers (RUN-EXE-8, SPN-4). Records keep their leases until they
+	// expire and the next incarnation adopts them. The effect port and the
+	// deployment components around it close at the outer root, after this.
 	if oerr := app.Owner.Close(ctx); oerr != nil && err == nil {
 		err = oerr
 	}
@@ -537,60 +433,7 @@ func (app *Application) Close(ctx context.Context) error {
 			err = cerr
 		}
 	}
-	if app.Worker != nil {
-		app.Worker.Close()
-	}
-	if app.sandbox != nil {
-		if cerr := app.sandbox.Close(ctx); cerr != nil && err == nil {
-			err = cerr
-		}
-	}
 	return err
-}
-
-// buildExecutor decides the effect port the Execution drives against and,
-// when this process owns execution records, the routes of the Worker Build
-// composes over it (RUN-EXE-8). The local mode routes to the colocated
-// Backend; a supplied Port or the remote client is used as is unless extra
-// routes (spawn, the workspace backend) are configured, in which case the
-// Worker routes to them and to the Port as its default Backend; the remote
-// Worker keeps its own record of the physical execution.
-func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, []executor.Route, bool, error) {
-	worker := func(routes ...executor.Route) (effect.ExecutionPort, []executor.Route, bool, error) {
-		if c.Executions == nil {
-			return nil, nil, false, errors.New("app: an execution record store (Config.Executions) is required when Build composes a Worker")
-		}
-		return nil, append(extra, routes...), true, nil
-	}
-	if c.Executor.Port != nil {
-		if len(extra) == 0 {
-			return c.Executor.Port, nil, false, nil
-		}
-		return worker(executor.Default("port", executor.PortBackend(c.Executor.Port)))
-	}
-	switch c.Executor.Mode {
-	case "", ExecutorLocal:
-		catalog, err := local.NewCatalog(c.Executor.Models, c.Executor.Tools...)
-		if err != nil {
-			return nil, nil, false, err
-		}
-		backend, err := local.NewLocalExecutor(catalog, catalog, c.Worker.Progress, true)
-		if err != nil {
-			return nil, nil, false, err
-		}
-		return worker(local.Route(backend))
-	case ExecutorRemote:
-		if c.Executor.Endpoint == "" {
-			return nil, nil, false, errors.New("app: remote executor requires an endpoint")
-		}
-		client := &http.Client{BaseURL: c.Executor.Endpoint, HTTP: c.Executor.HTTP}
-		if len(extra) == 0 {
-			return client, nil, false, nil
-		}
-		return worker(executor.Default("remote", executor.PortBackend(client)))
-	default:
-		return nil, nil, false, fmt.Errorf("app: unknown executor mode %q", c.Executor.Mode)
-	}
 }
 
 // Event is one item of a Session's event stream (OBS-1).

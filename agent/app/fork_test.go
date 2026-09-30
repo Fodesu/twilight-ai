@@ -7,13 +7,14 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/run"
 	runstore "github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -164,7 +165,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 
 // lastReply materializes the text of the last assistant entry of a Session's
 // context through the Host's content store.
-func lastReply(t *testing.T, h *app.Application, sid session.SessionID) string {
+func lastReply(t *testing.T, h *localagent.Agent, sid session.SessionID) string {
 	t.Helper()
 	state, _, err := h.Projection(context.Background(), sid, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {

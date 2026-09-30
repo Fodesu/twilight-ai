@@ -16,6 +16,7 @@ import (
 	ownerhttp "github.com/felinics/twilight/agent/app/http"
 	"github.com/felinics/twilight/agent/component/stores"
 	"github.com/felinics/twilight/agent/config"
+	"github.com/felinics/twilight/agent/executor/http"
 	wshttp "github.com/felinics/twilight/agent/workspace/http"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -23,8 +24,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/session/filestore"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 )
 
 // Config is the owner service's document.
@@ -149,20 +150,23 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 		_ = db.Close()
 		return nil, err
 	}
-	a, err := app.Build(app.Config{
+	// The owner process drives effects through the worker's port and holds
+	// no Worker of its own: execution records live where the effects run.
+	appCfg := app.Config{
 		Kernel: sessionkernel.Ports{
 			Store:     store,
 			Content:   content,
 			Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
 			Ownership: session.OpenOptions{Owner: id, LeaseDuration: cfg.Lease.Std(), Takeover: cfg.Takeover},
 		},
-		Execution: rt.ExecutionConfig{Redispatches: db.Redispatches()},
-		Inbox:    db.Inbox(),
-		Executor: app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: cfg.Executor},
+		Execution:  rt.ExecutionConfig{Redispatches: db.Redispatches()},
+		Inbox:      db.Inbox(),
 		Workspaces: wsCfg,
 		Presets:    presets,
 		Activation: activation,
-	})
+	}
+	appCfg.Execution.Executor = &http.Client{BaseURL: cfg.Executor}
+	a, err := app.New(appCfg)
 	if err != nil {
 		_ = db.Close()
 		return nil, err

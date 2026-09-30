@@ -127,7 +127,8 @@ func (c *Catalog) ResolveModel(ref run.ModelRef) (local.ModelInvoker, error) {
 	return inv, nil
 }
 
-// Invokers returns the catalog as the map app.ExecutorConfig.Models takes.
+// Invokers returns the catalog keyed by model reference, the shape the
+// local executor's composition takes.
 func (c *Catalog) Invokers() map[run.ModelRef]local.ModelInvoker {
 	out := make(map[run.ModelRef]local.ModelInvoker, len(c.invokers))
 	for ref, inv := range c.invokers {

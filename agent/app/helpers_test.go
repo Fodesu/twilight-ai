@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
@@ -27,25 +28,38 @@ import (
 	"path/filepath"
 )
 
-// newHost builds a colocated application for tests: a LocalExecutor over the
-// given models and tools; the Runtime still writes request bodies to
-// cfg.Content (RUN-WIR-4) and the executor never reads them back (RUN-EXE-7).
-func newHost(t testing.TB, cfg app.Config, models map[run.ModelRef]local.ModelInvoker, tools ...local.ExecutableTool) *app.Application {
+// newHost builds a colocated agent for tests (localagent.Compose): a
+// LocalExecutor over the given models and tools behind a Worker; the
+// Runtime still writes request bodies to cfg.Content (RUN-WIR-4) and the
+// executor never reads them back (RUN-EXE-7).
+func newHost(t testing.TB, cfg app.Config, models map[run.ModelRef]local.ModelInvoker, tools ...local.ExecutableTool) *localagent.Agent {
 	t.Helper()
-	cfg = durablePorts(t, cfg)
-	cfg.Executor = app.ExecutorConfig{Models: models, Tools: tools}
-	a, err := app.Build(cfg)
+	return newLocalHost(t, durablePorts(t, cfg), models, tools...)
+}
+
+// newLocalHost is newHost for an already durable composition (the Example
+// helpers build it without a testing.TB).
+func newLocalHost(t testing.TB, cfg localagent.Config, models map[run.ModelRef]local.ModelInvoker, tools ...local.ExecutableTool) *localagent.Agent {
+	t.Helper()
+	cfg.Models = models
+	cfg.Tools = tools
+	if cfg.Executions == nil {
+		cfg.Executions = sqlitetest.Open(t).Executions()
+	}
+	ag, err := localagent.Compose(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return a
+	return ag
 }
 
 // durablePorts fills every store the Config leaves nil with a fresh durable
 // one under t.TempDir(): the JSONL Session ledger, the file cas store for
-// frozen bodies, and one SQLite file for the binding index, the retention
-// ledger and the Worker's execution records. Build itself has no defaults.
-func durablePorts(t testing.TB, cfg app.Config) app.Config {
+// frozen bodies, and a SQLite file for the binding index and the retention
+// ledger. It returns the composition the local agent component takes: the
+// product Config plus the deployment fields the caller fills (newHost fills
+// the models and the execution record store).
+func durablePorts(t testing.TB, cfg app.Config) localagent.Config {
 	t.Helper()
 	if cfg.Kernel.Store == nil {
 		cfg.Kernel.Store = filestoretest.Store(t)
@@ -56,19 +70,15 @@ func durablePorts(t testing.TB, cfg app.Config) app.Config {
 	if cfg.Kernel.Artifacts.Bindings == nil {
 		cfg.Kernel.Artifacts.Bindings, cfg.Kernel.Artifacts.Ledger = sqlitetest.Artifacts(t)
 	}
-	if cfg.Executions == nil {
-		db := sqlitetest.Open(t)
-		cfg.Executions = db.Executions()
-		if cfg.Execution.Redispatches == nil {
-			cfg.Execution.Redispatches = db.Redispatches()
-		}
+	if cfg.Execution.Redispatches == nil {
+		cfg.Execution.Redispatches = sqlitetest.Open(t).Redispatches()
 	}
-	return cfg
+	return localagent.Config{Config: cfg}
 }
 
 // runState reads a Run's committed state by SessionID: the lease-free read
 // (OWN-HDL-2), so a test observes without owning.
-func runState(a *app.Application, sid session.SessionID, runID run.RunID) (store.Snapshot, error) {
+func runState(a *localagent.Agent, sid session.SessionID, runID run.RunID) (store.Snapshot, error) {
 	record, err := a.Kernel.Runs.Record(context.Background(), sid, runID)
 	if err != nil {
 		return store.Snapshot{}, err
@@ -82,7 +92,7 @@ func runState(a *app.Application, sid session.SessionID, runID run.RunID) (store
 // and retention ledger live in one SQLite file, and each process keeps its
 // own execution record file so that a process the example abandons without
 // closing does not keep the next one's Worker waiting on its live lease.
-func exampleStores(root, worker string) app.Config {
+func exampleStores(root, worker string) localagent.Config {
 	store, err := filestore.New(filepath.Join(root, "ledger"))
 	if err != nil {
 		panic(err)
@@ -100,16 +110,17 @@ func exampleStores(root, worker string) app.Config {
 		panic(err)
 	}
 	bindings := artifacts.Bindings()
-	return app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content,
-		Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}},
+	return localagent.Config{Config: app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content,
+		Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}}},
 		Executions: records.Executions()}
 }
 
 // buildHost is newHost for the Example functions: cfg is complete and a
 // failure is a panic.
-func buildHost(cfg app.Config, models map[run.ModelRef]local.ModelInvoker, tools ...local.ExecutableTool) *app.Application {
-	cfg.Executor = app.ExecutorConfig{Models: models, Tools: tools}
-	a, err := app.Build(cfg)
+func buildHost(cfg localagent.Config, models map[run.ModelRef]local.ModelInvoker, tools ...local.ExecutableTool) *localagent.Agent {
+	cfg.Models = models
+	cfg.Tools = tools
+	a, err := localagent.Compose(cfg)
 	if err != nil {
 		panic(err)
 	}

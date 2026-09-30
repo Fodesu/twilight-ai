@@ -7,14 +7,15 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/sdkconv"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -157,7 +158,9 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	ctx := context.Background()
 	exec := &recordingExecutor{reply: "hello from the executor"}
 	content := durableContent(t)
-	h, err := app.Build(durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Content: content}, Executor: app.ExecutorConfig{Port: exec}}))
+	cfg := durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Content: content}})
+	cfg.Port = exec
+	h, err := localagent.Compose(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

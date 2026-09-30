@@ -3,24 +3,25 @@ package app_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/felinics/twilight/agent/app"
-	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
-func TestBuildRemoteApplication(t *testing.T) {
+// The product layer assembles over any effect port the deployment root
+// decides on: here a recorder standing in for a remote executor, with no
+// model or tool implementation on this side of the port.
+func TestNewAcceptsEffectPort(t *testing.T) {
 	p, err := app.NewPresetFromDefinitions("model", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := app.Build(durablePorts(t, app.Config{
-		Executor: app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: "http://executor"},
-		Presets:  []app.Preset{{ID: "default", Value: p}},
-	}))
+	cfg := durablePorts(t, app.Config{
+		Presets: []app.Preset{{ID: "default", Value: p}},
+	})
+	cfg.Execution.Executor = &recordingExecutor{reply: "hello from the executor"}
+	a, err := app.New(cfg.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,26 +44,4 @@ func mustDigest(p preset.AgentPreset) run.Digest {
 		panic(err)
 	}
 	return d
-}
-
-// A Build that fails after the Worker exists releases it: the Worker's
-// settlement hub is closed, so a subscription ends instead of waiting.
-func TestBuildRollsBackOnFailure(t *testing.T) {
-	p, err := app.NewPresetFromDefinitions("model", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hub := executor.NewSettlementHub("build-test", 8)
-	// The local executor composes a Worker over the hub.
-	cfg := durablePorts(t, app.Config{Executor: app.ExecutorConfig{Mode: app.ExecutorLocal},
-		Worker: executor.WorkerOptions{Settlements: hub}})
-	cfg.Presets = []app.Preset{{ID: "", Value: p}}
-	if _, err := app.Build(cfg); err == nil {
-		t.Fatal("Build with a nameless preset succeeded")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	if err := hub.Settlements(ctx, "", 0, func(effect.Settlement) bool { return true }); err != nil {
-		t.Fatalf("the Worker of a failed Build is still running: %v", err)
-	}
 }

@@ -4,11 +4,11 @@ import (
 	"context"
 	"github.com/felinics/twilight/agent/app"
 	ownerhttp "github.com/felinics/twilight/agent/app/http"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/environment/local"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/workspace/workspacetest"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
@@ -17,6 +17,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"net/http/httptest"
@@ -58,17 +59,20 @@ func newOwner(t *testing.T) (*app.Application, *ownerhttp.Client) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := app.Build(app.Config{
-		Kernel: sessionkernel.Ports{
-			Store:      filestoretest.Store(t),
-			Content:    filestoretest.Content(t, sessionstore.FrozenAuthority),
-			Artifacts:  sessionkernel.Artifacts{Bindings: bindings, Ledger: ledger},
-			Ownership:  session.OpenOptions{Owner: "owner-a", LeaseDuration: time.Minute},
+	a, err := localagent.Compose(localagent.Config{
+		Config: app.Config{
+			Kernel: sessionkernel.Ports{
+				Store:     filestoretest.Store(t),
+				Content:   filestoretest.Content(t, sessionstore.FrozenAuthority),
+				Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: ledger},
+				Ownership: session.OpenOptions{Owner: "owner-a", LeaseDuration: time.Minute},
+			},
+			Inbox:      &inboxtest.Map{},
+			Workspaces: &app.WorkspaceConfig{Store: &workspacetest.Map{}},
 		},
 		Executions: storetest.NewMap(nil),
-		Inbox:      &inboxtest.Map{},
-		Workspaces: &app.WorkspaceConfig{Store: &workspacetest.Map{}, Provider: provider, Backend: local.Backend},
-		Executor:   app.ExecutorConfig{Models: map[run.ModelRef]executorlocal.ModelInvoker{"m-1": &echoModel{}}},
+		Models:     map[run.ModelRef]executorlocal.ModelInvoker{"m-1": &echoModel{}},
+		Sandbox:    &localagent.SandboxConfig{Provider: provider, Backend: local.Backend},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -81,9 +85,9 @@ func newOwner(t *testing.T) (*app.Application, *ownerhttp.Client) {
 	if _, err := a.RegisterPreset("p1", preset); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer((&ownerhttp.Server{App: a, Options: app.SessionOptions{InboxPoll: time.Hour}}).Handler())
+	server := httptest.NewServer((&ownerhttp.Server{App: a.Application, Options: app.SessionOptions{InboxPoll: time.Hour}}).Handler())
 	t.Cleanup(server.Close)
-	return a, &ownerhttp.Client{BaseURL: server.URL}
+	return a.Application, &ownerhttp.Client{BaseURL: server.URL}
 }
 
 // A conversation through the face: ensure, open, a submit command that is

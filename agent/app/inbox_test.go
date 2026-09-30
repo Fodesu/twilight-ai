@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/chatlog"
@@ -37,7 +38,7 @@ func (f *resolveFails) Resolve(ctx context.Context, sid session.SessionID, seq u
 
 // inboxHost builds an application with an inbox; the Session is created but
 // not opened, so commands can be left for its next owner.
-func inboxHost(t *testing.T, store inbox.Store, model local.ModelInvoker, tools ...local.ExecutableTool) (*app.Application, preset.PresetRef, session.SessionID) {
+func inboxHost(t *testing.T, store inbox.Store, model local.ModelInvoker, tools ...local.ExecutableTool) (*localagent.Agent, preset.PresetRef, session.SessionID) {
 	t.Helper()
 	h := newHost(t, app.Config{Inbox: store}, map[run.ModelRef]local.ModelInvoker{"m-1": model}, tools...)
 	const sid session.SessionID = "s-inbox"
@@ -51,7 +52,7 @@ func inboxHost(t *testing.T, store inbox.Store, model local.ModelInvoker, tools 
 	return h, pref, sid
 }
 
-func enqueue(t *testing.T, h *app.Application, sid session.SessionID, id string, kind inbox.Kind, payload any) inbox.Entry {
+func enqueue(t *testing.T, h *localagent.Agent, sid session.SessionID, id string, kind inbox.Kind, payload any) inbox.Entry {
 	t.Helper()
 	c, err := app.NewCommand(inbox.CommandID(id), kind, payload)
 	if err != nil {
@@ -64,7 +65,7 @@ func enqueue(t *testing.T, h *app.Application, sid session.SessionID, id string,
 	return e
 }
 
-func await(t *testing.T, h *app.Application, sid session.SessionID, id string) inbox.Result {
+func await(t *testing.T, h *localagent.Agent, sid session.SessionID, id string) inbox.Result {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

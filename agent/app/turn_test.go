@@ -8,21 +8,22 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // setup composes a Host over an in-memory store with one model and one tool,
 // registers the preset and opens a Session whose new Turns are named t2, t3, ...
-func setup(t *testing.T, model local.ModelInvoker, tool *gateTool, opts app.SessionOptions) (*app.Application, preset.PresetRef, session.SessionID, *app.Session) {
+func setup(t *testing.T, model local.ModelInvoker, tool *gateTool, opts app.SessionOptions) (*localagent.Agent, preset.PresetRef, session.SessionID, *app.Session) {
 	t.Helper()
 	tools := []local.ExecutableTool{}
 	if tool != nil {

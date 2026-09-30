@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/store/sqlite"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -21,6 +21,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -37,7 +38,7 @@ func text(s string) sdk.ModelResult {
 // spawnOutput decodes the spawn tool's result from the parent's chatlog and
 // returns it with the recorded ToolResult (whose CallID is the run fact's
 // derived call identity, not the SDK call id the model sent).
-func spawnOutput(t *testing.T, h *app.Application, sid session.SessionID) (spawn.Result, chatlog.ToolResult) {
+func spawnOutput(t *testing.T, h *localagent.Agent, sid session.SessionID) (spawn.Result, chatlog.ToolResult) {
 	t.Helper()
 	ctx := context.Background()
 	chat, err := h.ChatlogSurface(ctx, sid)
@@ -173,7 +174,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 	// takes the parent over, finds its spawn call waiting for the
 	// Responder's answer, and continues the same child from its durable
 	// state (SPN-4); no execution record is involved.
-	open := func(model local.ModelInvoker, takeover bool) (*app.Application, *app.Session, preset.PresetRef) {
+	open := func(model local.ModelInvoker, takeover bool) (*localagent.Agent, *app.Session, preset.PresetRef) {
 		t.Helper()
 		store, err := filestore.New(root)
 		if err != nil {
@@ -199,7 +200,11 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = records.Close() })
 		cfg.Executions = records.Executions()
-		h := newHost(t, cfg, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+		cfg.Models = map[run.ModelRef]local.ModelInvoker{"m-1": model}
+		h, err := localagent.Compose(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
 		pref, err := h.RegisterPreset("b1", mustPreset("m-1", []local.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 		if err != nil {
 			t.Fatal(err)

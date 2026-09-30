@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/inbox"
@@ -35,7 +36,7 @@ func awaitModel(t *testing.T, started <-chan sdk.Request) {
 	}
 }
 
-func completedTurns(t *testing.T, h *app.Application, sid session.SessionID) int {
+func completedTurns(t *testing.T, h *localagent.Agent, sid session.SessionID) int {
 	t.Helper()
 	surface, err := h.TurnSurface(context.Background(), sid)
 	if err != nil {
@@ -62,7 +63,7 @@ func TestTurnsOfOneSessionRunOnDifferentProcesses(t *testing.T) {
 	inboxStore := shared.Inbox()
 	root := t.TempDir()
 	preset := mustPreset("m-1", nil, app.WithSystemPrompt("be brief"))
-	build := func(name string, model local.ModelInvoker, scan time.Duration) *app.Application {
+	build := func(name string, model local.ModelInvoker, scan time.Duration) *localagent.Agent {
 		cfg := exampleStores(root, name)
 		cfg.Inbox = inboxStore
 		cfg.Presets = []app.Preset{{ID: "b1", Value: preset}}
@@ -70,7 +71,7 @@ func TestTurnsOfOneSessionRunOnDifferentProcesses(t *testing.T) {
 		cfg.Activation = &app.Activation{Preset: "b1", IdleRelease: 50 * time.Millisecond, Scan: scan,
 			Options: app.SessionOptions{InboxPoll: 50 * time.Millisecond}}
 		cfg.Warn = func(err error) { t.Logf("%s: warn: %v", name, err) }
-		return newHost(t, cfg, map[run.ModelRef]local.ModelInvoker{"m-1": model})
+		return newLocalHost(t, cfg, map[run.ModelRef]local.ModelInvoker{"m-1": model})
 	}
 	// Only a scans, and slowly: a command enqueued through b must be b's
 	// activation, not a's scan racing it (both are legal; the test pins one).
@@ -80,7 +81,7 @@ func TestTurnsOfOneSessionRunOnDifferentProcesses(t *testing.T) {
 	b := build("b", gateB, 0)
 	defer func() { _ = a.Close(ctx); _ = b.Close(ctx) }()
 	const sid session.SessionID = "s-1"
-	released := func(h *app.Application) func() bool {
+	released := func(h *localagent.Agent) func() bool {
 		return func() bool {
 			_, held, err := h.Lease(ctx, sid)
 			if err != nil {
@@ -153,8 +154,9 @@ func TestActivationConfiguration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := durablePorts(t, tc.cfg)
-			cfg.Executor = app.ExecutorConfig{Models: map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}}}
-			h, err := app.Build(cfg)
+			cfg.Models = map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}}
+			cfg.Executions = sqlitetest.Open(t).Executions()
+			h, err := localagent.Compose(cfg)
 			if (err == nil) != tc.build {
 				t.Fatalf("build = %v, want ok=%v", err, tc.build)
 			}
