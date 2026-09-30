@@ -4,7 +4,7 @@ import (
 	"context"
 	"github.com/felinics/twilight/agent/app"
 	agentinput "github.com/felinics/twilight/agent/input"
-	"github.com/felinics/twilight/agentcore/core"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
@@ -56,7 +56,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cache := newCountingCache()
-			h := newHost(t, app.Config{Kernel: core.Ports{Cache: cache, CacheEvery: tc.every}}, nil)
+			h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Cache: cache, CacheEvery: tc.every}}, nil)
 			const sid session.SessionID = "s-interval"
 			if err := h.EnsureSession(ctx, sid); err != nil {
 				t.Fatal(err)
@@ -65,7 +65,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.Core.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+			if _, err := h.Kernel.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 				t.Fatal(err)
 			}
 			if got := cache.count() > 0; got != tc.wantBefore {
@@ -90,7 +90,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	ctx := context.Background()
 	cache := newCountingCache()
-	h := newHost(t, app.Config{Kernel: core.Ports{Cache: cache, CacheEvery: 1}}, nil)
+	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Cache: cache, CacheEvery: 1}}, nil)
 	const sid session.SessionID = "s-machine"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Core.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+	if _, err := h.Kernel.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Close(ctx); err != nil {

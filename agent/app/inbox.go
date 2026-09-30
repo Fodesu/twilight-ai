@@ -10,8 +10,8 @@ import (
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/run"
-	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
@@ -311,14 +311,14 @@ func (s *Session) apply(ctx context.Context, c *inbox.Command) error {
 		if cmd.TurnID != "" && cmd.TurnID != status.Active {
 			return fmt.Errorf("%w: turn %s is not the active turn", errRejected, cmd.TurnID)
 		}
-		_, err = s.a.Turns.Stop(ctx, s.h.Writer(), rt.StopRequest{Ref: s.ref(status.Active), Reason: cmd.Reason})
+		_, err = s.app.Kernel.Turns.Stop(ctx, s.h.Writer(), sessionkernel.StopRequest{Ref: s.ref(status.Active), Reason: cmd.Reason})
 		return err
 	case CommandWithdraw:
 		cmd, err := decode[WithdrawCommand](c)
 		if err != nil {
 			return err
 		}
-		return s.a.Chatlog.Withdraw(ctx, s.h.Writer(), cmd.InputID, cmd.Reason)
+		return s.app.Kernel.Chatlog.Withdraw(ctx, s.h.Writer(), cmd.InputID, cmd.Reason)
 	case CommandBindWorkspace:
 		cmd, err := decode[BindWorkspaceCommand](c)
 		if err != nil {

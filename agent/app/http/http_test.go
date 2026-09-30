@@ -8,7 +8,7 @@ import (
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/workspace/workspacetest"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
-	"github.com/felinics/twilight/agentcore/core"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
@@ -59,10 +59,10 @@ func newOwner(t *testing.T) (*app.Application, *ownerhttp.Client) {
 		t.Fatal(err)
 	}
 	a, err := app.Build(app.Config{
-		Kernel: core.Ports{
+		Kernel: sessionkernel.Ports{
 			Store:      filestoretest.Store(t),
 			Content:    filestoretest.Content(t, sessionstore.FrozenAuthority),
-			Artifacts:  core.Artifacts{Bindings: bindings, Ledger: ledger},
+			Artifacts:  sessionkernel.Artifacts{Bindings: bindings, Ledger: ledger},
 			Ownership:  session.OpenOptions{Owner: "owner-a", LeaseDuration: time.Minute},
 		},
 		Executions: storetest.NewMap(nil),

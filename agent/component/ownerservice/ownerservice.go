@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/felinics/twilight/agentcore/core"
 	stdhttp "net/http"
 	"time"
 
@@ -22,7 +21,9 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 )
 
@@ -149,13 +150,13 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 		return nil, err
 	}
 	a, err := app.Build(app.Config{
-		Kernel: core.Ports{
-			Store:        store,
-			Content:      content,
-			Artifacts:    core.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
-			Redispatches: db.Redispatches(),
-			Ownership:    session.OpenOptions{Owner: id, LeaseDuration: cfg.Lease.Std(), Takeover: cfg.Takeover},
+		Kernel: sessionkernel.Ports{
+			Store:     store,
+			Content:   content,
+			Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
+			Ownership: session.OpenOptions{Owner: id, LeaseDuration: cfg.Lease.Std(), Takeover: cfg.Takeover},
 		},
+		Execution: rt.ExecutionConfig{Redispatches: db.Redispatches()},
 		Inbox:    db.Inbox(),
 		Executor: app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: cfg.Executor},
 		Workspaces: wsCfg,

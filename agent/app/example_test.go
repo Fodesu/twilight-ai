@@ -3,7 +3,6 @@ package app_test
 import (
 	"context"
 	"fmt"
-	rt "github.com/felinics/twilight/agentcore/runtime"
 	"os"
 	"sync/atomic"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
@@ -65,18 +65,18 @@ func Example_recoverableTurn() {
 	if err != nil {
 		panic(err)
 	}
-	input, err := p1.Core.Chatlog.Submit(ctx, owned1.Writer(), "in-1", agentinput.Text("what is the weather?"))
+	input, err := p1.Kernel.Chatlog.Submit(ctx, owned1.Writer(), "in-1", agentinput.Text("what is the weather?"))
 	if err != nil {
 		panic(err)
 	}
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "turn-1"}
 	startDone := make(chan error, 1)
 	go func() {
-		_, err := p1.Core.Turns.Start(ctx, owned1.Writer(), rt.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
+		_, err := p1.Kernel.Turns.Start(ctx, owned1.Writer(), sessionkernel.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
 			Preset: profile1})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).
-			_, err = p1.Core.Execution.Driver.Drive(ctx, owned1.Writer(), ref1.TurnID)
+			_, err = p1.Execution.Driver.Drive(ctx, owned1.Writer(), ref1.TurnID)
 		}
 		startDone <- err
 	}()
@@ -102,16 +102,16 @@ func Example_recoverableTurn() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", owned.Recovered, chat.ToolResults.Len(), toolResultStatus(&chat))
 
-	if _, err := p2.Core.Execution.Driver.Drive(ctx, owned.Writer(), ref1.TurnID); err != nil {
+	if _, err := p2.Execution.Driver.Drive(ctx, owned.Writer(), ref1.TurnID); err != nil {
 		panic(err)
 	}
-	resp, err := p2.Core.Turns.Status(ctx, ref1)
+	resp, err := p2.Kernel.Turns.Status(ctx, ref1)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("process 2: turn %s, disposition %s\n", resp.Status, resp.Disposition)
 
-	record, err := p2.Core.Runs.Record(ctx, sid, runID)
+	record, err := p2.Kernel.Runs.Record(ctx, sid, runID)
 	if err != nil {
 		panic(err)
 	}
@@ -123,7 +123,7 @@ func Example_recoverableTurn() {
 	close(tool.block)
 	err = <-startDone
 	fmt.Printf("process 1: %v\n", errorsIsOwnershipLost(err))
-	after, _ := p2.Core.Runs.Record(ctx, sid, runID)
+	after, _ := p2.Kernel.Runs.Record(ctx, sid, runID)
 	fmt.Printf("stream unchanged by the fenced worker: %v\n", len(after.Facts) == len(record.Facts))
 
 	// Output:

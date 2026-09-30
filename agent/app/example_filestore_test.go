@@ -87,7 +87,7 @@ func Example_jsonlPrototype() {
 	fmt.Printf("steer: in-2 %s to turn-1 while its tool call executes\n", steered.Status)
 
 	// Queue: in-3 is only submitted; nothing delivers it into the running Turn.
-	if _, err := p1.Core.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", agentinput.Text("book a table")); err != nil {
+	if _, err := p1.Kernel.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", agentinput.Text("book a table")); err != nil {
 		panic(err)
 	}
 	chat, _ = p1.ChatlogSurface(ctx, sid)
@@ -129,10 +129,10 @@ func Example_jsonlPrototype() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed\n", owned.Recovered)
 
-	if _, err := p2.Core.Execution.Driver.Drive(ctx, owned.Writer(), "turn-2"); err != nil {
+	if _, err := p2.Execution.Driver.Drive(ctx, owned.Writer(), "turn-2"); err != nil {
 		panic(err)
 	}
-	resp2, err := p2.Core.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
+	resp2, err := p2.Kernel.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
 	if err != nil {
 		panic(err)
 	}

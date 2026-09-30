@@ -19,7 +19,6 @@ import (
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
-	"github.com/felinics/twilight/agentcore/core"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/executor"
@@ -32,8 +31,10 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	stdhttp "net/http"
 	"sync"
 )
@@ -71,17 +72,23 @@ type Preset struct {
 	Value preset.AgentPreset
 }
 
-// Config contains application assembly choices. Kernel is the core
-// assembly: stores, ports and policies core.New composes. The remaining
-// fields are the deployment profile and the product policies. The Config
-// deliberately contains concrete ports rather than a file format: YAML,
-// environment variables and command-line flags can be decoded into this
-// type by an outer deployment package later.
+// Config contains application assembly choices. Kernel is the session
+// kernel's assembly and Execution the execution side's; the two compose
+// independently (sessionkernel.New and runtime.NewExecution) and Build
+// pairs them. The remaining fields are the deployment profile and the
+// product policies. The Config deliberately contains concrete ports rather
+// than a file format: YAML, environment variables and command-line flags
+// can be decoded into this type by an outer deployment package later.
 type Config struct {
-	// Kernel is the core assembly: the Session store, the content and
-	// artifact stores, the preset registry, the module extensions, the
-	// projection cache and the other ports and policies core.New composes.
-	Kernel core.Ports
+	// Kernel is the session kernel's assembly: the Session store, the
+	// content and artifact stores, the module extensions, the projection
+	// cache and the other ports and policies sessionkernel.New composes.
+	Kernel sessionkernel.Ports
+	// Execution is the execution side's assembly: the decision catalog,
+	// the preset registry, the takeover policy and the other drive-chain
+	// policies runtime.NewExecution composes over the Kernel. Build fills
+	// the effect port, the Planner, the Responders and Fail.
+	Execution rt.ExecutionConfig
 
 	Executor ExecutorConfig
 	// Executions is the record store of the Worker Build composes
@@ -153,14 +160,19 @@ func (c *WorkspaceConfig) tools() []tools.Tool {
 // applications that need to recognize the built-in compaction request.
 const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 
-// Application is the composition root: the Authority plus the application's
-// own services -- the preset table, the event stream and the spawn effect.
+// Application is the composition root: the Session kernel, the execution
+// side over it, the ownership authority and the Worker that owns the
+// execution records -- plus the application's own services, the preset
+// table, the event stream and the spawn effect.
 type Application struct {
-	// Owner holds the Sessions this process owns; Core is the composed
-	// core it owns them over.
-	Owner *owner.Owner
-	Core  *core.Core
-	spawn *spawn.Responder
+	// Owner holds the Sessions this process owns; Kernel is their durable
+	// state, Execution is what advances them, and Worker owns the execution
+	// records of the effects dispatched here.
+	Owner     *owner.Owner
+	Kernel    *sessionkernel.Kernel
+	Execution *rt.Execution
+	Worker    *executor.Worker
+	spawn     *spawn.Responder
 	// warn receives failures of background work.
 	warn func(error)
 	inbox      inbox.Store
@@ -219,7 +231,7 @@ func (app *Application) Opened(sid session.SessionID) (*Session, bool) {
 // Lease is the Session's current writer lease, read without ownership
 // (SES-OWN-5): what a gateway routes by and a controller judges expiry by.
 func (app *Application) Lease(ctx context.Context, sid session.SessionID) (session.Lease, bool, error) {
-	return app.Core.Store.LeaseOf(ctx, sid)
+	return app.Kernel.Store.LeaseOf(ctx, sid)
 }
 
 func (app *Application) track(s *Session) {
@@ -239,12 +251,6 @@ func (app *Application) untrack(s *Session) {
 // Build assembles an application from typed dependencies and a
 // deployment-neutral executor profile.
 func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
-	if c.Kernel.Store == nil {
-		return nil, errors.New("app: a session Store is required")
-	}
-	if c.Kernel.Content == nil {
-		return nil, errors.New("app: a content Store is required (OWN-PRT-3)")
-	}
 	warn := c.Warn
 	if warn == nil {
 		warn = func(error) {}
@@ -276,7 +282,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		app.spawn = spawn.NewResponder(*c.Spawn)
 	}
 	// One progress hub serves the Worker and every local backend it routes
-	// to (RUN-EXE-12); the Core relays its frames onto the event stream.
+	// to (RUN-EXE-12); the Execution relays its frames onto the event stream.
 	if c.Worker.Progress == nil {
 		c.Worker.Progress = executor.NewProgressHub(0)
 	}
@@ -291,12 +297,12 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 			return nil, errors.New("app: Workspaces requires a workspace Store")
 		}
 		c.Kernel.Modules = append([]module.ModuleDescriptor{workspace.Module}, c.Kernel.Modules...)
-		if c.Kernel.TargetResolver == nil {
+		if c.Execution.TargetResolver == nil {
 			resolver = &workspace.Resolver{}
-			c.Kernel.TargetResolver = resolver
+			c.Execution.TargetResolver = resolver
 		}
-		if c.Kernel.Decisions == nil {
-			c.Kernel.Decisions = prompt.CatalogWith(prompt.WorkspacePreface)
+		if c.Execution.Decisions == nil {
+			c.Execution.Decisions = prompt.CatalogWith(prompt.WorkspacePreface)
 		}
 		if c.Workspaces.Provider != nil {
 			backend, err := sandbox.New(sandbox.Options{Workspaces: c.Workspaces.Store, Provider: c.Workspaces.Provider,
@@ -315,12 +321,28 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 			return nil, errors.New("app: Workspaces.SnapshotAfterTurn requires Snapshots or Provider")
 		}
 	}
-	port, wc, err := buildExecutor(&c, routes)
+	port, workerRoutes, composeWorker, err := buildExecutor(&c, routes)
 	if err != nil {
 		return nil, err
 	}
-	if c.Kernel.Decisions == nil {
-		c.Kernel.Decisions = prompt.DefaultCatalog()
+	if c.Execution.Decisions == nil {
+		c.Execution.Decisions = prompt.DefaultCatalog()
+	}
+	kernel, err := sessionkernel.New(c.Kernel)
+	if err != nil {
+		return nil, err
+	}
+	app.Kernel = kernel
+	// The Worker owns the execution records of the effects dispatched here
+	// (RUN-EXE-8); it is a deployment component, so it composes at this
+	// root, not inside the core subsystems.
+	if composeWorker {
+		w, err := executor.NewWorker(context.Background(), c.Executions, workerRoutes, c.Worker)
+		if err != nil {
+			return nil, err
+		}
+		app.Worker = w
+		port = w
 	}
 	// The subagent tool waits for an external response the Responder gives
 	// (SPN-1, DRV-4); the Responder opens children through the Owner, which
@@ -329,20 +351,19 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if app.spawn != nil {
 		responders = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
 	}
-	c.Kernel.Worker = wc
-	c.Kernel.Executor = port
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// (APP-CKP-1, RUN-LOP-10); provisional observations of effects in
-	// flight reach the Core's event stream (OBS-1).
-	c.Kernel.Planner = app
-	c.Kernel.Responders = responders
-	c.Kernel.Fail = app.fail
-	kernel, err := core.New(c.Kernel)
+	// flight reach the event stream (OBS-1).
+	c.Execution.Executor = port
+	c.Execution.Planner = app
+	c.Execution.Responders = responders
+	c.Execution.Fail = app.fail
+	exec, err := rt.NewExecution(c.Execution, kernel)
 	if err != nil {
 		return nil, err
 	}
-	app.Core = kernel
-	app.Owner = owner.New(kernel.Kernel, kernel.Execution)
+	app.Execution = exec
+	app.Owner = owner.New(kernel, exec)
 	if resolver != nil {
 		resolver.Projections = kernel.Projections
 	}
@@ -367,13 +388,19 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 }
 
 // rollback releases what a failed Build created, in reverse order of
-// creation: the Core (its Worker with it) and the sandbox. Nothing was
-// opened yet, so there is no ownership to release.
+// creation: the execution side, the Worker, the Kernel (its Writers) and
+// the sandbox. Nothing was opened yet, so there is no ownership to release.
 func (app *Application) rollback() {
 	app.bgCancel()
 	ctx := context.Background()
-	if app.Core != nil {
-		_ = app.Core.Close(ctx)
+	if app.Execution != nil {
+		app.Execution.Close()
+	}
+	if app.Worker != nil {
+		app.Worker.Close()
+	}
+	if app.Kernel != nil {
+		_ = app.Kernel.Close(ctx)
 	}
 	if app.sandbox != nil {
 		_ = app.sandbox.Close(ctx)
@@ -384,12 +411,12 @@ func (app *Application) rollback() {
 // Session's subscribers (OBS-1).
 func (app *Application) fail(sid session.SessionID, err error) {
 	app.warn(err)
-	app.Core.Bus.Failed(sid, err)
+	app.Kernel.Bus.Failed(sid, err)
 }
 
 // RegisterPreset adds or replaces a decision identity after Build.
 func (app *Application) RegisterPreset(id preset.PresetID, p preset.AgentPreset) (preset.PresetRef, error) {
-	ref, err := app.Core.Execution.Presets.Register(id, p)
+	ref, err := app.Execution.Presets.Register(id, p)
 	if err != nil {
 		return preset.PresetRef{}, err
 	}
@@ -414,14 +441,14 @@ func (app *Application) PresetRef(id preset.PresetID) (preset.PresetRef, error) 
 // (OBS-1): every event of every group applied by this application's
 // Writers, in commit order, plus failures of background drives.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
-	return app.Core.Bus.Subscribe(ctx, sid)
+	return app.Kernel.Bus.Subscribe(ctx, sid)
 }
 
 // EventsFrom is the catch-up form of Events: the Session's committed events
 // from CommitSeq from, then the live stream. A client that keeps the last
 // Position it handled resumes here after a disconnect without a gap.
 func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, from ledger.CommitSeq) (<-chan Event, error) {
-	return app.Core.Bus.SubscribeFrom(ctx, sid, from)
+	return app.Kernel.Bus.SubscribeFrom(ctx, sid, from)
 }
 
 // Close cancels the spawn effect's child drives, stops recovery listeners
@@ -450,15 +477,23 @@ func (app *Application) Close(ctx context.Context) error {
 	if werr := app.releases.wait(ctx); werr != nil && err == nil {
 		err = werr
 	}
-	// Ownership is released first, then the Core closes, its Worker with
-	// it: the Core's drives may still be settling outcomes through it.
-	// Records keep their leases until they expire and the next incarnation
-	// adopts them (RUN-EXE-8, SPN-4).
+	// Ownership is released first, then the execution side, then the
+	// Writers and, last, the Worker the drives may still be settling
+	// outcomes through (RUN-EXE-8, SPN-4). Records keep their leases until
+	// they expire and the next incarnation adopts them.
 	if oerr := app.Owner.Close(ctx); oerr != nil && err == nil {
 		err = oerr
 	}
-	if cerr := app.Core.Close(ctx); cerr != nil && err == nil {
-		err = cerr
+	if app.Execution != nil {
+		app.Execution.Close()
+	}
+	if app.Kernel != nil {
+		if cerr := app.Kernel.Close(ctx); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
+	if app.Worker != nil {
+		app.Worker.Close()
 	}
 	if app.sandbox != nil {
 		if cerr := app.sandbox.Close(ctx); cerr != nil && err == nil {
@@ -468,23 +503,23 @@ func (app *Application) Close(ctx context.Context) error {
 	return err
 }
 
-// buildExecutor decides the effect Port the Authority drives against and,
-// when this process owns execution records, the Worker the Core composes
-// over it (RUN-EXE-8). The local mode routes to the colocated Backend; a
-// supplied Port or the remote client is used as is unless extra routes
-// (spawn) are configured, in which case the Worker routes to them and to
-// the Port as its default Backend; the remote Worker keeps its own record
-// of the physical execution.
-func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *core.WorkerConfig, error) {
-	worker := func(routes ...executor.Route) (effect.ExecutionPort, *core.WorkerConfig, error) {
+// buildExecutor decides the effect port the Execution drives against and,
+// when this process owns execution records, the routes of the Worker Build
+// composes over it (RUN-EXE-8). The local mode routes to the colocated
+// Backend; a supplied Port or the remote client is used as is unless extra
+// routes (spawn, the workspace backend) are configured, in which case the
+// Worker routes to them and to the Port as its default Backend; the remote
+// Worker keeps its own record of the physical execution.
+func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, []executor.Route, bool, error) {
+	worker := func(routes ...executor.Route) (effect.ExecutionPort, []executor.Route, bool, error) {
 		if c.Executions == nil {
-			return nil, nil, errors.New("app: an execution record store (Config.Executions) is required when Build composes a Worker")
+			return nil, nil, false, errors.New("app: an execution record store (Config.Executions) is required when Build composes a Worker")
 		}
-		return nil, &core.WorkerConfig{Executions: c.Executions, Routes: append(extra, routes...), Options: c.Worker}, nil
+		return nil, append(extra, routes...), true, nil
 	}
 	if c.Executor.Port != nil {
 		if len(extra) == 0 {
-			return c.Executor.Port, nil, nil
+			return c.Executor.Port, nil, false, nil
 		}
 		return worker(executor.Default("port", executor.PortBackend(c.Executor.Port)))
 	}
@@ -492,24 +527,24 @@ func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *co
 	case "", ExecutorLocal:
 		catalog, err := local.NewCatalog(c.Executor.Models, c.Executor.Tools...)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		backend, err := local.NewLocalExecutor(catalog, catalog, c.Worker.Progress, true)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		return worker(local.Route(backend))
 	case ExecutorRemote:
 		if c.Executor.Endpoint == "" {
-			return nil, nil, errors.New("app: remote executor requires an endpoint")
+			return nil, nil, false, errors.New("app: remote executor requires an endpoint")
 		}
 		client := &http.Client{BaseURL: c.Executor.Endpoint, HTTP: c.Executor.HTTP}
 		if len(extra) == 0 {
-			return client, nil, nil
+			return client, nil, false, nil
 		}
 		return worker(executor.Default("remote", executor.PortBackend(client)))
 	default:
-		return nil, nil, fmt.Errorf("app: unknown executor mode %q", c.Executor.Mode)
+		return nil, nil, false, fmt.Errorf("app: unknown executor mode %q", c.Executor.Mode)
 	}
 }
 
@@ -517,4 +552,4 @@ func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *co
 type Event = observe.Event
 
 // ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1).
-type ForkRequest = core.ForkRequest
+type ForkRequest = sessionkernel.ForkRequest

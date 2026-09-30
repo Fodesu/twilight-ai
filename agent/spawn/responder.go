@@ -14,8 +14,8 @@ import (
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 )
@@ -305,7 +305,7 @@ func (r *Responder) settle(ctx context.Context, h *owner.Handle, pref preset.Pre
 
 func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, pref preset.PresetRef, inputs []run.AgentInput) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turn.NewTurnID()}
-	if _, err := r.a.Kernel.Turns.Start(ctx, h.Writer(), rt.StartRequest{Ref: ref, Inputs: inputs, Preset: pref}); err != nil {
+	if _, err := r.a.Kernel.Turns.Start(ctx, h.Writer(), sessionkernel.StartRequest{Ref: ref, Inputs: inputs, Preset: pref}); err != nil {
 		return "", err
 	}
 	return r.driveTurn(ctx, h, ref.TurnID)
@@ -330,7 +330,7 @@ func (r *Responder) driveTurn(ctx context.Context, h *owner.Handle, turnID turn.
 			return "", err
 		}
 		switch resp.Disposition {
-		case rt.ResumeWaitingForRecovery:
+		case sessionkernel.ResumeWaitingForRecovery:
 			if err := r.awaitRecovery(ctx, ref); err != nil {
 				return "", err
 			}
@@ -348,7 +348,7 @@ func (r *Responder) awaitRecovery(ctx context.Context, ref turn.TurnRef) error {
 		if err != nil {
 			return err
 		}
-		if resp.Status != turn.TurnActive || resp.Disposition != rt.ResumeWaitingForRecovery {
+		if resp.Status != turn.TurnActive || resp.Disposition != sessionkernel.ResumeWaitingForRecovery {
 			return nil
 		}
 		timer := time.NewTimer(delay)

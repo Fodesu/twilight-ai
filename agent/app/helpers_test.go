@@ -3,7 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
-	"github.com/felinics/twilight/agentcore/core"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"strings"
 	"sync"
 	"testing"
@@ -59,8 +59,8 @@ func durablePorts(t testing.TB, cfg app.Config) app.Config {
 	if cfg.Executions == nil {
 		db := sqlitetest.Open(t)
 		cfg.Executions = db.Executions()
-		if cfg.Kernel.Redispatches == nil {
-			cfg.Kernel.Redispatches = db.Redispatches()
+		if cfg.Execution.Redispatches == nil {
+			cfg.Execution.Redispatches = db.Redispatches()
 		}
 	}
 	return cfg
@@ -69,7 +69,7 @@ func durablePorts(t testing.TB, cfg app.Config) app.Config {
 // runState reads a Run's committed state by SessionID: the lease-free read
 // (OWN-HDL-2), so a test observes without owning.
 func runState(a *app.Application, sid session.SessionID, runID run.RunID) (store.Snapshot, error) {
-	record, err := a.Core.Runs.Record(context.Background(), sid, runID)
+	record, err := a.Kernel.Runs.Record(context.Background(), sid, runID)
 	if err != nil {
 		return store.Snapshot{}, err
 	}
@@ -100,8 +100,8 @@ func exampleStores(root, worker string) app.Config {
 		panic(err)
 	}
 	bindings := artifacts.Bindings()
-	return app.Config{Kernel: core.Ports{Store: store, Content: content,
-		Artifacts: core.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}},
+	return app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content,
+		Artifacts: sessionkernel.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}},
 		Executions: records.Executions()}
 }
 

@@ -22,7 +22,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
 	"github.com/felinics/twilight/agentcore/run/store"
-	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -170,12 +169,12 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 	return out
 }
 
-func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) rt.StartRequest {
-	return rt.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: presetRef}
+func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) sessionkernel.StartRequest {
+	return sessionkernel.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: presetRef}
 }
 
 // start submits ids and starts turnID with them.
-func (h *harness) start(turnID turn.TurnID, ids ...string) rt.TurnResult {
+func (h *harness) start(turnID turn.TurnID, ids ...string) sessionkernel.TurnResult {
 	h.t.Helper()
 	resp, err := h.c.Start(h.ctx, h.writer(), h.startRequest(turnID, h.submit(ids...)...))
 	if err != nil {
@@ -184,7 +183,7 @@ func (h *harness) start(turnID turn.TurnID, ids ...string) rt.TurnResult {
 	return resp
 }
 
-func (h *harness) status(turnID turn.TurnID) rt.TurnResult {
+func (h *harness) status(turnID turn.TurnID) sessionkernel.TurnResult {
 	h.t.Helper()
 	resp, err := h.c.Status(h.ctx, h.ref(turnID))
 	if err != nil {

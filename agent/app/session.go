@@ -11,12 +11,12 @@ import (
 	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/chatlog"
-	"github.com/felinics/twilight/agentcore/core"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
@@ -78,7 +78,7 @@ var ErrRouteContended = rt.ErrRouteContended
 type Result struct {
 	TurnID      turn.TurnID
 	Status      turn.TurnStatus
-	Disposition rt.ResumeDisposition
+	Disposition sessionkernel.ResumeDisposition
 	// AlreadyDriving reports that another driver in this process carries the
 	// Turn: the input is committed, its settlement and reply are reported by
 	// that driver. It is a fact about this process, not a Turn disposition.
@@ -105,7 +105,6 @@ type Session struct {
 	Recovered int
 
 	app  *Application
-	a    *core.Core
 	h    *owner.Handle
 	sid  session.SessionID
 	opts SessionOptions
@@ -127,20 +126,19 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
 		return nil, errors.New("app: open session requires a preset ref")
 	}
-	a := app.Core
-	if _, err := a.Execution.Presets.Resolve(opts.Preset); err != nil {
+	if _, err := app.Execution.Presets.Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
-	if err := a.EnsureSession(ctx, sid); err != nil {
+	if err := app.Kernel.EnsureSession(ctx, sid); err != nil {
 		return nil, err
 	}
 	h, err := app.Owner.Open(ctx, sid)
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{Recovered: h.Recovered, app: app, a: a, h: h, sid: sid, opts: opts}
+	s := &Session{Recovered: h.Recovered, app: app, h: h, sid: sid, opts: opts}
 	s.rt, err = rt.New(rt.Config{
-		Writer: h.Writer(), Driver: a.Execution.Driver, Turns: a.Turns, Chatlog: a.Chatlog, Projections: a.Projections,
+		Writer: h.Writer(), Driver: app.Execution.Driver, Turns: app.Kernel.Turns, Chatlog: app.Kernel.Chatlog, Projections: app.Kernel.Projections,
 		Preset: opts.Preset, NewTurnID: opts.NewTurnID,
 		RouteRetries: opts.RouteRetries, TurnBudget: opts.TurnBudget,
 	})
@@ -186,7 +184,7 @@ func (s *Session) Wait(ctx context.Context) error { return s.host.wait(ctx) }
 
 // Status reports the active Turn and the Turns awaiting Retry or Settle.
 func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
-	surface, err := turn.ReadSurface(ctx, s.a.Projections, s.sid)
+	surface, err := turn.ReadSurface(ctx, s.app.Kernel.Projections, s.sid)
 	if err != nil {
 		return SessionStatus{}, err
 	}
@@ -247,7 +245,7 @@ func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) 
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
 // stopped Turn's drive observes the cancellation and returns.
-func (s *Session) Stop(ctx context.Context, reason string) (rt.TurnResult, bool, error) {
+func (s *Session) Stop(ctx context.Context, reason string) (sessionkernel.TurnResult, bool, error) {
 	return s.rt.Stop(ctx, reason)
 }
 
@@ -292,7 +290,7 @@ func (s *Session) settled(ctx context.Context, st rt.Settlement) []Result {
 // materialization failures are reported to Warn and leave Reply empty.
 func (s *Session) result(ctx context.Context, resp *rt.DriveResult) Result {
 	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, AlreadyDriving: resp.AlreadyDriving}
-	if !resp.AlreadyDriving && resp.Disposition == rt.ResumeFinished {
+	if !resp.AlreadyDriving && resp.Disposition == sessionkernel.ResumeFinished {
 		text, err := s.app.Reply(ctx, resp.Ref)
 		if err != nil {
 			s.app.warn(fmt.Errorf("app: materialize reply of turn %s: %w", resp.Ref.TurnID, err))
@@ -460,17 +458,17 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, erro
 	if withinWindow {
 		return "", false, nil
 	}
-	materialized, err := chatlog.NewMaterializer(s.a.Content).Entries(ctx, cctx.Entries)
+	materialized, err := chatlog.NewMaterializer(s.app.Kernel.Content).Entries(ctx, cctx.Entries)
 	if err != nil {
 		return "", false, err
 	}
 	summary, err := compaction.Summarizer{
-		ResolvePreset: s.a.Execution.Presets.Resolve, Content: s.a.Frozen, Executor: s.a.Execution.Executor, Watcher: s.a.Execution.Watcher,
+		ResolvePreset: s.app.Execution.Presets.Resolve, Content: s.app.Kernel.Frozen, Executor: s.app.Execution.Executor, Watcher: s.app.Execution.Watcher,
 	}.Summarize(ctx, s.sid, s.opts.Preset, materialized)
 	if err != nil {
 		return "", false, err
 	}
-	id, err := s.a.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, rt.RequireQuiescentRun)
+	id, err := s.app.Kernel.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, sessionkernel.RequireQuiescentRun)
 	if err != nil {
 		return "", false, err
 	}

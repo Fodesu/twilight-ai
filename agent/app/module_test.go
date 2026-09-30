@@ -5,12 +5,11 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
-	"github.com/felinics/twilight/agentcore/core"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
-	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -75,7 +74,7 @@ var auditModule = module.ModuleDescriptor{
 // EXT-PRJ-2).
 func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	ctx := context.Background()
-	h := newHost(t, app.Config{Kernel: core.Ports{Modules: []module.ModuleDescriptor{auditModule}}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
+	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Modules: []module.ModuleDescriptor{auditModule}}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
 	const sid session.SessionID = "s-app"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
@@ -90,7 +89,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := owned.Writer()
-	in, err := h.Core.Chatlog.Submit(ctx, w, "in-1", agentinput.Text("hello"))
+	in, err := h.Kernel.Chatlog.Submit(ctx, w, "in-1", agentinput.Text("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +103,11 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
-	if _, err := h.Core.Turns.Start(ctx, w, rt.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
+	if _, err := h.Kernel.Turns.Start(ctx, w, sessionkernel.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
 		Inputs: []run.AgentInput{in}, Preset: preset}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Core.Execution.Driver.Drive(ctx, w, "t1"); err != nil {
+	if _, err := h.Execution.Driver.Drive(ctx, w, "t1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,7 +138,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	}
 
 	// Both sources coexist in one commit ledger.
-	page, err := h.Core.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
+	page, err := h.Kernel.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
 	if err != nil {
 		t.Fatal(err)
 	}

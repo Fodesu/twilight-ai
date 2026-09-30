@@ -8,13 +8,14 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
-	"github.com/felinics/twilight/agentcore/core"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -50,7 +51,7 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (preset.Pre
 		t.Fatal(err)
 	}
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
-	p1 := newHost(t, app.Config{Kernel: core.Ports{Store: store1, Content: content1}}, map[run.ModelRef]local.ModelInvoker{"m-1": gate})
+	p1 := newHost(t, app.Config{Kernel: sessionkernel.Ports{Store: store1, Content: content1}}, map[run.ModelRef]local.ModelInvoker{"m-1": gate})
 	presetRef, err := p1.RegisterPreset("a1", ap)
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +93,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 		t.Fatal(err)
 	}
 	replan := &scriptedRequests{}
-	p2 := newHost(t, app.Config{Kernel: core.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}}, map[run.ModelRef]local.ModelInvoker{"m-1": replan})
+	p2 := newHost(t, app.Config{Kernel: sessionkernel.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}}, map[run.ModelRef]local.ModelInvoker{"m-1": replan})
 	if _, err := p2.RegisterPreset("a1", ap); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,9 @@ func TestRestartRedispatchesMissingEffect(t *testing.T) {
 		t.Fatal(err)
 	}
 	again := &scriptedRequests{}
-	p2 := newHost(t, app.Config{Kernel: core.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}, MissingEffects: reconcile.RedispatchMissing}},
+	p2 := newHost(t, app.Config{
+		Kernel:    sessionkernel.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}},
+		Execution: rt.ExecutionConfig{MissingEffects: reconcile.RedispatchMissing}},
 		map[run.ModelRef]local.ModelInvoker{"m-1": again})
 	if _, err := p2.RegisterPreset("a1", ap); err != nil {
 		t.Fatal(err)
@@ -278,7 +281,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec := &reattachingExecutor{recordingExecutor: recordingExecutor{reply: "reattached"}, reads: make(chan context.Context, 4)}
-	p2, err := app.Build(durablePorts(t, app.Config{Kernel: core.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, Executor: app.ExecutorConfig{Port: exec}}))
+	p2, err := app.Build(durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, Executor: app.ExecutorConfig{Port: exec}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +413,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 				t.Fatal(err)
 			}
 			exec := &reattachingExecutor{reads: make(chan context.Context, 4)}
-			h, err := app.Build(durablePorts(t, app.Config{Kernel: core.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, Executor: app.ExecutorConfig{Port: exec}}))
+			h, err := app.Build(durablePorts(t, app.Config{Kernel: sessionkernel.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, Executor: app.ExecutorConfig{Port: exec}}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -457,7 +460,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 
 func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID run.RunID) sessionstore.Record {
 	t.Helper()
-	rec, err := h.Core.Runs.Record(context.Background(), sid, runID)
+	rec, err := h.Kernel.Runs.Record(context.Background(), sid, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,8 +473,8 @@ func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID r
 func TestBuildRejectsRedispatchWithoutDispatchLedger(t *testing.T) {
 	cfg := durablePorts(t, app.Config{})
 	cfg.Executions = sqlitetest.Open(t).Executions()
-	cfg.Kernel.Redispatches = nil
-	cfg.Kernel.MissingEffects = reconcile.RedispatchMissing
+	cfg.Execution.Redispatches = nil
+	cfg.Execution.MissingEffects = reconcile.RedispatchMissing
 	cfg.Executor = app.ExecutorConfig{Models: map[run.ModelRef]local.ModelInvoker{}}
 	if _, err := app.Build(cfg); err == nil {
 		t.Fatal("Build accepted RedispatchMissing without a dispatch ledger")
