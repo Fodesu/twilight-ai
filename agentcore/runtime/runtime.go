@@ -2,12 +2,11 @@
 // layers: the Coordinator commits the Turn protocol's cross-module commands
 // (Turn facts, chatlog deliveries and Run commands in one unit), the
 // quiescence guards judge when a Session admits work that moves the
-// context, and the SessionRuntime admits inputs, routes them into Turns,
-// drives the Turns to settlement and drains the submitted backlog until the
-// Session is quiescent. Every call runs on the caller's goroutine and ctx;
-// which calls run in the background, what a reply is and which policies
-// run at quiescence are the host's decisions, taken on the Settlement each
-// call returns.
+// context, and the SessionRuntime admits inputs into Turns and advances
+// the Session to its next quiescent point. Every call runs on the caller's
+// goroutine and ctx; which calls run in the background, what a reply is
+// and which policies run at quiescence are the host's decisions, taken on
+// the Settlement each call returns.
 package runtime
 
 import (
@@ -42,12 +41,13 @@ type DriveResult struct {
 	AlreadyDriving bool
 }
 
-// Settlement is what follows one drive: the Turn that was driven and the
-// backlog Turns drained after it, in order. Quiescent reports that the
-// backlog is drained and no Turn is active: the point at which the host's
-// quiescence policies apply. It is false when another driver carries the
-// settlement (AlreadyDriving), when the drain stopped at the DrainBudget
-// and when a concurrent drain took the backlog.
+// Settlement is what one advance of the Session reports: the Turns it
+// drove, in order -- the Turn it began with, then every Turn it started
+// from inputs that were submitted but not yet delivered. Quiescent reports
+// that no such input remains and no Turn is active: the point at which the
+// host's quiescence policies apply. It is false when another driver
+// carries the settlement (AlreadyDriving), when the advance stopped at the
+// TurnBudget and when a concurrent advance took the pending inputs.
 type Settlement struct {
 	Turns     []DriveResult
 	Quiescent bool
@@ -69,40 +69,42 @@ type Config struct {
 	NewTurnID func() turn.TurnID
 	// RouteRetries bounds how many times one input's route is re-committed
 	// after a conflict with a concurrent route before the last conflict is
-	// returned; the input stays submitted and the next Send, Drain or
+	// returned; the input stays submitted and the next Submit, Advance or
 	// Resume routes it. Zero selects DefaultRouteRetries.
 	RouteRetries int
-	// DrainBudget bounds how many Turns one settlement drains from the
-	// backlog before returning ErrDrainBudget with the results so far; the
-	// remaining backlog stays submitted for the next call. Zero selects
-	// DefaultDrainBudget.
-	DrainBudget int
+	// TurnBudget bounds how many Turns one advance starts from submitted,
+	// undelivered inputs before returning ErrTurnBudget with the Turns so
+	// far; the remaining inputs stay submitted for the next call. Zero
+	// selects DefaultTurnBudget.
+	TurnBudget int
 }
 
-// DefaultRouteRetries and DefaultDrainBudget are the liveness bounds a
+// DefaultRouteRetries and DefaultTurnBudget are the liveness bounds a
 // Config with zero values takes.
 const (
 	DefaultRouteRetries = 4
-	DefaultDrainBudget  = 64
+	DefaultTurnBudget   = 64
 )
 
 var (
 	// ErrRouteContended reports a route that lost to concurrent routes
-	// RouteRetries times. The input is submitted and stays in the backlog;
-	// the next Send, Drain or Resume routes it. It is a transient answer,
+	// RouteRetries times. The input is submitted and stays undelivered; the
+	// next Submit, Advance or Resume routes it. It is a transient answer,
 	// unlike the turn.ErrConflict of a Turn that admits no route.
 	ErrRouteContended = errors.New("runtime: route contended")
-	// ErrDrainBudget reports a settlement that stopped draining the backlog
-	// at the DrainBudget with inputs still submitted.
-	ErrDrainBudget = errors.New("runtime: drain budget exhausted with inputs still submitted")
+	// ErrTurnBudget reports an advance that stopped at the TurnBudget with
+	// inputs still submitted.
+	ErrTurnBudget = errors.New("runtime: turn budget exhausted with inputs still submitted")
 )
 
-// SessionRuntime is the conversation process over one owned Session: the
-// input admission, the deliver-or-start routing, the driving and the
-// backlog draining. Every command runs through the Config's Writer; reads
-// go by SessionID. Concurrent calls are safe: writes serialize in the
-// Writer, and a call whose input lands in a running Turn reports
-// AlreadyDriving. It starts no goroutine of its own.
+// SessionRuntime is the conversation process over one owned Session. Submit
+// admits an input into a Turn, Advance drives a Turn to settlement and on
+// through every Turn the remaining inputs start, Resume does the same for
+// a Session as found after a restart, and Stop settles the active Turn.
+// Every command runs through the Config's Writer; reads go by SessionID.
+// Concurrent calls are safe: writes serialize in the Writer, and a call
+// whose input lands in a running Turn reports AlreadyDriving. It starts no
+// goroutine of its own.
 type SessionRuntime struct {
 	w      writer.Writer
 	driver *driver.Driver
@@ -114,7 +116,7 @@ type SessionRuntime struct {
 	newID  func() turn.TurnID
 
 	routeRetries int
-	drainBudget  int
+	turnBudget   int
 }
 
 // New returns the conversation process for one owned Session.
@@ -145,96 +147,100 @@ func New(cfg Config) (*SessionRuntime, error) { //nolint:gocritic // hugeParam: 
 	if retry <= 0 {
 		retry = DefaultRouteRetries
 	}
-	budget := cfg.DrainBudget
+	budget := cfg.TurnBudget
 	if budget <= 0 {
-		budget = DefaultDrainBudget
+		budget = DefaultTurnBudget
 	}
 	return &SessionRuntime{w: cfg.Writer, driver: cfg.Driver, turns: cfg.Turns, chat: cfg.Chatlog, proj: cfg.Projections,
-		sid: cfg.Writer.SessionID(), preset: cfg.Preset, newID: newID, routeRetries: retry, drainBudget: budget}, nil
+		sid: cfg.Writer.SessionID(), preset: cfg.Preset, newID: newID, routeRetries: retry, turnBudget: budget}, nil
 }
 
 func (r *SessionRuntime) ref(turnID turn.TurnID) turn.TurnRef {
 	return turn.TurnRef{SessionID: r.sid, TurnID: turnID}
 }
 
-// Submit records one input body under id and returns the AgentInput routing
-// names it by. The body is opaque to the runtime; the idempotency key is the
-// id, so a retried submission replays.
-func (r *SessionRuntime) Submit(ctx context.Context, id run.InputID, content run.CanonicalJSON) (run.AgentInput, error) {
-	return r.chat.Submit(ctx, r.w, id, content)
+// Submitted is what Submit reports: the Turn the input landed in, and
+// whether another driver of this process is already carrying that Turn, in
+// which case it settles and reports there and the caller has nothing to
+// advance.
+type Submitted struct {
+	Ref            turn.TurnRef
+	AlreadyDriving bool
 }
 
-// Send submits the input and drives the Session to quiescence: the first
-// Turn of the Settlement is the one the input landed in, the rest are
-// backlog Turns this call drained after its settlement. When another driver
-// of this process took the input, the single Turn reports AlreadyDriving
-// and that driver settles and drains.
-func (r *SessionRuntime) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Settlement, error) {
-	in, err := r.Submit(ctx, id, content)
+// Submit records one input body under id and commits its route: into the
+// active Turn when there is one, into a new Turn otherwise. The body is
+// opaque to the runtime; the idempotency key is the id, so a retried
+// submission replays. Nothing is driven: the caller advances the Turn,
+// here or on another goroutine, with Advance.
+func (r *SessionRuntime) Submit(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Submitted, error) {
+	in, err := r.chat.Submit(ctx, r.w, id, content)
 	if err != nil {
-		return Settlement{}, err
+		return Submitted{}, err
 	}
-	resp, err := r.route(ctx, in)
-	if err != nil {
-		return Settlement{}, err
-	}
-	return r.Settle(ctx, resp)
-}
-
-// RouteInput commits one submitted input's route -- Deliver into the active
-// Turn, or Start a new one -- with the conflict retry of Config, and
-// returns the Turn it landed in without driving it. absorbed reports that
-// another driver delivered the input first; ref then names the Turn that
-// took it, and that driver settles and drains. A caller that drives later,
-// or elsewhere, continues with Drive and Settle.
-func (r *SessionRuntime) RouteInput(ctx context.Context, in run.AgentInput) (ref turn.TurnRef, absorbed bool, err error) {
 	var lastErr error
 	for attempt := 0; attempt < r.routeRetries; attempt++ {
-		ref, err := r.commitRoute(ctx, []run.AgentInput{in})
+		ref, err := r.route(ctx, []run.AgentInput{in})
 		if err == nil {
-			return ref, false, nil
+			return Submitted{Ref: ref}, nil
 		}
 		if !errors.Is(err, turn.ErrConflict) {
-			return turn.TurnRef{}, false, err
+			return Submitted{}, err
 		}
 		lastErr = err
 		if taken, ok := r.absorbed(ctx, in); ok {
-			return taken.Ref, true, nil
+			return Submitted{Ref: taken.Ref, AlreadyDriving: true}, nil
 		}
 	}
-	return turn.TurnRef{}, false, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, r.routeRetries, lastErr.Error())
+	return Submitted{}, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, r.routeRetries, lastErr.Error())
 }
 
-// Route commits the route of the already-submitted inputs -- Deliver into
-// the active Turn, or Start a new one -- and drives the Turn to its next
-// quiescent point.
-func (r *SessionRuntime) Route(ctx context.Context, inputs []run.AgentInput) (DriveResult, error) {
-	ref, err := r.commitRoute(ctx, inputs)
+// Send submits the input and advances the Session to quiescence: the first
+// Turn of the Settlement is the one the input landed in, the rest are the
+// Turns the remaining inputs started. When another driver of this process
+// took the input, the single Turn reports AlreadyDriving and that driver
+// settles.
+func (r *SessionRuntime) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Settlement, error) {
+	sub, err := r.Submit(ctx, id, content)
 	if err != nil {
-		return DriveResult{}, err
+		return Settlement{}, err
 	}
-	return r.Drive(ctx, ref.TurnID)
+	if sub.AlreadyDriving {
+		resp, _ := r.absorbedStatus(ctx, sub.Ref)
+		return Settlement{Turns: []DriveResult{resp}}, nil
+	}
+	return r.Advance(ctx, sub.Ref.TurnID)
 }
 
-// Drain starts the next Turn from the backlog of submitted, undelivered
-// inputs and drives it; ok is false when there is none.
-func (r *SessionRuntime) Drain(ctx context.Context) (DriveResult, bool, error) {
-	resp, ok, err := r.drain(ctx)
-	return resp, ok, err
+// Advance drives the Turn to its next quiescent point and, while its
+// settlement leaves inputs submitted but undelivered, starts the next Turn
+// from them and drives it, until no input remains and no Turn is active:
+// the Settlement is then Quiescent. An advance that stops at the TurnBudget
+// returns the Turns so far with ErrTurnBudget. The caller's ctx bounds the
+// drive: a cancelled drive leaves the Turn active for the next Resume.
+func (r *SessionRuntime) Advance(ctx context.Context, turnID turn.TurnID) (Settlement, error) {
+	resp, err := r.drive(ctx, turnID)
+	if err != nil {
+		return Settlement{}, err
+	}
+	return r.settle(ctx, resp)
 }
 
-// Resume drives a still-active Turn (after a restart) to settlement and
-// drains the backlog; ok is false when no Turn is active.
+// Resume advances a Session as found after a restart: the still-active Turn
+// when there is one, otherwise the Turn the submitted, undelivered inputs
+// start. ok is false when there is neither.
 func (r *SessionRuntime) Resume(ctx context.Context) (Settlement, bool, error) {
-	active, ok, err := r.active(ctx)
+	if active, ok, err := r.active(ctx); err != nil {
+		return Settlement{}, false, err
+	} else if ok {
+		out, err := r.Advance(ctx, active)
+		return out, true, err
+	}
+	resp, ok, err := r.next(ctx)
 	if err != nil || !ok {
 		return Settlement{}, false, err
 	}
-	resp, err := r.Drive(ctx, active)
-	if err != nil {
-		return Settlement{}, false, err
-	}
-	out, err := r.Settle(ctx, resp)
+	out, err := r.settle(ctx, resp)
 	return out, true, err
 }
 
@@ -260,33 +266,10 @@ func (r *SessionRuntime) active(ctx context.Context) (turn.TurnID, bool, error) 
 	return "", false, nil
 }
 
-// route commits one input's route with the conflict retry of Config and
-// drives the Turn the input landed in. The AlreadyDriving result reports
-// that another driver of this process delivered the input first.
-func (r *SessionRuntime) route(ctx context.Context, in run.AgentInput) (DriveResult, error) {
-	var lastErr error
-	for attempt := 0; attempt < r.routeRetries; attempt++ {
-		ref, err := r.commitRoute(ctx, []run.AgentInput{in})
-		if err == nil {
-			return r.Drive(ctx, ref.TurnID)
-		}
-		if !errors.Is(err, turn.ErrConflict) {
-			return DriveResult{}, err
-		}
-		lastErr = err
-		if absorbed, taken := r.absorbed(ctx, in); taken {
-			return absorbed, nil
-		}
-	}
-	return DriveResult{}, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, r.routeRetries, lastErr.Error())
-}
-
-// Drive runs the Turn to its next quiescent point and reads its committed
+// drive runs the Turn to its next quiescent point and reads its committed
 // answer; AlreadyDriving reports a concurrent local driver of the same Run
-// carried it, in which case the answer is the status as read. The caller's
-// ctx bounds the drive: a cancelled drive leaves the Turn active for the
-// next Resume.
-func (r *SessionRuntime) Drive(ctx context.Context, turnID turn.TurnID) (DriveResult, error) {
+// carried it, in which case the answer is the status as read.
+func (r *SessionRuntime) drive(ctx context.Context, turnID turn.TurnID) (DriveResult, error) {
 	taken, err := r.driver.Drive(ctx, r.w, turnID)
 	if err != nil {
 		return DriveResult{}, err
@@ -298,9 +281,9 @@ func (r *SessionRuntime) Drive(ctx context.Context, turnID turn.TurnID) (DriveRe
 	return DriveResult{TurnResult: resp, AlreadyDriving: taken}, nil
 }
 
-// commitRoute is the deliver-or-start half of routing: Deliver into the
-// active Turn when there is one, Start a new one when there is none.
-func (r *SessionRuntime) commitRoute(ctx context.Context, inputs []run.AgentInput) (turn.TurnRef, error) {
+// route commits the inputs' route: Deliver into the active Turn when there
+// is one, Start a new one when there is none.
+func (r *SessionRuntime) route(ctx context.Context, inputs []run.AgentInput) (turn.TurnRef, error) {
 	surface, err := turn.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
 		return turn.TurnRef{}, err
@@ -330,18 +313,24 @@ func (r *SessionRuntime) absorbed(ctx context.Context, in run.AgentInput) (Drive
 	if !ok || v.Status == chatlog.InputSubmitted {
 		return DriveResult{}, false
 	}
-	ref := r.ref(turn.TurnID(v.Input.TurnID))
-	out := DriveResult{TurnResult: TurnResult{Ref: ref}, AlreadyDriving: true}
-	if resp, err := r.turns.Status(ctx, ref); err == nil {
-		out.TurnResult = resp
-		out.AlreadyDriving = true
-	}
-	return out, true
+	resp, _ := r.absorbedStatus(ctx, r.ref(turn.TurnID(v.Input.TurnID)))
+	return resp, true
 }
 
-// drain starts the next Turn from the backlog of submitted, undelivered
-// inputs and drives it; ok is false when there is none.
-func (r *SessionRuntime) drain(ctx context.Context) (DriveResult, bool, error) {
+// absorbedStatus is the AlreadyDriving answer for a Turn another driver
+// carries: its status as read, or its Ref alone when the read fails.
+func (r *SessionRuntime) absorbedStatus(ctx context.Context, ref turn.TurnRef) (DriveResult, error) {
+	out := DriveResult{TurnResult: TurnResult{Ref: ref}, AlreadyDriving: true}
+	resp, err := r.turns.Status(ctx, ref)
+	if err == nil {
+		out.TurnResult = resp
+	}
+	return out, err
+}
+
+// next starts a Turn from the submitted, undelivered inputs and drives it;
+// ok is false when there is none.
+func (r *SessionRuntime) next(ctx context.Context) (DriveResult, bool, error) {
 	chat, err := chatlog.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
 		return DriveResult{}, false, err
@@ -354,25 +343,28 @@ func (r *SessionRuntime) drain(ctx context.Context) (DriveResult, bool, error) {
 	for i, in := range pending {
 		inputs[i] = run.AgentInput{ID: run.InputID(in.ID), Digest: in.Digest}
 	}
-	resp, err := r.Route(ctx, inputs)
+	ref, err := r.route(ctx, inputs)
+	if err != nil {
+		return DriveResult{}, false, err
+	}
+	resp, err := r.drive(ctx, ref.TurnID)
 	return resp, err == nil, err
 }
 
-// Settle is what follows one drive: while the settlement leaves submitted,
-// undelivered inputs, the next Turn starts from them; when the backlog is
-// drained and no Turn is active, the Settlement is Quiescent. A drain that
-// stops at the DrainBudget returns the Turns so far with ErrDrainBudget.
-func (r *SessionRuntime) Settle(ctx context.Context, resp DriveResult) (Settlement, error) {
+// settle is what follows one drive: while the settlement leaves submitted,
+// undelivered inputs, the next Turn starts from them; when none remains and
+// no Turn is active, the Settlement is Quiescent.
+func (r *SessionRuntime) settle(ctx context.Context, resp DriveResult) (Settlement, error) {
 	out := Settlement{Turns: []DriveResult{resp}}
 	if resp.AlreadyDriving {
-		// The running driver settles the Turn and drains in its own call.
+		// The running driver settles the Turn and advances in its own call.
 		return out, nil
 	}
-	for range r.drainBudget {
-		next, ok, err := r.drain(ctx)
+	for range r.turnBudget {
+		next, ok, err := r.next(ctx)
 		if err != nil {
 			if errors.Is(err, turn.ErrConflict) {
-				// A concurrent Send or drain took the backlog; it reports there.
+				// A concurrent advance took the inputs; it reports there.
 				return out, nil
 			}
 			return out, err
@@ -386,5 +378,5 @@ func (r *SessionRuntime) Settle(ctx context.Context, resp DriveResult) (Settleme
 			return out, nil
 		}
 	}
-	return out, ErrDrainBudget
+	return out, ErrTurnBudget
 }

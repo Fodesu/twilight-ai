@@ -41,13 +41,13 @@ type SessionOptions struct {
 	// RouteRetries bounds how many times one input's route is re-committed
 	// after a conflict with a concurrent route before the last conflict is
 	// returned to the caller; the input stays submitted and the next Send,
-	// Drain or Resume routes it. Zero selects DefaultRouteRetries.
+	// Submit or Resume routes it. Zero selects DefaultRouteRetries.
 	RouteRetries int
-	// DrainBudget bounds how many Turns one settlement drains from the
-	// backlog before returning ErrDrainBudget with the Results so far; the
-	// remaining backlog stays submitted for the next call. Zero selects
-	// DefaultDrainBudget.
-	DrainBudget int
+	// TurnBudget bounds how many Turns one settlement starts from
+	// submitted, undelivered inputs before returning ErrTurnBudget with the
+	// Results so far; the remaining inputs stay submitted for the next
+	// call. Zero selects DefaultTurnBudget.
+	TurnBudget int
 	// InboxPoll is how often the open Session reads its command inbox
 	// besides being woken; zero selects DefaultInboxPoll.
 	InboxPoll time.Duration
@@ -57,21 +57,21 @@ type SessionOptions struct {
 	InheritedWorkspace workspace.InheritedPolicy
 }
 
-// DefaultRouteRetries and DefaultDrainBudget are the liveness bounds a
+// DefaultRouteRetries and DefaultTurnBudget are the liveness bounds a
 // SessionOptions with zero values takes.
 const (
 	DefaultRouteRetries = rt.DefaultRouteRetries
-	DefaultDrainBudget  = rt.DefaultDrainBudget
+	DefaultTurnBudget   = rt.DefaultTurnBudget
 )
 
-// ErrDrainBudget reports a settlement that stopped draining the backlog at
-// the DrainBudget with inputs still submitted.
-var ErrDrainBudget = rt.ErrDrainBudget
+// ErrTurnBudget reports a settlement that stopped at the TurnBudget with
+// inputs still submitted.
+var ErrTurnBudget = rt.ErrTurnBudget
 
 // ErrRouteContended reports a route that lost to concurrent routes
-// RouteRetries times. The input is submitted and stays in the backlog; the
-// next Send, Drain or Resume routes it. It is a transient answer, unlike the
-// turn.ErrConflict of a Turn that admits no route.
+// RouteRetries times. The input is submitted and stays undelivered; the
+// next Send, Submit or Resume routes it. It is a transient answer, unlike
+// the turn.ErrConflict of a Turn that admits no route.
 var ErrRouteContended = rt.ErrRouteContended
 
 // Result is the conversation-level outcome of one settled (or steered) Turn.
@@ -95,11 +95,11 @@ type SessionStatus struct {
 }
 
 // Session is the application's conversation over one owned Session: the
-// host-facing façade whose routing, driving, draining and background
-// execution the runtime owns, with this layer's replies, workspace
-// binding and snapshot policy and automatic compaction on top.
-// Concurrent calls are safe: writes serialize in the Session Writer, and a
-// call whose input lands in a running Turn reports already_driving.
+// host-facing façade whose routing, advancing and background execution the
+// runtime owns, with this layer's replies, workspace binding and snapshot
+// policy and automatic compaction on top. Concurrent calls are safe: writes
+// serialize in the Session Writer, and a call whose input lands in a running
+// Turn reports already_driving.
 type Session struct {
 	// Recovered is the takeover disposition count from opening.
 	Recovered int
@@ -142,7 +142,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	s.rt, err = rt.New(rt.Config{
 		Writer: h.Writer(), Driver: a.Driver, Turns: a.Turns, Chatlog: a.Chatlog, Projections: a.Projections,
 		Preset: opts.Preset, NewTurnID: opts.NewTurnID,
-		RouteRetries: opts.RouteRetries, DrainBudget: opts.DrainBudget,
+		RouteRetries: opts.RouteRetries, TurnBudget: opts.TurnBudget,
 	})
 	if err != nil {
 		_ = h.Close(context.WithoutCancel(ctx))
@@ -201,9 +201,10 @@ func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
 func (s *Session) Events(ctx context.Context) <-chan Event { return s.app.Events(ctx, s.sid) }
 
 // Send submits text and blocks until it is settled or absorbed: the first
-// Result is the Turn the input landed in, further Results are backlog Turns
-// this call drained after settlement. A settlement that stopped at the
-// DrainBudget returns the Results so far with ErrDrainBudget.
+// Result is the Turn the input landed in, further Results are the Turns
+// this call started from inputs still submitted after settlement. A
+// settlement that stopped at the TurnBudget returns the Results so far with
+// ErrTurnBudget.
 func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 	st, err := s.rt.Send(ctx, chatlog.NewInputID(), input.Text(text))
 	if st.Turns == nil {
@@ -219,39 +220,29 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 
 // SubmitInput submits text under the caller's InputID, commits its route
 // and returns the Turn it landed in without waiting. The InputID is the
-// idempotency key: a retried submission replays. The Turn is driven to
-// settlement -- and the backlog drained -- in the background; progress and
-// the reply arrive on Events, failures on Events and Config.Warn. Close
-// cancels the background drive; a cancelled Turn stays active and resumes
-// on the next open.
+// idempotency key: a retried submission replays. The Turn is advanced to
+// settlement in the background; progress and the reply arrive on Events,
+// failures on Events and Config.Warn. Close cancels the background
+// advance; a cancelled Turn stays active and resumes on the next open.
 func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) (turn.TurnRef, error) {
-	in, err := s.rt.Submit(ctx, id, input.Text(text))
+	sub, err := s.rt.Submit(ctx, id, input.Text(text))
 	if err != nil {
 		return turn.TurnRef{}, err
 	}
-	ref, absorbed, err := s.rt.RouteInput(ctx, in)
-	if err != nil {
-		return turn.TurnRef{}, err
-	}
-	if absorbed {
-		// A running driver carries the input; nothing to drive here.
-		return ref, nil
+	if sub.AlreadyDriving {
+		// A running driver carries the input; nothing to advance here.
+		return sub.Ref, nil
 	}
 	s.host.run(func(ctx context.Context) {
-		resp, err := s.rt.Drive(ctx, ref.TurnID)
+		st, err := s.rt.Advance(ctx, sub.Ref.TurnID)
 		if err != nil {
-			s.backgroundFailed(ref, fmt.Errorf("driving turn %s: %w", ref.TurnID, err))
-			return
-		}
-		st, err := s.rt.Settle(ctx, resp)
-		if err != nil {
-			s.backgroundFailed(ref, fmt.Errorf("settling turn %s: %w", ref.TurnID, err))
+			s.backgroundFailed(sub.Ref, fmt.Errorf("advancing turn %s: %w", sub.Ref.TurnID, err))
 		}
 		if st.Quiescent {
 			s.quiescentPolicies(ctx)
 		}
 	})
-	return ref, nil
+	return sub.Ref, nil
 }
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
@@ -260,21 +251,21 @@ func (s *Session) Stop(ctx context.Context, reason string) (rt.TurnResult, bool,
 	return s.rt.Stop(ctx, reason)
 }
 
-// Route commits the inputs' route -- Deliver into the active Turn, or Start
-// a new one -- then drives the Turn to its next quiescent point.
-func (s *Session) Route(ctx context.Context, inputs []run.AgentInput) (rt.DriveResult, error) {
-	return s.rt.Route(ctx, inputs)
+// Advance drives the Turn to settlement and on through every Turn the
+// inputs still submitted start, blocking until the Session is quiescent
+// or another driver carries it.
+func (s *Session) Advance(ctx context.Context, turnID turn.TurnID) ([]Result, error) {
+	st, err := s.rt.Advance(ctx, turnID)
+	if st.Turns == nil {
+		return nil, err
+	}
+	return s.settled(ctx, st), err
 }
 
-// Drain starts the next Turn from the backlog of submitted, undelivered
-// inputs and drives it; ok is false when there is none.
-func (s *Session) Drain(ctx context.Context) (rt.DriveResult, bool, error) {
-	return s.rt.Drain(ctx)
-}
-
-// Resume drives a still-active Turn (after a restart) to settlement and
-// drains the backlog; ok is false when no Turn is active. A settlement that
-// stopped at the DrainBudget returns the Results so far with ErrDrainBudget.
+// Resume advances a Session as found after a restart: the still-active
+// Turn when there is one, otherwise the Turn the submitted, undelivered
+// inputs start. ok is false when there is neither. A settlement that
+// stopped at the TurnBudget returns the Results so far with ErrTurnBudget.
 func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
 	st, ok, err := s.rt.Resume(ctx)
 	if !ok {
@@ -311,9 +302,9 @@ func (s *Session) result(ctx context.Context, resp *rt.DriveResult) Result {
 	return r
 }
 
-// quiescentPolicies runs at a quiescent Settlement: a settlement that
-// drained the backlog snapshots the bound Workspace and runs the automatic
-// compaction policy.
+// quiescentPolicies runs at a quiescent Settlement: a settlement that left
+// no input undelivered snapshots the bound Workspace and runs the
+// automatic compaction policy.
 func (s *Session) quiescentPolicies(ctx context.Context) {
 	s.maybeSnapshot(ctx)
 	s.maybeCompact(ctx)
@@ -388,8 +379,8 @@ func (s *Session) SnapshotWorkspace(ctx context.Context) (workspace.Snapshot, er
 	return snap, nil
 }
 
-// maybeSnapshot is the SnapshotAfterTurn policy: after a settlement that
-// drained the backlog, the bound Workspace is snapshotted in the
+// maybeSnapshot is the SnapshotAfterTurn policy: after a quiescent
+// settlement, the bound Workspace is snapshotted in the
 // background, one snapshot at a time per Session, so the settlement does
 // not wait on the copy; Wait covers it. A Session bound to none or a
 // Workspace with no environment yet is nothing to do, other failures reach

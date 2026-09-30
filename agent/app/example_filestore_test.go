@@ -9,7 +9,6 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
-	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -24,10 +23,10 @@ import (
 // Example_jsonlPrototype is the full prototype on the JSONL file store: one
 // Session directory on disk carries the whole agent.
 //
-// Turn 1 shows steer and queue: while its tool call executes, a second Route
-// goes to Deliver (the input joins the running Turn) and a third input is
-// only submitted (it queues). After the Turn settles, Drain starts Turn 2
-// from the queued input.
+// Turn 1 shows steer and queue: while its tool call executes, a second
+// Submit goes to Deliver (the input joins the running Turn) and a third
+// input is only submitted (it queues). When the Turn settles, the Session's
+// background advance starts Turn 2 from the queued input at once.
 //
 // Turn 2 shows resume: the process "crashes" while its tool call executes.
 // A second Store instance over the same directory — a new process — opens
@@ -63,40 +62,23 @@ func Example_jsonlPrototype() {
 		panic(err)
 	}
 
-	// Turn 1: Route starts the Turn; the model asks for the tool, which blocks.
+	// Turn 1: Submit starts the Turn and advances it in the background; the
+	// model asks for the tool, which blocks.
 	stage1 := tool.stage()
-	in1, err := p1.Core.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-1", agentinput.Text("what is the weather?"))
-	if err != nil {
+	if _, err := s1.SubmitInput(ctx, "in-1", "what is the weather?"); err != nil {
 		panic(err)
 	}
-	turn1Done := make(chan rt.TurnResult, 1)
-	go func() {
-		resp, err := s1.Route(ctx, []run.AgentInput{in1})
-		if err != nil {
-			panic(err)
-		}
-		turn1Done <- resp.TurnResult
-	}()
 	<-stage1.started
 
-	// Steer: a second Route while turn-1 runs goes to Deliver (APP-RTE-1).
-	in2, err := p1.Core.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-2", agentinput.Text("and tomorrow?"))
-	if err != nil {
+	// Steer: a second Submit while turn-1 runs goes to Deliver (APP-RTE-1):
+	// the input joins the running Turn, whose driver carries it on.
+	if _, err := s1.SubmitInput(ctx, "in-2", "and tomorrow?"); err != nil {
 		panic(err)
 	}
-	steerDone := make(chan struct{})
-	go func() {
-		defer close(steerDone)
-		// Deliver into the running Turn returns already_driving, not an error.
-		if _, err := s1.Route(ctx, []run.AgentInput{in2}); err != nil {
-			panic(err)
-		}
-	}()
 	waitUntil(func() bool {
 		surface, err := p1.TurnSurface(ctx, sid)
 		return err == nil && len(surface.Turns["turn-1"].InputIDs) == 2
 	})
-	<-steerDone
 	chat, err := p1.ChatlogSurface(ctx, sid)
 	if err != nil {
 		panic(err)
@@ -111,20 +93,24 @@ func Example_jsonlPrototype() {
 	chat, _ = p1.ChatlogSurface(ctx, sid)
 	fmt.Printf("queue: %d input pending while turn-1 runs\n", len(chat.SubmittedInputs()))
 
-	close(stage1.release)
-	resp1 := <-turn1Done
-	fmt.Printf("turn-1: %s\n", resp1.Status)
-
-	// Turn 2 opens from the backlog (APP-RTE-2); its tool call blocks and the
-	// process dies while the call is Executing.
+	// Stage turn-2's tool before the release: when turn-1 settles, the
+	// background advance starts turn-2 from the queued input at once and its
+	// tool call blocks here. The process dies while the call is Executing.
 	stage2 := tool.stage()
-	turn2Err := make(chan error, 1)
-	go func() {
-		_, _, err := s1.Drain(ctx)
-		turn2Err <- err
-	}()
+	close(stage1.release)
+	waitUntil(func() bool {
+		surface, err := p1.TurnSurface(ctx, sid)
+		if err != nil {
+			return false
+		}
+		t1, ok1 := surface.Turns["turn-1"]
+		t2, ok2 := surface.Turns["turn-2"]
+		return ok1 && t1.Status == turn.TurnCompleted && ok2 && t2.Status == turn.TurnActive
+	})
 	<-stage2.started
+	fmt.Println("turn-1: completed")
 	fmt.Println("turn-2: started from the queued input; tool call is Executing; process 1 crashes")
+	subs := s1.Events(ctx)
 
 	// ---- process 2: new store instances over the same directory --------------
 	cfg2 := exampleStores(root, "process-2")
@@ -153,8 +139,17 @@ func Example_jsonlPrototype() {
 	fmt.Printf("turn-2: %s, disposition %s\n", resp2.Status, resp2.Disposition)
 
 	// The dead process's worker returns; owner.json fences its settlement.
+	// The fenced drive is the Session's background advance; its error
+	// reaches the subscribers as a failure Event.
 	close(stage2.release)
-	fmt.Printf("process 1: %v\n", errorsIsOwnershipLost(<-turn2Err))
+	var fenced error
+	for ev := range subs {
+		if ev.Err != nil {
+			fenced = ev.Err
+			break
+		}
+	}
+	fmt.Printf("process 1: %v\n", errorsIsOwnershipLost(fenced))
 
 	// The whole Session is one JSONL file: one commit per line, digest-chained.
 	page, err := store2.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})

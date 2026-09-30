@@ -5,9 +5,9 @@
 // with, and the Session lifecycle over the Store that needs no ownership
 // (create, fork, collect, read). Ownership of a Session -- opening it for
 // commands and releasing it -- is the owner package's. The Core is
-// deployment-neutral and carries no product policy: what to send, when to
-// drain a backlog, whether to drive in the background and when to compact
-// are the application's decisions.
+// deployment-neutral and carries no product policy: what to send, whether
+// to drive in the background and when to compact are the application's
+// decisions.
 package core
 
 import (

@@ -268,7 +268,7 @@ func (r *Responder) childPreset(ctx context.Context, parent session.SessionID, r
 // starts from wherever the child's durable state is: nothing submitted yet,
 // an input awaiting delivery, an active Turn, or a Turn that settled before
 // the parent learned of it. A child runs exactly one Turn per task: the
-// submitted backlog is the task itself, so there is no draining loop.
+// only submitted input is the task itself.
 func (r *Responder) settle(ctx context.Context, h *owner.Handle, pref preset.PresetRef, task string) (turn.TurnID, error) {
 	turns, err := turn.ReadSurface(ctx, r.a.Core.Projections, h.ID())
 	if err != nil {

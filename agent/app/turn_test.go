@@ -79,20 +79,16 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	}()
 	<-tool.started
 
-	second, err := h.Core.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("and tomorrow?"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Deliver commits AcceptInput + input_delivered without waiting for the
-	// tool; the Run is already driven here, so the response reports
+	// Send commits AcceptInput + input_delivered without waiting for the
+	// tool; the Run is already driven here, so the result reports
 	// already_driving (or finished when the running driver settles first).
-	deliverDone := make(chan rt.DriveResult, 1)
+	deliverDone := make(chan app.Result, 1)
 	go func() {
-		resp, err := s.Route(ctx, []run.AgentInput{second})
+		results, err := s.Send(ctx, "and tomorrow?")
 		if err != nil {
 			t.Error(err)
 		}
-		deliverDone <- resp
+		deliverDone <- results[0]
 	}()
 	// The Deliver commit lands while the tool runs; the Loop sees PendingInputs
 	// at its next Load. Release the tool and let both drivers finish.
@@ -129,9 +125,15 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := chat.Inputs.Get("in-2"); got.Status != chatlog.InputDelivered || got.Input.TurnID != "t1" {
-		t.Fatalf("in-2 = %+v, want delivered to t1", got)
+	if chat.Inputs.Len() != 2 {
+		t.Fatalf("inputs = %d, want 2", chat.Inputs.Len())
 	}
+	chat.Inputs.Range(func(id chatlog.InputID, got chatlog.InputView) bool {
+		if got.Status != chatlog.InputDelivered || got.Input.TurnID != "t1" {
+			t.Fatalf("%s = %+v, want delivered to t1", id, got)
+		}
+		return true
+	})
 }
 
 // Stop settles the Turn as stopped in the same commit as CancelRun; a later
@@ -174,13 +176,12 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 		t.Fatalf("stopped run = %+v", record.Snapshot.State.Result)
 	}
 
-	second, _ := h.Core.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("again"))
-	resp2, err := s.Route(ctx, []run.AgentInput{second})
+	results, err := s.Send(ctx, "again")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp2.Ref.TurnID != "t2" || resp2.Status != turn.TurnCompleted {
-		t.Fatalf("second send = %+v", resp2)
+	if len(results) != 1 || results[0].TurnID != "t2" || results[0].Status != turn.TurnCompleted {
+		t.Fatalf("second send = %+v", results)
 	}
 	// The new Turn's request carried the stopped Turn's assistant tool call and
 	// its unknown tool_result (DEC-PMT-6), then the new input.
@@ -257,11 +258,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if len(result.UncertainCalls) != 1 || result.UncertainCalls[0] != calls[0].CallID {
 		t.Fatalf("uncertain calls = %v", result.UncertainCalls)
 	}
-	input, err = h.Core.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("continue"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Route(ctx, []run.AgentInput{input}); err != nil {
+	if _, err := s.Send(ctx, "continue"); err != nil {
 		t.Fatal(err)
 	}
 	requests := model.requests()

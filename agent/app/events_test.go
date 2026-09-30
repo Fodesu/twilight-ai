@@ -88,7 +88,7 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 		t.Fatalf("chatlog after settlement = %+v", chat.EntryOrder)
 	}
 
-	// The background drive may still be draining the backlog after the
+	// The background advance may still be starting Turns after the
 	// completed row landed; a Send racing it would be absorbed as
 	// already_driving (APP-SES-3). Wait for quiescence first.
 	if err := s.Wait(ctx); err != nil {

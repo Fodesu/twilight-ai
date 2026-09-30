@@ -2,9 +2,8 @@
 // Authority from deployment choices (Build), registers presets, and offers
 // the conversation policies a product needs on top of an owned Session --
 // replies, workspace binding and snapshots, automatic compaction, the event
-// stream and the subagent effect. Input admission, routing, driving and
-// backlog draining are the runtime's; the core packages remain independent
-// of this package.
+// stream and the subagent effect. Input admission, routing and driving are
+// the runtime's; the core packages remain independent of this package.
 package app
 
 import (
@@ -174,7 +173,7 @@ type WorkspaceConfig struct {
 	// (agent/workspace/http.Client).
 	Snapshots workspace.Snapshotter
 	// SnapshotAfterTurn takes a Snapshot of a Session's bound Workspace
-	// after every settlement that drains the backlog and records it on the
+	// after every quiescent settlement and records it on the
 	// Session (APP-WSP-7), so a fork at a Turn boundary can restore the
 	// files as they were. It needs Snapshots.
 	SnapshotAfterTurn bool

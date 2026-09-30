@@ -188,14 +188,14 @@ func TestForkChildTargetIsApplicationPolicy(t *testing.T) {
 	if err := parent.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Regenerate: fork before the parent's Turn and drain its input again.
+	// Regenerate: fork before the parent's Turn and settle its input again.
 	if _, err := h.ForkBeforeTurn(ctx, "parent", "p1", "child"); err != nil {
 		t.Fatal(err)
 	}
 	child := open("child", "c")
 	// Until the application binds a workspace for the child, its tool
 	// effects have no target: nothing is inherited from the parent.
-	if got := drive("child drain", func() error { _, _, err := child.Drain(ctx); return err }); got != nil {
+	if got := drive("child resume", func() error { _, _, err := child.Resume(ctx); return err }); got != nil {
 		t.Fatalf("unbound child target = %v, want none", got)
 	}
 	// The application's fork policy allocates a fresh workspace for the child.

@@ -75,11 +75,11 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	if pending := chat.SubmittedInputs(); len(pending) != 1 || chat.Assistants.Len() != 1 {
 		t.Fatalf("child before resume: pending=%d assistants=%d, want the second input undelivered and one reply", len(pending), chat.Assistants.Len())
 	}
-	// No Turn is active at the fork point; the undelivered input is a backlog
-	// Drain starts a new Turn from.
-	resp, ok, err := regen.Drain(ctx)
-	if err != nil || !ok || resp.Status != turn.TurnCompleted {
-		t.Fatalf("regen drain = %+v ok=%v %v", resp, ok, err)
+	// No Turn is active at the fork point; Resume starts a new Turn from
+	// the undelivered input.
+	results, ok, err := regen.Resume(ctx)
+	if err != nil || !ok || len(results) != 1 || results[0].Status != turn.TurnCompleted {
+		t.Fatalf("regen resume = %+v ok=%v %v", results, ok, err)
 	}
 	if reply := lastReply(t, h, "regen"); reply != "regenerated" {
 		t.Fatalf("regenerated reply = %q", reply)
@@ -105,7 +105,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	if err := h.Core.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err == nil {
 		t.Fatal("withdrawing a withdrawn input succeeded")
 	}
-	results, err := edit.Send(ctx, "how is the weather")
+	results, err = edit.Send(ctx, "how is the weather")
 	if err != nil || len(results) != 1 || results[0].Reply != "edited answer" {
 		t.Fatalf("edit send = %+v %v", results, err)
 	}
