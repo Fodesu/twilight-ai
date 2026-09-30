@@ -132,22 +132,34 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if err := app.Kernel.EnsureSession(ctx, sid); err != nil {
 		return nil, err
 	}
-	h, err := app.Owner.Open(ctx, sid)
+	return app.openOwned(ctx, sid, opts)
+}
+
+// openOwned is the one sequence that turns an acquired Session into an open
+// conversation: acquire and take over, build the runtime, make the Session
+// reachable, then answer the waits a previous owner left and start the
+// Session's own services. Every failure releases what was acquired.
+func (app *Application) openOwned(ctx context.Context, sid session.SessionID, opts SessionOptions) (*Session, error) {
+	owned, err := app.Acquire(ctx, sid)
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{Recovered: h.Recovered, app: app, h: h, sid: sid, opts: opts}
+	h := owned.Handle
+	s := &Session{Recovered: owned.Recovered, app: app, h: h, sid: sid, opts: opts}
 	s.rt, err = rt.New(rt.Config{
 		Writer: h.Writer(), Engine: app.Execution, Turns: app.Kernel.Turns, Chatlog: app.Kernel.Chatlog, Projections: app.Kernel.Projections,
 		Preset: opts.Preset, NewTurnID: opts.NewTurnID,
 		RouteRetries: opts.RouteRetries, TurnBudget: opts.TurnBudget,
 	})
 	if err != nil {
-		_ = h.Close(context.WithoutCancel(ctx))
+		_ = owned.Close(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	s.host = newHost()
 	app.track(s)
+	// The answers reach the Session through the engine's notice, so it is
+	// tracked before they are asked for.
+	owned.resumeWaiting(ctx)
 	// A binding inherited from the fork parent is settled by this Session's
 	// policy before anything runs in it.
 	if err := s.applyInheritedWorkspace(ctx); err != nil {
@@ -510,11 +522,13 @@ func (s *Session) maybeCompact(ctx context.Context) {
 }
 
 // Close cancels the Session's service goroutines, waits for them, then
-// cancels the background drives and waits for them, then releases this
-// Session's ownership; other Sessions of the application stay open. A Turn
-// a cancelled drive left active resumes on the next open.
+// cancels the background drives and waits for them, then ends the engine's
+// listeners and releases this Session's ownership; other Sessions of the
+// application stay open. A Turn a cancelled drive left active resumes on
+// the next open.
 func (s *Session) Close(ctx context.Context) error {
 	s.app.untrack(s)
 	s.host.close()
+	s.app.Execution.Detach(s.sid)
 	return s.h.Close(ctx)
 }

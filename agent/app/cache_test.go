@@ -61,11 +61,11 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 			if err := h.EnsureSession(ctx, sid); err != nil {
 				t.Fatal(err)
 			}
-			owned, err := h.Owner.Open(ctx, sid)
+			owned, err := h.Acquire(ctx, sid)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.Kernel.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+			if _, err := h.Kernel.Chatlog.Submit(ctx, owned.Handle.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 				t.Fatal(err)
 			}
 			if got := cache.count() > 0; got != tc.wantBefore {
@@ -95,11 +95,11 @@ func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
-	owned, err := h.Owner.Open(ctx, sid)
+	owned, err := h.Acquire(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Kernel.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+	if _, err := h.Kernel.Chatlog.Submit(ctx, owned.Handle.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Close(ctx); err != nil {

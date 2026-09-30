@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
@@ -32,8 +33,25 @@ func (app *Application) ForkBeforeTurn(ctx context.Context, parent session.Sessi
 }
 
 // DeleteSession tombstones a session and reclaims along its path (OWN-FRK-3).
+// A Session this process holds open is closed first; one it is opening or
+// closing is owner.ErrSessionOpen; one owned by another process is the
+// store's ErrOwned.
 func (app *Application) DeleteSession(ctx context.Context, sid session.SessionID) error {
-	return app.Owner.DeleteSession(ctx, sid)
+	if s, ok := app.Opened(sid); ok {
+		if err := s.Close(ctx); err != nil {
+			return err
+		}
+	}
+	// Acquiring proves no generation is in transition and closes any Writer
+	// still held for the Session, so the delete meets a released one.
+	owned, err := app.Acquire(ctx, sid)
+	if err != nil {
+		return err
+	}
+	if err := owned.Close(ctx); err != nil {
+		return err
+	}
+	return writer.Delete(ctx, app.Kernel.Store, app.Kernel.Admission, sid)
 }
 
 // Collect reclaims segments no live path still names, and truncates the rest to the greatest remaining span (SES-GC-2).

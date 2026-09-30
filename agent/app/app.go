@@ -268,7 +268,7 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 		return nil, err
 	}
 	app.Execution = exec
-	app.Owner = owner.New(kernel, exec)
+	app.Owner = owner.New(kernel.Writers)
 	if resolver != nil {
 		resolver.Projections = kernel.Projections
 	}
@@ -427,10 +427,12 @@ func (app *Application) Close(ctx context.Context) error {
 	if werr := app.releases.wait(ctx); werr != nil && err == nil {
 		err = werr
 	}
-	// Ownership is released first, then the execution side, then the
-	// Writers (RUN-EXE-8, SPN-4). Records keep their leases until they
-	// expire and the next incarnation adopts them. The effect port and the
-	// deployment components around it close at the outer root, after this.
+	// Every Session closed above ended its engine listeners and released its
+	// ownership; the Owner's Close releases whatever was acquired without a
+	// Session. Then the execution side, then the Writers (RUN-EXE-8, SPN-4).
+	// Records keep their leases until they expire and the next incarnation
+	// adopts them. The effect port and the deployment components around it
+	// close at the outer root, after this.
 	if oerr := app.Owner.Close(ctx); oerr != nil && err == nil {
 		err = oerr
 	}

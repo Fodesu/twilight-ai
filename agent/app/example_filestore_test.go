@@ -123,13 +123,13 @@ func Example_jsonlPrototype() {
 	if _, err := p2.RegisterPreset("jsonl-agent", preset); err != nil {
 		panic(err)
 	}
-	owned, err := p2.Owner.Open(ctx, sid)
+	owned, err := p2.Acquire(ctx, sid)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed\n", owned.Recovered)
 
-	if _, err := p2.Execution.Drive(ctx, owned.Writer(), "turn-2"); err != nil {
+	if _, err := p2.Execution.Drive(ctx, owned.Handle.Writer(), "turn-2"); err != nil {
 		panic(err)
 	}
 	resp2, err := p2.Kernel.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})

@@ -84,11 +84,11 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	owned, err := h.Owner.Open(ctx, sid)
+	owned, err := h.Acquire(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := owned.Writer()
+	w := owned.Handle.Writer()
 	in, err := h.Kernel.Chatlog.Submit(ctx, w, "in-1", agentinput.Text("hello"))
 	if err != nil {
 		t.Fatal(err)
