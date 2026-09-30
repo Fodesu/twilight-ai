@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/checkpoint"
 	"github.com/felinics/twilight/agentcore/checkpoint/checkpointtest"
+	"github.com/felinics/twilight/agentcore/conversation/conversationtest"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/inbox"
@@ -21,7 +22,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/redispatch/redispatchtest"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	runstoretest "github.com/felinics/twilight/agentcore/run/sessionstore/storetest"
-	"github.com/felinics/twilight/agentcore/runtime/runtimetest"
 	"github.com/felinics/twilight/agentcore/session/sessiontest"
 )
 
@@ -115,7 +115,7 @@ func TestSessionRunStoreConformance(t *testing.T) {
 }
 
 func TestSessionTurnConformance(t *testing.T) {
-	runtimetest.Run(t, func(t testing.TB) runtimetest.Fixture {
-		return runtimetest.Fixture{Store: postgrestest.Open(t).Sessions()}
+	conversationtest.Run(t, func(t testing.TB) conversationtest.Fixture {
+		return conversationtest.Fixture{Store: postgrestest.Open(t).Sessions()}
 	})
 }

@@ -1,9 +1,9 @@
-// Package turntest is the Store-parameterized conformance suite of the Turn
+// Package conversationtest is the Store-parameterized conformance suite of the Turn
 // module. The Coordinator is pure protocol, so the suite assembles Writers,
-// a Runtime and a Coordinator over the Store under test and drives Runs step
-// by step through Runtime commits: no Loop, driver, model or tool stub is
+// a run store and a Coordinator over the Store under test and drives Runs step
+// by step through run store commits: no Loop, driver, model or tool stub is
 // involved.
-package runtimetest
+package conversationtest
 
 import (
 	"context"
@@ -39,7 +39,7 @@ const sid session.SessionID = "turn-conformance"
 
 var presetRef = preset.PresetRef{ID: "p-1", Digest: "sha256:p-1"}
 
-// harness is one owner process: Writers, Runtime and Coordinator over the
+// harness is one owner process: Writers, run store and Coordinator over the
 // Store. now is the clock every event is stamped with; tests move it to show
 // that timestamps never take part in idempotency.
 type harness struct {

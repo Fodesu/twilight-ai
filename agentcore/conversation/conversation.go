@@ -1,13 +1,13 @@
-// Package runtime is the conversation process over one owned Session: the
-// SessionRuntime admits inputs into Turns and advances the Session to its
-// next quiescent point through the Engine it is given. The Turn protocol
+// Package conversation is the orchestration over one owned Session: the
+// Controller admits inputs into Turns and advances the Session to its next
+// quiescent point through the Engine it is given. The Turn protocol
 // itself -- the Coordinator, the quiescence guards, the request and result
 // vocabulary -- is the Turn module's; this package re-exports that
 // vocabulary for the hosts. Every call runs on the caller's goroutine and
 // ctx; which calls run in the background, what a reply is and which
 // policies run at quiescence are the host's decisions, taken on the
 // Settlement each call returns.
-package runtime
+package conversation
 
 import (
 	"context"
@@ -23,7 +23,7 @@ import (
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
-// Turns is the Turn protocol the runtime routes inputs into and reads
+// Turns is the Turn protocol the Controller routes inputs into and reads
 // status back from: the Turn module's Commands and Reader.
 type Turns interface {
 	turn.Commands
@@ -53,7 +53,7 @@ type Settlement struct {
 	Quiescent bool
 }
 
-// Config composes one SessionRuntime. Writer is the ownership capability
+// Config composes one Controller. Writer is the ownership capability
 // every command commits through; Engine, Turns, Chatlog and Projections are
 // the composed core services of the same Session.
 type Config struct {
@@ -62,7 +62,7 @@ type Config struct {
 	Turns       Turns
 	Chatlog     *chatlog.Commands
 	Projections session.ProjectionReader
-	// Preset is the decision identity every Turn the runtime starts runs
+	// Preset is the decision identity every Turn the Controller starts runs
 	// under; required.
 	Preset preset.PresetRef
 	// NewTurnID mints TurnIDs for new Turns; nil selects the random default.
@@ -91,13 +91,13 @@ var (
 	// RouteRetries times. The input is submitted and stays undelivered; the
 	// next Submit, Advance or Resume routes it. It is a transient answer,
 	// unlike the turn.ErrConflict of a Turn that admits no route.
-	ErrRouteContended = errors.New("runtime: route contended")
+	ErrRouteContended = errors.New("conversation: route contended")
 	// ErrTurnBudget reports an advance that stopped at the TurnBudget with
 	// inputs still submitted.
-	ErrTurnBudget = errors.New("runtime: turn budget exhausted with inputs still submitted")
+	ErrTurnBudget = errors.New("conversation: turn budget exhausted with inputs still submitted")
 )
 
-// SessionRuntime is the conversation process over one owned Session. Submit
+// Controller is the orchestration over one owned Session. Submit
 // admits an input into a Turn, Advance drives a Turn to settlement and on
 // through every Turn the remaining inputs start, Resume does the same for
 // a Session as found after a restart, and Stop settles the active Turn.
@@ -105,7 +105,7 @@ var (
 // Concurrent calls are safe: writes serialize in the Writer, and a call
 // whose input lands in a running Turn reports AlreadyDriving. It starts no
 // goroutine of its own.
-type SessionRuntime struct {
+type Controller struct {
 	w      writer.Writer
 	engine execution.Engine
 	turns  Turns
@@ -119,25 +119,25 @@ type SessionRuntime struct {
 	turnBudget   int
 }
 
-// New returns the conversation process for one owned Session.
-func New(cfg Config) (*SessionRuntime, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
+// New returns the Controller of one owned Session.
+func New(cfg Config) (*Controller, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
 	if cfg.Writer == nil {
-		return nil, errors.New("runtime: a writer is required")
+		return nil, errors.New("conversation: a writer is required")
 	}
 	if cfg.Engine == nil {
-		return nil, errors.New("runtime: an engine is required")
+		return nil, errors.New("conversation: an engine is required")
 	}
 	if cfg.Turns == nil {
-		return nil, errors.New("runtime: turn commands are required")
+		return nil, errors.New("conversation: turn commands are required")
 	}
 	if cfg.Chatlog == nil {
-		return nil, errors.New("runtime: chatlog commands are required")
+		return nil, errors.New("conversation: chatlog commands are required")
 	}
 	if cfg.Projections == nil {
-		return nil, errors.New("runtime: a projection reader is required")
+		return nil, errors.New("conversation: a projection reader is required")
 	}
 	if cfg.Preset.ID == "" || cfg.Preset.Digest == "" {
-		return nil, errors.New("runtime: a preset ref is required")
+		return nil, errors.New("conversation: a preset ref is required")
 	}
 	newID := cfg.NewTurnID
 	if newID == nil {
@@ -151,11 +151,11 @@ func New(cfg Config) (*SessionRuntime, error) { //nolint:gocritic // hugeParam: 
 	if budget <= 0 {
 		budget = DefaultTurnBudget
 	}
-	return &SessionRuntime{w: cfg.Writer, engine: cfg.Engine, turns: cfg.Turns, chat: cfg.Chatlog, proj: cfg.Projections,
+	return &Controller{w: cfg.Writer, engine: cfg.Engine, turns: cfg.Turns, chat: cfg.Chatlog, proj: cfg.Projections,
 		sid: cfg.Writer.SessionID(), preset: cfg.Preset, newID: newID, routeRetries: retry, turnBudget: budget}, nil
 }
 
-func (r *SessionRuntime) ref(turnID turn.TurnID) turn.TurnRef {
+func (r *Controller) ref(turnID turn.TurnID) turn.TurnRef {
 	return turn.TurnRef{SessionID: r.sid, TurnID: turnID}
 }
 
@@ -170,10 +170,10 @@ type Submitted struct {
 
 // Submit records one input body under id and commits its route: into the
 // active Turn when there is one, into a new Turn otherwise. The body is
-// opaque to the runtime; the idempotency key is the id, so a retried
+// opaque to the Controller; the idempotency key is the id, so a retried
 // submission replays. Nothing is driven: the caller advances the Turn,
 // here or on another goroutine, with Advance.
-func (r *SessionRuntime) Submit(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Submitted, error) {
+func (r *Controller) Submit(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Submitted, error) {
 	in, err := r.chat.Submit(ctx, r.w, id, content)
 	if err != nil {
 		return Submitted{}, err
@@ -200,7 +200,7 @@ func (r *SessionRuntime) Submit(ctx context.Context, id run.InputID, content run
 // Turns the remaining inputs started. When another driver of this process
 // took the input, the single Turn reports AlreadyDriving and that driver
 // settles.
-func (r *SessionRuntime) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Settlement, error) {
+func (r *Controller) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Settlement, error) {
 	sub, err := r.Submit(ctx, id, content)
 	if err != nil {
 		return Settlement{}, err
@@ -218,7 +218,7 @@ func (r *SessionRuntime) Send(ctx context.Context, id run.InputID, content run.C
 // the Settlement is then Quiescent. An advance that stops at the TurnBudget
 // returns the Turns so far with ErrTurnBudget. The caller's ctx bounds the
 // drive: a cancelled drive leaves the Turn active for the next Resume.
-func (r *SessionRuntime) Advance(ctx context.Context, turnID turn.TurnID) (Settlement, error) {
+func (r *Controller) Advance(ctx context.Context, turnID turn.TurnID) (Settlement, error) {
 	resp, err := r.drive(ctx, turnID)
 	if err != nil {
 		return Settlement{}, err
@@ -229,7 +229,7 @@ func (r *SessionRuntime) Advance(ctx context.Context, turnID turn.TurnID) (Settl
 // Resume advances a Session as found after a restart: the still-active Turn
 // when there is one, otherwise the Turn the submitted, undelivered inputs
 // start. ok is false when there is neither.
-func (r *SessionRuntime) Resume(ctx context.Context) (Settlement, bool, error) {
+func (r *Controller) Resume(ctx context.Context) (Settlement, bool, error) {
 	if active, ok, err := r.active(ctx); err != nil {
 		return Settlement{}, false, err
 	} else if ok {
@@ -246,7 +246,7 @@ func (r *SessionRuntime) Resume(ctx context.Context) (Settlement, bool, error) {
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
 // stopped Turn's drive observes the cancellation and returns.
-func (r *SessionRuntime) Stop(ctx context.Context, reason string) (turn.TurnResult, bool, error) {
+func (r *Controller) Stop(ctx context.Context, reason string) (turn.TurnResult, bool, error) {
 	active, ok, err := r.active(ctx)
 	if err != nil || !ok {
 		return turn.TurnResult{}, false, err
@@ -255,7 +255,7 @@ func (r *SessionRuntime) Stop(ctx context.Context, reason string) (turn.TurnResu
 	return resp, true, err
 }
 
-func (r *SessionRuntime) active(ctx context.Context) (turn.TurnID, bool, error) {
+func (r *Controller) active(ctx context.Context) (turn.TurnID, bool, error) {
 	surface, err := turn.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
 		return "", false, err
@@ -269,7 +269,7 @@ func (r *SessionRuntime) active(ctx context.Context) (turn.TurnID, bool, error) 
 // drive runs the Turn to its next quiescent point and reads its committed
 // answer; AlreadyDriving reports a concurrent local driver of the same Run
 // carried it, in which case the answer is the status as read.
-func (r *SessionRuntime) drive(ctx context.Context, turnID turn.TurnID) (DriveResult, error) {
+func (r *Controller) drive(ctx context.Context, turnID turn.TurnID) (DriveResult, error) {
 	taken, err := r.engine.Drive(ctx, r.w, turnID)
 	if err != nil {
 		return DriveResult{}, err
@@ -283,7 +283,7 @@ func (r *SessionRuntime) drive(ctx context.Context, turnID turn.TurnID) (DriveRe
 
 // route commits the inputs' route: Deliver into the active Turn when there
 // is one, Start a new one when there is none.
-func (r *SessionRuntime) route(ctx context.Context, inputs []run.AgentInput) (turn.TurnRef, error) {
+func (r *Controller) route(ctx context.Context, inputs []run.AgentInput) (turn.TurnRef, error) {
 	surface, err := turn.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
 		return turn.TurnRef{}, err
@@ -304,7 +304,7 @@ func (r *SessionRuntime) route(ctx context.Context, inputs []run.AgentInput) (tu
 
 // absorbed reports whether another driver already delivered the input; the
 // Turn that took it settles and reports there.
-func (r *SessionRuntime) absorbed(ctx context.Context, in run.AgentInput) (DriveResult, bool) {
+func (r *Controller) absorbed(ctx context.Context, in run.AgentInput) (DriveResult, bool) {
 	chat, err := chatlog.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
 		return DriveResult{}, false
@@ -319,7 +319,7 @@ func (r *SessionRuntime) absorbed(ctx context.Context, in run.AgentInput) (Drive
 
 // absorbedStatus is the AlreadyDriving answer for a Turn another driver
 // carries: its status as read, or its Ref alone when the read fails.
-func (r *SessionRuntime) absorbedStatus(ctx context.Context, ref turn.TurnRef) (DriveResult, error) {
+func (r *Controller) absorbedStatus(ctx context.Context, ref turn.TurnRef) (DriveResult, error) {
 	out := DriveResult{TurnResult: turn.TurnResult{Ref: ref}, AlreadyDriving: true}
 	resp, err := r.turns.Status(ctx, ref)
 	if err == nil {
@@ -330,7 +330,7 @@ func (r *SessionRuntime) absorbedStatus(ctx context.Context, ref turn.TurnRef) (
 
 // next starts a Turn from the submitted, undelivered inputs and drives it;
 // ok is false when there is none.
-func (r *SessionRuntime) next(ctx context.Context) (DriveResult, bool, error) {
+func (r *Controller) next(ctx context.Context) (DriveResult, bool, error) {
 	chat, err := chatlog.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
 		return DriveResult{}, false, err
@@ -354,7 +354,7 @@ func (r *SessionRuntime) next(ctx context.Context) (DriveResult, bool, error) {
 // settle is what follows one drive: while the settlement leaves submitted,
 // undelivered inputs, the next Turn starts from them; when none remains and
 // no Turn is active, the Settlement is Quiescent.
-func (r *SessionRuntime) settle(ctx context.Context, resp DriveResult) (Settlement, error) {
+func (r *Controller) settle(ctx context.Context, resp DriveResult) (Settlement, error) {
 	out := Settlement{Turns: []DriveResult{resp}}
 	if resp.AlreadyDriving {
 		// The running driver settles the Turn and advances in its own call.
