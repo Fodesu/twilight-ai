@@ -211,9 +211,9 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 		act := *c.Activation
 		app.activation = &act
 	}
-	// The subagent tool is answered by a Responder on the Driver (SPN-1,
-	// DRV-4), not executed: it drives children through the Authority, so it
-	// is bound once the Owner exists. No effect route is involved.
+	// The subagent tool is answered by a Responder the Engine asks (SPN-1),
+	// not executed: it drives children as Sessions of this application, so
+	// it is bound once the application exists. No effect route is involved.
 	if c.Spawn != nil {
 		app.spawn = spawn.NewResponder(*c.Spawn)
 	}
@@ -247,8 +247,8 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 	}
 	app.Kernel = kernel
 	// The subagent tool waits for an external response the Responder gives
-	// (SPN-1, DRV-4); the Responder opens children through the Owner, which
-	// it is bound to once the Owner exists, before any Respond can run.
+	// (SPN-1); the Responder opens children through this application, which
+	// it is bound to below, before any Respond can run.
 	var responders map[run.ToolRef]execution.Responder
 	if app.spawn != nil {
 		responders = map[run.ToolRef]execution.Responder{c.Spawn.ToolRef(): app.spawn}
@@ -273,7 +273,7 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 		resolver.Projections = kernel.Projections
 	}
 	if app.spawn != nil {
-		app.spawn.Bind(app.Owner, kernel)
+		app.spawn.Bind(children{app})
 	}
 	for i := range c.Presets {
 		p := &c.Presets[i]

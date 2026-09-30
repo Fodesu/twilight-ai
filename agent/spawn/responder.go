@@ -4,19 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/felinics/twilight/agent/input"
 	"sync"
 	"time"
 
 	"github.com/felinics/twilight/agent/executor/local"
-	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/execution"
-	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
@@ -53,43 +50,77 @@ func (o Options) depth() int {
 	return o.MaxDepth
 }
 
-// Responder is the subagent tool's execution.Responder (SPN-1, DRV-4): a spawn
-// call waits for an external response, and this answers it by creating the
-// child Session (or continuing the one on record), driving it through the
-// authority to a settled Turn and returning the child's reply. Every step
-// is idempotent against the child's durable state, so a process that died
-// anywhere in the sequence is continued, not repeated, when the next owner
-// opens the parent and the Driver asks again (SPN-4). Nothing about the call
-// lives in an execution record: the child Session is the durable state.
+// Children is what the Responder creates, reads and drives child Sessions
+// through: the host's conversation over an owned Session, so a child is
+// routed and advanced exactly as any Session the host opens.
+type Children interface {
+	// Open opens sid as an owned child under preset and returns its
+	// conversation; the caller closes it.
+	Open(ctx context.Context, sid session.SessionID, preset preset.PresetRef) (Child, error)
+	// Create makes an empty child Session whose segment carries ext.
+	Create(ctx context.Context, sid session.SessionID, ext module.Extensions) error
+	// ForkBeforeInputs forks parent at the commit before turnID's inputs
+	// were submitted, the child's segment carrying ext: the conversation as
+	// it stood before that Turn was asked.
+	ForkBeforeInputs(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID, ext module.Extensions) error
+	// Header is the Session's tip segment header; a Session that does not
+	// exist is session.ErrNotFound.
+	Header(ctx context.Context, sid session.SessionID) (session.SegmentHeader, error)
+	// TurnSurface reads the Session's Turns.
+	TurnSurface(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error)
+	// AwaitingRecovery reports that the Turn is active with an execution in
+	// flight that no process of this host drives: its Run waits for the
+	// takeover disposition.
+	AwaitingRecovery(ctx context.Context, ref turn.TurnRef) (bool, error)
+	// InputText is the text of the Turn's first input, empty when it has none
+	// or its body is not text.
+	InputText(ctx context.Context, ref turn.TurnRef) (string, error)
+	// Reply is the settled Turn's reply.
+	Reply(ctx context.Context, ref turn.TurnRef) (string, error)
+}
+
+// Child is one opened child Session's conversation.
+type Child interface {
+	// Resume advances the child as found: its active Turn, or the Turn its
+	// submitted inputs start; ok is false when there is neither. It returns
+	// the Turns it drove, in order.
+	Resume(ctx context.Context) (turns []turn.TurnID, ok bool, err error)
+	// Send submits text and advances to quiescence; it returns the Turn the
+	// text landed in.
+	Send(ctx context.Context, text string) (turn.TurnID, error)
+	Close(ctx context.Context) error
+}
+
+// Responder is the subagent tool's execution.Responder (SPN-1): a spawn call
+// waits for an external response, and this answers it by creating the child
+// Session (or continuing the one on record), driving it through the host's
+// conversation to a settled Turn and returning the child's reply. Every
+// step is idempotent against the child's durable state, so a process that
+// died anywhere in the sequence is continued, not repeated, when the next
+// owner opens the parent and the Engine asks for the answer again (SPN-4).
+// Nothing about the call lives in an execution record: the child Session is
+// the durable state.
 type Responder struct {
-	opts Options
-	// a is the Owner children are opened in: Open yields the child's
-	// ownership Handle, and the Kernel's Turns and Chatlog commands and the
-	// Execution's Driver run through that Handle's Writer.
-	a *owner.Owner
-	// k is the Session kernel the child Sessions are created, forked and
-	// read through.
-	k *sessionkernel.Kernel
+	opts     Options
+	children Children
 
 	mu       sync.Mutex
 	inflight map[session.SessionID]context.CancelFunc
 	closed   bool
 }
 
-// NewResponder returns the subagent Responder; Bind supplies the authority
-// it drives children through once that authority exists.
+// NewResponder returns the subagent Responder; Bind supplies the host it
+// drives children through once that host exists.
 func NewResponder(opts Options) *Responder {
 	return &Responder{opts: opts, inflight: make(map[session.SessionID]context.CancelFunc)}
 }
 
-// Bind supplies the authority. It must precede the first Respond.
-func (r *Responder) Bind(a *owner.Owner, k *sessionkernel.Kernel) {
-	r.a = a
-	r.k = k
-}
+// Bind supplies the host's child conversations. It must precede the first
+// Respond.
+func (r *Responder) Bind(children Children) { r.children = children }
 
 // Close cancels every child drive; their Turns stay active and resume on
-// the next open of the parent, when the Driver asks for the answer again.
+// the next open of the parent, when the Engine asks for the answer again.
 func (r *Responder) Close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -104,8 +135,8 @@ func (r *Responder) Close() {
 // is created (SPN-3); a child on record for different arguments is a
 // conflict.
 func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *execution.WaitingCall) (run.CanonicalJSON, error) {
-	if r.a == nil {
-		return run.CanonicalJSON{}, errors.New("spawn: responder is not bound to an authority")
+	if r.children == nil {
+		return run.CanonicalJSON{}, errors.New("spawn: responder is not bound to a host")
 	}
 	parent := w.SessionID()
 	args, err := DecodeArguments(call.Arguments)
@@ -140,28 +171,29 @@ func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *executio
 	} else if ArgumentsConflict(prov, args) {
 		return run.CanonicalJSON{}, fmt.Errorf("call %s already spawned %s with different arguments", call.Request.CallID, child)
 	}
-	h, err := r.a.Open(ctx, child)
+	c, err := r.children.Open(ctx, child, pref)
 	if err != nil {
 		return run.CanonicalJSON{}, fmt.Errorf("open subagent: %w", err)
 	}
-	defer func() { _ = h.Close(context.WithoutCancel(ctx)) }()
-	turnID, err := r.settle(ctx, h, pref, prov.Arguments.Task)
+	defer func() { _ = c.Close(context.WithoutCancel(ctx)) }()
+	turnID, err := r.settle(ctx, c, child, prov.Arguments.Task)
 	if err != nil {
 		return run.CanonicalJSON{}, fmt.Errorf("drive subagent: %w", err)
 	}
 	ref := turn.TurnRef{SessionID: child, TurnID: turnID}
-	status, err := r.k.Turns.Status(ctx, ref)
+	surface, err := r.children.TurnSurface(ctx, child)
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
-	if status.Status != turn.TurnCompleted {
-		return run.CanonicalJSON{}, fmt.Errorf("subagent %s turn %s ended %s", child, turnID, status.Status)
+	status := surface.Turns[turnID].Status
+	if status != turn.TurnCompleted {
+		return run.CanonicalJSON{}, fmt.Errorf("subagent %s turn %s ended %s", child, turnID, status)
 	}
-	reply, err := chatlog.LastAssistantText(ctx, r.k.Projections, r.k.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
+	reply, err := r.children.Reply(ctx, ref)
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
-	return run.CanonicalJSONFromValue(Result{ChildSession: child, TurnID: turnID, Status: status.Status, Reply: reply})
+	return run.CanonicalJSONFromValue(Result{ChildSession: child, TurnID: turnID, Status: status, Reply: reply})
 }
 
 // track registers an in-flight answer for child so Close can cancel it; a
@@ -196,7 +228,7 @@ func (r *Responder) depthOf(ctx context.Context, sid session.SessionID) (int, er
 }
 
 func (r *Responder) provenance(ctx context.Context, sid session.SessionID) (Provenance, bool, error) {
-	header, err := r.k.Store.Header(ctx, sid)
+	header, err := r.children.Header(ctx, sid)
 	if err != nil {
 		if session.IsCode(err, session.ErrNotFound) {
 			return Provenance{}, false, nil
@@ -211,37 +243,29 @@ func (r *Responder) provenance(ctx context.Context, sid session.SessionID) (Prov
 }
 
 // create makes the child Session with its provenance in the segment's spawn
-// extension slot:
-// empty for Empty, a fork of the parent's history before the calling Turn
-// for Fork (SPN-5).
+// extension slot: empty for Empty, a fork of the parent's history before the
+// calling Turn for Fork (SPN-5).
 func (r *Responder) create(ctx context.Context, parent session.SessionID, runID run.RunID, callID run.CallID, child session.SessionID, args Arguments, depth int) (Provenance, error) {
 	prov := Provenance{ParentSession: parent, ParentRun: runID, CallID: callID, Depth: depth, Arguments: args}
 	ext, err := Extension(prov)
 	if err != nil {
 		return Provenance{}, err
 	}
-	now := r.k.Clock().UnixMilli()
 	switch args.Mode {
 	case Fork:
 		turnID, err := r.callingTurn(ctx, parent, runID)
 		if err != nil {
 			return Provenance{}, err
 		}
-		at, err := r.k.History.PrefixCommit(ctx, parent, turnID)
-		if err != nil {
-			return Provenance{}, err
-		}
-		_, err = writer.Fork(ctx, r.k.Store, r.k.Registry, writer.ForkRequest{Parent: parent, At: at, Child: child, CreatedAtUnixMilli: now, Ext: ext})
-		return prov, err
+		return prov, r.children.ForkBeforeInputs(ctx, parent, turnID, child, ext)
 	default:
-		_, err := r.k.Store.Create(ctx, session.CreateRequest{SessionID: child, CreatedAtUnixMilli: now, Ext: ext})
-		return prov, err
+		return prov, r.children.Create(ctx, child, ext)
 	}
 }
 
 // callingTurn is the parent Turn that owns the Run the call belongs to.
 func (r *Responder) callingTurn(ctx context.Context, parent session.SessionID, runID run.RunID) (turn.TurnID, error) {
-	surface, err := turn.ReadSurface(ctx, r.k.Projections, parent)
+	surface, err := r.children.TurnSurface(ctx, parent)
 	if err != nil {
 		return "", err
 	}
@@ -259,126 +283,101 @@ func (r *Responder) childPreset(ctx context.Context, parent session.SessionID, r
 		}
 		return r.opts.Presets(args.Preset)
 	}
-	turnID, err := r.callingTurn(ctx, parent, runID)
+	surface, err := r.children.TurnSurface(ctx, parent)
 	if err != nil {
 		return preset.PresetRef{}, err
 	}
-	surface, err := turn.ReadSurface(ctx, r.k.Projections, parent)
-	if err != nil {
-		return preset.PresetRef{}, err
+	turnID, ok := surface.OwnerOf(runID)
+	if !ok {
+		return preset.PresetRef{}, fmt.Errorf("spawn: run %s of %s has no owning turn", runID, parent)
 	}
 	return surface.Turns[turnID].Preset, nil
 }
 
 // settle brings the child to a settled Turn for task and returns it. It
-// starts from wherever the child's durable state is: nothing submitted yet,
-// an input awaiting delivery, an active Turn, or a Turn that settled before
-// the parent learned of it. A child runs exactly one Turn per task: the
-// only submitted input is the task itself.
-func (r *Responder) settle(ctx context.Context, h *owner.Handle, pref preset.PresetRef, task string) (turn.TurnID, error) {
-	turns, err := turn.ReadSurface(ctx, r.k.Projections, h.ID())
-	if err != nil {
-		return "", err
-	}
-	if active, ok := turns.Active(); ok {
-		return r.driveTurn(ctx, h, active.TurnID)
-	}
-	chat, err := chatlog.ReadSurface(ctx, r.k.Projections, h.ID())
-	if err != nil {
-		return "", err
-	}
-	if pending := chat.SubmittedInputs(); len(pending) > 0 {
-		inputs := make([]run.AgentInput, len(pending))
-		for i, in := range pending {
-			inputs[i] = run.AgentInput{ID: run.InputID(in.ID), Digest: in.Digest}
-		}
-		return r.startAndDrive(ctx, h, pref, inputs)
-	}
-	if last, found := newestInput(&chat); found {
-		var body struct {
-			Text string `json:"text"`
-		}
-		if last.Input.Content.Decode(&body) == nil && body.Text == task && len(turns.Order) > 0 {
-			return turns.Order[len(turns.Order)-1], nil
-		}
-	}
-	in, err := r.k.Chatlog.Submit(ctx, h.Writer(), chatlog.NewInputID(), input.Text(task))
-	if err != nil {
-		return "", err
-	}
-	return r.startAndDrive(ctx, h, pref, []run.AgentInput{in})
-}
-
-func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, pref preset.PresetRef, inputs []run.AgentInput) (turn.TurnID, error) {
-	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turn.NewTurnID()}
-	if _, err := r.k.Turns.Start(ctx, h.Writer(), sessionkernel.StartRequest{Ref: ref, Inputs: inputs, Preset: pref}); err != nil {
-		return "", err
-	}
-	return r.driveTurn(ctx, h, ref.TurnID)
-}
-
-// driveTurn drives the Turn to settlement. A drive that quiesces waiting
-// for recovery (the child's own execution records belong to a dead owner
-// and await the control plane, RUN-EXE-6) is not the end of the Turn: this
-// waits for the Turn to move and drives again.
-func (r *Responder) driveTurn(ctx context.Context, h *owner.Handle, turnID turn.TurnID) (turn.TurnID, error) {
-	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turnID}
+// starts from wherever the child's durable state is: an active Turn or an
+// input awaiting delivery is resumed; a Turn that already settled for the
+// task is the answer; otherwise the task is sent. A child runs exactly one
+// Turn per task: the only input ever submitted is the task itself.
+func (r *Responder) settle(ctx context.Context, c Child, child session.SessionID, task string) (turn.TurnID, error) {
 	for {
-		taken, err := r.a.Execution.Drive(ctx, h.Writer(), turnID)
+		turns, ok, err := c.Resume(ctx)
 		if err != nil {
 			return "", err
 		}
-		if taken {
-			return "", fmt.Errorf("subagent %s is driven elsewhere", h.ID())
-		}
-		resp, err := r.k.Turns.Status(ctx, ref)
-		if err != nil {
-			return "", err
-		}
-		switch resp.Disposition {
-		case sessionkernel.ResumeWaitingForRecovery:
-			if err := r.awaitRecovery(ctx, ref); err != nil {
+		var turnID turn.TurnID
+		if ok && len(turns) > 0 {
+			turnID = turns[len(turns)-1]
+		} else {
+			if turnID, err = r.settledFor(ctx, child, task); err != nil {
 				return "", err
 			}
-		default:
+			if turnID == "" {
+				if turnID, err = c.Send(ctx, task); err != nil {
+					return "", err
+				}
+			}
+		}
+		// A Turn left active waiting for recovery (its executions belong to
+		// a dead owner and await the control plane) is not settled: wait
+		// for it to move and resume again.
+		active, err := r.awaitRecovery(ctx, child, turnID)
+		if err != nil {
+			return "", err
+		}
+		if !active {
 			return turnID, nil
 		}
 	}
 }
 
-// awaitRecovery waits until the Turn leaves waiting_for_recovery.
-func (r *Responder) awaitRecovery(ctx context.Context, ref turn.TurnRef) error {
+// settledFor is the Turn already settled for task, if the child's last Turn
+// was asked exactly that; empty otherwise.
+func (r *Responder) settledFor(ctx context.Context, child session.SessionID, task string) (turn.TurnID, error) {
+	surface, err := r.children.TurnSurface(ctx, child)
+	if err != nil || len(surface.Order) == 0 {
+		return "", err
+	}
+	last := surface.Order[len(surface.Order)-1]
+	text, err := r.children.InputText(ctx, turn.TurnRef{SessionID: child, TurnID: last})
+	if err != nil || text != task {
+		return "", err
+	}
+	return last, nil
+}
+
+// awaitRecovery waits while the Turn is active and its Run needs recovery;
+// active reports whether the Turn is still active once the wait ends.
+func (r *Responder) awaitRecovery(ctx context.Context, child session.SessionID, turnID turn.TurnID) (active bool, err error) {
 	delay := 10 * time.Millisecond
 	for {
-		resp, err := r.k.Turns.Status(ctx, ref)
+		surface, err := r.children.TurnSurface(ctx, child)
 		if err != nil {
-			return err
+			return false, err
 		}
-		if resp.Status != turn.TurnActive || resp.Disposition != sessionkernel.ResumeWaitingForRecovery {
-			return nil
+		view, ok := surface.Turns[turnID]
+		if !ok {
+			return false, fmt.Errorf("spawn: subagent %s has no turn %s", child, turnID)
+		}
+		if view.Status != turn.TurnActive {
+			return false, nil
+		}
+		waiting, err := r.children.AwaitingRecovery(ctx, turn.TurnRef{SessionID: child, TurnID: turnID})
+		if err != nil {
+			return false, err
+		}
+		if !waiting {
+			return true, nil
 		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return ctx.Err()
+			return false, ctx.Err()
 		case <-timer.C:
 		}
 		delay = min(delay*2, 250*time.Millisecond)
 	}
-}
-
-// newestInput is the most recently submitted input of the chatlog surface.
-func newestInput(chat *chatlog.Surface) (chatlog.InputView, bool) {
-	var best chatlog.InputView
-	var found bool
-	chat.Inputs.Range(func(_ chatlog.InputID, v chatlog.InputView) bool {
-		if !found || best.Position.Less(v.Position) {
-			best, found = v, true
-		}
-		return true
-	})
-	return best, found
 }
 
 var _ execution.Responder = (*Responder)(nil)

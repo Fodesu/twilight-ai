@@ -17,8 +17,9 @@
 // invocation after a crash; when the effect runs through a durable Worker,
 // the Worker persists it as ExecutionRef{twilight/session, child} (RUN-EXE-9).
 //
-// This package is the protocol core. The orchestration that creates, drives
-// and settles child Sessions lives in the Host (Ports.Spawn).
+// This package is the protocol core plus the Responder that answers the call;
+// the Responder creates, drives and settles child Sessions only through the
+// Children the host binds, never through a conversation protocol of its own.
 package spawn
 
 import (
@@ -154,8 +155,8 @@ func ArgumentsConflict(prov Provenance, args Arguments) bool {
 
 // Tool is the model-facing definition of the spawn tool for preset
 // catalogs. Its ResponsePolicy is ExternalResponse: a call waits, and the
-// Responder the Engine holds for the tool answers it (SPN-1, DRV-4). Execute
-// never runs.
+// Responder the Engine holds for the tool answers it (SPN-1). Execute never
+// runs.
 func Tool(ref run.ToolRef) local.ExecutableTool { return tool{ref: ref} }
 
 type tool struct{ ref run.ToolRef }
