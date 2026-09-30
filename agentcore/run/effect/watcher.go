@@ -79,6 +79,10 @@ type watch struct {
 	// attached by the probe.
 	since  time.Time
 	probed time.Time
+	// asked records that recovery was requested for the current orphaned
+	// episode; a record seen active again clears it, so the next episode
+	// asks once more.
+	asked bool
 }
 
 // Watch registers key: deliver receives its Outcome once, then the
@@ -204,9 +208,10 @@ func (w *Watcher) run() {
 }
 
 // probeStale attaches every key that has waited at least probe since it
-// was registered or last probed, and asks for the recovery of an orphaned
-// one (RUN-EXE-3, RUN-EXE-6). Attach failures and refusals are left to the
-// next probe: the Worker's record is the authority, the probe only asks.
+// was registered or last probed, and asks once per orphaned episode for
+// the recovery of an orphaned one (RUN-EXE-3, RUN-EXE-6). Attach failures
+// and refusals are left to the next probe: the Worker's record is the
+// authority, the probe only asks.
 func (w *Watcher) probeStale(probe time.Duration) {
 	now := time.Now()
 	w.mu.Lock()
@@ -227,10 +232,24 @@ func (w *Watcher) probeStale(probe time.Duration) {
 			return
 		}
 		att, err := w.Port.Attach(w.ctx, key)
-		if err != nil || att.State != AttachmentOrphaned || w.Recover == nil {
+		if err != nil {
 			continue
 		}
-		_ = w.Recover.RecoverExecution(w.ctx, key)
+		w.mu.Lock()
+		entry, ok := w.keys[key]
+		ask := false
+		if ok {
+			switch att.State {
+			case AttachmentOrphaned:
+				ask, entry.asked = !entry.asked, true
+			case AttachmentActive:
+				entry.asked = false
+			}
+		}
+		w.mu.Unlock()
+		if ask && w.Recover != nil {
+			_ = w.Recover.RecoverExecution(w.ctx, key)
+		}
 	}
 }
 
