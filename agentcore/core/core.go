@@ -22,6 +22,7 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
+	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -76,14 +77,29 @@ type Ports struct {
 	Redispatches redispatch.Store
 	// Executor is the effect layer port (RUN-EXE-3): required.
 	Executor effect.ExecutionPort
+	// Planner, when set, is consulted between the steps of every Run with
+	// the Writer of the Session being driven: the application's in-turn
+	// context policy.
+	Planner driver.Planner
+	// Sink receives the drives' provisional observations (progress frames);
+	// nil discards them.
+	Sink loop.EventSink
+	// Responders answer ExternalResponse waits by the ToolRef whose calls
+	// they answer; nil answers none.
+	Responders map[run.ToolRef]driver.Responder
 	// TargetResolver supplies the opaque resource target of each effect
 	// (RUN-LOP-9). It belongs to the application's resource layer; nil
 	// gives every effect no target (APP-TGT-1).
 	TargetResolver loop.TargetResolver
 	// Observers are notified of every group the Writers apply (EXT-WRT-7).
 	Observers []writer.CommitObserver
-	// Modules are application modules registered after the first-party four
-	// (EXT-APP).
+	// Registry is the module registry every Writer, projection and event
+	// stream of this Core decodes through. When nil, New builds one from
+	// the first-party modules and Modules; a host that needs the Registry
+	// before the Core exists builds it with NewRegistry and passes it here.
+	Registry *module.Registry
+	// Modules are application modules registered after the first-party
+	// ones (EXT-APP); ignored when Registry is given.
 	Modules []module.ModuleDescriptor
 	// Clock stamps event times; nil selects time.Now.
 	Clock func() time.Time
@@ -117,16 +133,18 @@ type Core struct {
 	Runs *sessionstore.SessionRunStore
 	// Turns commits the Turn protocol and reads Turn status.
 	Turns *rt.Coordinator
-	// Loops, Driver, Recovery and Responders are the drive chain over the
-	// shared Watcher: the Core composes them and Close closes the Watcher.
-	Loops      *driver.Loops
-	Driver     *driver.Driver
-	Recovery   *driver.Recovery
-	Responders *driver.Responders
-	Watcher    *effect.Watcher
-	Presets    preset.Registry
-	Executor   effect.ExecutionPort
-	Frozen     frozen.Store
+	// Driver drives an active Turn; Recovery runs the takeover disposition
+	// when a Session opens and ends its listeners when it closes. Both sit
+	// on the Loops and the Watcher the Core built and closes.
+	Driver   *driver.Driver
+	Recovery *driver.Recovery
+	// Watcher is the settlement subscription every Loop and Reconciler of
+	// this Core waits on; a host component that waits for an effect of its
+	// own (compaction's summary) shares it instead of subscribing again.
+	Watcher  *effect.Watcher
+	Presets  preset.Registry
+	Executor effect.ExecutionPort
+	Frozen   frozen.Store
 	// Projections reads every projection through the Session's Writer.
 	Projections session.ProjectionReader
 	// Content materializes the frozen bodies projections name (CHT-MAT-1).
@@ -156,12 +174,12 @@ func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by
 		return nil, errors.New("core: MissingEffects=redispatch requires a dispatch ledger (Ports.Redispatches, RUN-EXE-15)")
 	}
 	store := p.Store
-	// The first-party four are trusted core; Ports.Modules are extensions
-	// and cannot declare authoritative projections (EXT-PRJ-9).
-	registry, err := module.BuildRegistryWithExtensions(
-		[]module.ModuleDescriptor{chatlog.Module, sessionstore.Module, turn.Module}, p.Modules)
-	if err != nil {
-		return nil, err
+	registry := p.Registry
+	if registry == nil {
+		var err error
+		if registry, err = NewRegistry(p.Modules); err != nil {
+			return nil, err
+		}
 	}
 	bindings, retention := p.Artifacts.Bindings, p.Artifacts.Ledger
 	// A projection cache lets a reopened Session start folding instead of
@@ -215,13 +233,24 @@ func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by
 	}
 	a.Watcher = &effect.Watcher{Port: p.Executor, Probe: p.OrphanProbe}
 	// A nil resolver gives every effect no target (APP-TGT-1).
-	a.Loops = &driver.Loops{Executor: p.Executor, Presets: presets, Decisions: decisions, Targets: p.TargetResolver,
-		Sources: decision.Sources{Projections: projections, Content: content}, Watcher: a.Watcher}
-	a.Recovery = &driver.Recovery{Runs: runs, Executor: p.Executor, Loops: a.Loops, Watcher: a.Watcher, Fail: p.Fail,
-		MissingEffects: p.MissingEffects, Redispatches: p.Redispatches, OrphanProbe: p.OrphanProbe}
-	a.Responders = &driver.Responders{Runs: runs, Fail: p.Fail}
-	a.Driver = &driver.Driver{Runs: runs, Loops: a.Loops, Recovery: a.Recovery, Responders: a.Responders}
+	loops := &driver.Loops{Executor: p.Executor, Presets: presets, Decisions: decisions, Targets: p.TargetResolver,
+		Sources: decision.Sources{Projections: projections, Content: content}, Watcher: a.Watcher, Planner: p.Planner}
+	a.Recovery = &driver.Recovery{Runs: runs, Executor: p.Executor, Loops: loops, Watcher: a.Watcher, Fail: p.Fail,
+		MissingEffects: p.MissingEffects, Redispatches: p.Redispatches, OrphanProbe: p.OrphanProbe, Sink: p.Sink}
+	var responders *driver.Responders
+	if len(p.Responders) > 0 {
+		responders = &driver.Responders{Runs: runs, Tools: p.Responders, Fail: p.Fail}
+	}
+	a.Driver = &driver.Driver{Runs: runs, Loops: loops, Recovery: a.Recovery, Responders: responders, Sink: p.Sink}
 	return a, nil
+}
+
+// NewRegistry builds the module registry of a Core: the first-party
+// modules as trusted core, extensions after them. Extensions cannot declare
+// authoritative projections.
+func NewRegistry(extensions []module.ModuleDescriptor) (*module.Registry, error) {
+	return module.BuildRegistryWithExtensions(
+		[]module.ModuleDescriptor{chatlog.Module, sessionstore.Module, turn.Module}, extensions)
 }
 
 // Close ends every Session's recovery listeners, the settlement

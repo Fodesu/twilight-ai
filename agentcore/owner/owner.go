@@ -140,25 +140,29 @@ func (a *Owner) DeleteSession(ctx context.Context, sid session.SessionID) error 
 	return writer.Delete(ctx, a.Core.Store, a.Core.Admission, sid)
 }
 
-// Close releases every generation this Owner holds and closes the Core;
-// every outstanding Handle is stale afterwards. Generations still opening
-// or closing on another goroutine finish their own release.
+// Close releases every generation this Owner holds: the recovery
+// listeners and the Writer of each. Every outstanding Handle is stale
+// afterwards; generations still opening or closing on another goroutine
+// finish their own release. The Core stays open: it is the host's to
+// close, after this.
 func (a *Owner) Close(ctx context.Context) error {
 	a.mu.Lock()
-	var owned []session.SessionID
+	var owned []*openSession
+	var sids []session.SessionID
 	for sid, gen := range a.open {
 		if gen.state == open {
 			gen.state = closing
-			owned = append(owned, sid)
+			owned = append(owned, gen)
+			sids = append(sids, sid)
 		}
 	}
 	a.mu.Unlock()
-	err := a.Core.Close(ctx)
-	a.mu.Lock()
-	for _, sid := range owned {
-		delete(a.open, sid)
+	var err error
+	for i, gen := range owned {
+		if rerr := a.release(ctx, sids[i], gen, true); rerr != nil && err == nil {
+			err = rerr
+		}
 	}
-	a.mu.Unlock()
 	return err
 }
 

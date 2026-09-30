@@ -296,6 +296,14 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		ownership: c.Ownership, refs: make(map[preset.PresetID]preset.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session),
 		activating: make(map[session.SessionID]chan struct{})}
 	app.bg, app.bgCancel = context.WithCancel(context.Background())
+	// Build is transactional: a failure after a resource with a lifetime
+	// was created releases what was created, in reverse order.
+	built := false
+	defer func() {
+		if !built {
+			app.rollback()
+		}
+	}()
 	if c.Activation != nil {
 		if c.Inbox == nil {
 			return nil, errors.New("app: Activation requires an inbox Store")
@@ -355,41 +363,45 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		return nil, err
 	}
 	app.worker = worker
-	// The event stream is a CommitObserver on the Writers (EXT-WRT-7); it
-	// needs the Registry, which the Authority builds, so the bus is wired
-	// through a forwarding observer bound after New.
-	var bus *observe.Bus
-	observers := append([]writer.CommitObserver{forwardingObserver{&bus}}, c.Observers...)
+	// The event stream is a CommitObserver on the Writers (EXT-WRT-7) and
+	// decodes through the Registry, so both exist before the Core does.
+	registry, err := core.NewRegistry(c.Modules)
+	if err != nil {
+		return nil, err
+	}
+	app.bus = observe.NewBus(registry, c.Store)
+	observers := append([]writer.CommitObserver{app.bus}, c.Observers...)
 	decisions := c.Decisions
 	if decisions == nil {
 		decisions = prompt.DefaultCatalog()
 	}
+	// The subagent tool waits for an external response the Responder gives
+	// (SPN-1, DRV-4); the Responder opens children through the Owner, which
+	// it is bound to once the Owner exists, before any Respond can run.
+	var responders map[run.ToolRef]driver.Responder
+	if app.spawn != nil {
+		responders = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
+	}
 	kernel, err := core.New(core.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,
 		MissingEffects: c.MissingEffects, Redispatches: c.Redispatches, OrphanProbe: c.OrphanProbe,
-		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
+		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Registry: registry,
+		// The Sessions' compaction policy runs between the steps of a Turn
+		// (APP-CKP-1, RUN-LOP-10); provisional observations of effects in
+		// flight reach the same stream as the committed facts (OBS-1).
+		Planner: app, Sink: busSink{app.bus}, Responders: responders,
 		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
 	})
 	if err != nil {
 		return nil, err
 	}
-	a := owner.New(kernel)
-	bus = observe.NewBus(kernel.Registry, c.Store)
-	app.Owner, app.Core, app.bus = a, kernel, bus
+	app.Core = kernel
+	app.Owner = owner.New(kernel)
 	if resolver != nil {
 		resolver.Projections = kernel.Projections
 	}
-	// The Sessions' compaction policy runs between the steps of a Turn
-	// through the driver's planner seam (APP-CKP-1, RUN-LOP-10).
-	kernel.Loops.Planner = app
-	// Provisional observations of effects in flight reach the same stream
-	// as the committed facts (OBS-1, RUN-LOP-6).
-	kernel.Driver.Sink, kernel.Recovery.Sink = busSink{bus}, busSink{bus}
 	if app.spawn != nil {
-		// The subagent tool waits for an external response the Responder
-		// gives (SPN-1, DRV-4).
-		app.spawn.Bind(a)
-		kernel.Responders.Tools = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
+		app.spawn.Bind(app.Owner)
 	}
 	for i := range c.Presets {
 		p := &c.Presets[i]
@@ -404,7 +416,25 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		app.loops.Add(1)
 		go app.scanLoop()
 	}
+	built = true
 	return app, nil
+}
+
+// rollback releases what a failed Build created, in reverse order of
+// creation: the Core, the Worker, the sandbox. Nothing was opened yet, so
+// there is no ownership to release.
+func (app *Application) rollback() {
+	app.bgCancel()
+	ctx := context.Background()
+	if app.Core != nil {
+		_ = app.Core.Close(ctx)
+	}
+	if app.worker != nil {
+		app.worker.Close()
+	}
+	if app.sandbox != nil {
+		_ = app.sandbox.Close(ctx)
+	}
 }
 
 // busSink is the drive's loop.EventSink: provisional observations become
@@ -424,14 +454,6 @@ func (s busSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic
 // forwardingObserver forwards to a Bus that is bound after the Writers are
 // built; commits before binding (none: Build binds before any Session opens)
 // are dropped.
-type forwardingObserver struct{ bus **observe.Bus }
-
-func (o forwardingObserver) Committed(ctx context.Context, sid session.SessionID, c ledger.Commit) {
-	if b := *o.bus; b != nil {
-		b.Committed(ctx, sid, c)
-	}
-}
-
 // fail reports a failure of background work to Warn and, as an Event, to the
 // Session's subscribers (OBS-1).
 func (app *Application) fail(sid session.SessionID, err error) {
@@ -502,12 +524,16 @@ func (app *Application) Close(ctx context.Context) error {
 	if werr := app.releases.wait(ctx); werr != nil && err == nil {
 		err = werr
 	}
+	// Ownership is released first, then the Core's services close under
+	// it, then the Worker: the Core's drives may still be settling outcomes
+	// through it. Records keep their leases until they expire and the next
+	// incarnation adopts them (RUN-EXE-8, SPN-4).
 	if oerr := app.Owner.Close(ctx); oerr != nil && err == nil {
 		err = oerr
 	}
-	// The Worker goes last: the Authority's drives may still be settling
-	// outcomes through it. Records keep their leases until they expire and
-	// the next incarnation adopts them (RUN-EXE-8, SPN-4).
+	if cerr := app.Core.Close(ctx); cerr != nil && err == nil {
+		err = cerr
+	}
 	if app.worker != nil {
 		app.worker.Close()
 	}

@@ -57,7 +57,10 @@ func newAuthorityFrom(t *testing.T, p *core.Ports) *owner.Owner {
 		t.Fatal(err)
 	}
 	a := owner.New(c)
-	t.Cleanup(func() { _ = a.Close(context.Background()) })
+	t.Cleanup(func() {
+		_ = a.Close(context.Background())
+		_ = c.Close(context.Background())
+	})
 	return a
 }
 
