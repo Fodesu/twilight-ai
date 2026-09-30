@@ -52,6 +52,9 @@ type ExecutionConfig struct {
 	// Redispatches is the dispatch ledger RedispatchMissing writes; durable
 	// like every store (OWN-PRT-3). Unused under DisposeMissing.
 	Redispatches redispatch.Store
+	// MaxRedispatches bounds the redispatches of one effect under
+	// RedispatchMissing; zero selects reconcile.DefaultMaxRedispatches.
+	MaxRedispatches int
 	// Planner, when set, is consulted between the steps of every Run with
 	// the Writer of the Session being driven: the application's in-turn
 	// context policy.
@@ -130,7 +133,7 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 	loops := &driver.Loops{Executor: cfg.Executor, Presets: presets, Decisions: cfg.Decisions, Targets: cfg.TargetResolver,
 		Sources: decision.Sources{Projections: src.Projections, Content: src.Content}, Watcher: x.Watcher, Planner: cfg.Planner}
 	x.Recovery = &driver.Recovery{Runs: src.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: report,
-		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, OrphanProbe: cfg.OrphanProbe, Sink: progressSink{x.Progress}}
+		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, MaxRedispatches: cfg.MaxRedispatches, OrphanProbe: cfg.OrphanProbe, Sink: progressSink{x.Progress}}
 	var responders *driver.Responders
 	if len(cfg.Responders) > 0 {
 		responders = &driver.Responders{Runs: src.Runs, Tools: cfg.Responders, Fail: report}

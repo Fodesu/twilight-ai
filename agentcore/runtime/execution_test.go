@@ -97,3 +97,11 @@ func TestComponentFailureReportedOnce(t *testing.T) {
 		})
 	}
 }
+
+// The redispatch budget of the config is the Recovery's.
+func TestMaxRedispatchesReachesRecovery(t *testing.T) {
+	x := newExecution(t, rt.ExecutionConfig{MaxRedispatches: 7})
+	if x.Recovery.MaxRedispatches != 7 {
+		t.Fatalf("Recovery.MaxRedispatches = %d, want 7", x.Recovery.MaxRedispatches)
+	}
+}
