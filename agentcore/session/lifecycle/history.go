@@ -1,7 +1,4 @@
-// Package history answers fork-boundary questions about a Session's
-// ledger: it reads the turn and chatlog event types, so callers need not
-// scan raw commits themselves.
-package history
+package lifecycle
 
 import (
 	"context"

@@ -10,7 +10,6 @@ import (
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
@@ -28,18 +27,14 @@ func (c children) Open(ctx context.Context, sid session.SessionID, pref preset.P
 }
 
 func (c children) Create(ctx context.Context, sid session.SessionID, ext module.Extensions) error {
-	return c.app.Kernel.CreateSession(ctx, sid, ext)
+	return c.app.Kernel.Lifecycle.Create(ctx, sid, ext)
 }
 
 // ForkBeforeInputs forks parent at the last commit before turnID and its
 // inputs: the conversation as it stood before that Turn was asked, under
 // the same quiescence guard every fork passes.
 func (c children) ForkBeforeInputs(ctx context.Context, parent session.SessionID, turnID turn.TurnID, sid session.SessionID, ext module.Extensions) error {
-	at, err := c.app.Kernel.History.PrefixCommit(ctx, parent, turnID)
-	if err != nil {
-		return err
-	}
-	_, err = c.app.Kernel.Fork(ctx, sessionkernel.ForkRequest{Parent: parent, At: at, Child: sid, Ext: ext})
+	_, err := c.app.Kernel.Lifecycle.ForkBeforeInputs(ctx, parent, turnID, sid, ext)
 	return err
 }
 

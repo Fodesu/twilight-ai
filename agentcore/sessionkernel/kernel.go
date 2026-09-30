@@ -14,18 +14,17 @@ package sessionkernel
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/chatlog"
-	"github.com/felinics/twilight/agentcore/history"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/lifecycle"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 )
@@ -92,7 +91,7 @@ type Kernel struct {
 	// Bus is the committed event stream: a CommitObserver on the Writers
 	// (OBS-1), carrying the applied groups decoded, in commit order. It
 	// carries facts only; transient observations are not part of it.
-	Bus *observe.Bus
+	Bus    *observe.Bus
 	Frozen frozen.Store
 	// Projections reads every projection through the Session's Writer.
 	Projections session.ProjectionReader
@@ -100,9 +99,9 @@ type Kernel struct {
 	Content chatlog.ContentResolver
 	// Chatlog commits the chatlog's own facts (APP-INP-1, APP-CKP-1).
 	Chatlog *chatlog.Commands
-	// History answers fork-boundary questions.
-	History history.History
-	Clock   func() time.Time
+	// Lifecycle creates, forks and reclaims Sessions over the Store.
+	Lifecycle lifecycle.Lifecycle
+	Clock     func() time.Time
 }
 
 // New composes a Kernel from its ports.
@@ -164,11 +163,12 @@ func New(p Ports) (*Kernel, error) { //nolint:gocritic // hugeParam: Ports is a 
 	content := sessionstore.NewContent(fz)
 	return &Kernel{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
-		Turns:       &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
-		Bus:         bus, Frozen: fz, Projections: projections, Content: content,
-		Chatlog:     &chatlog.Commands{Now: now},
-		History:     history.History{Store: store, Registry: registry, Projections: projections},
-		Clock:       now,
+		Turns: &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
+		Bus:   bus, Frozen: fz, Projections: projections, Content: content,
+		Chatlog: &chatlog.Commands{Now: now},
+		Lifecycle: lifecycle.Lifecycle{Store: store, Registry: registry, Admission: admission, Clock: now,
+			History: lifecycle.History{Store: store, Registry: registry, Projections: projections}},
+		Clock: now,
 	}, nil
 }
 
@@ -184,88 +184,6 @@ func NewRegistry(extensions []module.ModuleDescriptor) (*module.Registry, error)
 // working; the execution side of a host closes before this.
 func (a *Kernel) Close(ctx context.Context) error {
 	return writer.CloseWriters(ctx, a.Writers)
-}
-
-// CreateSession creates the Session; ext are the segment's module extension
-// slots (nil for none), carried opaquely by the kernel (SES-WIR-5).
-func (a *Kernel) CreateSession(ctx context.Context, sid session.SessionID, ext module.Extensions) error {
-	_, err := a.Store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Ext: ext})
-	return err
-}
-
-// EnsureSession makes sure the Session exists, whatever record created it:
-// a root made here, a fork or a spawned child all count. Create alone would
-// refuse a Session whose segment fields differ (SES-CRT-1), so existence is
-// probed first.
-func (a *Kernel) EnsureSession(ctx context.Context, sid session.SessionID) error {
-	if _, err := a.Store.Header(ctx, sid); err == nil {
-		return nil
-	} else if !session.IsCode(err, session.ErrNotFound) {
-		return err
-	}
-	if err := a.CreateSession(ctx, sid, nil); err != nil {
-		// A concurrent creator winning the race is still "exists".
-		if _, herr := a.Store.Header(ctx, sid); herr == nil {
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
-// ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1): the
-// child inherits every commit of Parent up to and including At and continues
-// from there under its own identity.
-type ForkRequest struct {
-	Parent session.SessionID
-	At     ledger.CommitSeq
-	Child  session.SessionID
-	// Ext are the child segment's module extension slots (SES-WIR-5).
-	Ext module.Extensions
-}
-
-// Fork creates the child Session (SES-FRK-1) and claims the artifacts its
-// inherited prefix references (EXT-WRT-8). The child is not opened.
-func (a *Kernel) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
-	if req.Parent == "" || req.Child == "" {
-		return session.SegmentHeader{}, errors.New("sessionkernel: fork requires parent and child session ids")
-	}
-	if req.Parent == req.Child {
-		return session.SegmentHeader{}, errors.New("sessionkernel: a session cannot fork itself")
-	}
-	// A fork point inside a Turn would hand the child a Turn whose Run is
-	// the parent's execution (SES-FRK-5): semantic history branches only at
-	// quiescent points (OWN-FRK-1).
-	if active, ok, err := a.History.ActiveAt(ctx, req.Parent, req.At); err != nil {
-		return session.SegmentHeader{}, err
-	} else if ok {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: req.Child,
-			Detail: fmt.Sprintf("turn %s of %s is active at commit %d; fork at a quiescent point", active, req.Parent, req.At)}
-	}
-	return writer.Fork(ctx, a.Store, a.Registry, writer.ForkRequest{
-		Parent: req.Parent, At: req.At, Child: req.Child, CreatedAtUnixMilli: a.Clock().UnixMilli(), Ext: req.Ext,
-	})
-}
-
-// ForkBeforeTurn forks Parent at the commit just before turnID started
-// (OWN-FRK-2): the child holds the conversation as it was when that Turn's
-// inputs were still submitted and undelivered.
-func (a *Kernel) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
-	seq, err := a.History.StartCommit(ctx, parent, turnID)
-	if err != nil {
-		return session.SegmentHeader{}, err
-	}
-	if seq == 0 {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
-			Detail: fmt.Sprintf("turn %s started in the first commit of %s; there is no prefix to fork", turnID, parent)}
-	}
-	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
-}
-
-// Collect reclaims the storage of deleted Sessions no live Session reaches
-// (SES-GC-2) and releases the claims of the commits it reclaimed (SES-GC-3).
-func (a *Kernel) Collect(ctx context.Context) (session.CollectReport, error) {
-	return writer.Collect(ctx, a.Store, a.Admission)
 }
 
 // Projection reads any registered projection through the Session's Writer

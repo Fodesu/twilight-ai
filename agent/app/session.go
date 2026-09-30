@@ -128,7 +128,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if _, err := app.Execution.Presets().Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
-	if err := app.Kernel.EnsureSession(ctx, sid); err != nil {
+	if err := app.Kernel.Lifecycle.Ensure(ctx, sid); err != nil {
 		return nil, err
 	}
 	return app.openOwned(ctx, sid, opts)

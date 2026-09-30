@@ -24,6 +24,7 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/lifecycle"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"sync"
@@ -451,4 +452,4 @@ func (app *Application) Close(ctx context.Context) error {
 type Event = observe.Event
 
 // ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1).
-type ForkRequest = sessionkernel.ForkRequest
+type ForkRequest = lifecycle.ForkRequest
