@@ -17,7 +17,9 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
+	"time"
 )
 
 // newAuthority is the deployment every owner test starts from: a local
@@ -112,5 +114,64 @@ func TestHandleGenerations(t *testing.T) {
 	}
 	if err := third.Close(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// gatedWriters blocks every Writer call behind gate, so a test parks an
+// Open inside the acquisition and observes the Owner's shutdown behaviour.
+type gatedWriters struct {
+	writer.Writers
+	gate    chan struct{}
+	started chan struct{}
+}
+
+func (g *gatedWriters) Writer(ctx context.Context, sid session.SessionID) (writer.Writer, error) {
+	g.started <- struct{}{}
+	select {
+	case <-g.gate:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return g.Writers.Writer(ctx, sid)
+}
+
+// Close waits for an Open in flight before returning, and an Open after
+// Close began is ErrClosed: no Open outlives the Execution and the Kernel
+// closing behind Close (the Application.Close order).
+func TestCloseWaitsForInFlightOpen(t *testing.T) {
+	ctx := context.Background()
+	a := newAuthority(t)
+	k := a.Kernel
+	if err := k.CreateSession(ctx, "s-inflight", nil); err != nil {
+		t.Fatal(err)
+	}
+	gate := make(chan struct{})
+	k.Writers = &gatedWriters{Writers: k.Writers, gate: gate, started: make(chan struct{}, 1)}
+	opened := make(chan error, 1)
+	go func() {
+		h, err := a.Open(ctx, "s-inflight")
+		if err != nil {
+			opened <- err
+			return
+		}
+		opened <- h.Close(ctx)
+	}()
+	<-k.Writers.(*gatedWriters).started
+	closed := make(chan error, 1)
+	go func() { closed <- a.Close(ctx) }()
+	select {
+	case err := <-closed:
+		t.Fatalf("close returned %v while an Open was in flight", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(gate)
+	if err := <-closed; err != nil {
+		t.Fatalf("close = %v", err)
+	}
+	if err := <-opened; err != nil {
+		t.Fatalf("in-flight open's handle close = %v", err)
+	}
+	if _, err := a.Open(ctx, "s-inflight"); !errors.Is(err, owner.ErrClosed) {
+		t.Fatalf("open after close = %v, want ErrClosed", err)
 	}
 }

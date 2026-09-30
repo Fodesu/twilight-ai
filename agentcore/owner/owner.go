@@ -22,6 +22,10 @@ import (
 // is still opening or closing.
 var ErrSessionOpen = errors.New("owner: session is already open")
 
+// ErrClosed reports an Open after the Owner began closing: the Kernel and
+// the Execution it serves are closing behind it.
+var ErrClosed = errors.New("owner: closed")
+
 type openState uint8
 
 const (
@@ -44,6 +48,11 @@ type Owner struct {
 
 	mu   sync.Mutex
 	open map[session.SessionID]*openSession
+	// closing begins with Close: Open refuses from here on and Close waits
+	// for the Opens in flight before releasing, so none outlives the
+	// Execution and the Kernel closing behind this call.
+	closing  bool
+	inflight sync.WaitGroup
 }
 
 // New returns an Owner over k and x with no Session open.
@@ -62,10 +71,17 @@ type Handle struct {
 
 // Open acquires the Session's Writer, runs the takeover disposition and
 // resumes the waits a Responder answers. A Session already held, opening
-// or closing is ErrSessionOpen.
+// or closing is ErrSessionOpen; an Open after the Owner began closing is
+// ErrClosed.
 func (a *Owner) Open(ctx context.Context, sid session.SessionID) (*Handle, error) {
+	a.inflight.Add(1)
+	defer a.inflight.Done()
 	gen := &openSession{state: opening}
 	a.mu.Lock()
+	if a.closing {
+		a.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", ErrClosed, sid)
+	}
 	if _, held := a.open[sid]; held {
 		a.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrSessionOpen, sid)
@@ -143,12 +159,15 @@ func (a *Owner) DeleteSession(ctx context.Context, sid session.SessionID) error 
 	return writer.Delete(ctx, a.Kernel.Store, a.Kernel.Admission, sid)
 }
 
-// Close releases every generation this Owner holds: the recovery
-// listeners and the Writer of each. Every outstanding Handle is stale
-// afterwards; generations still opening or closing on another goroutine
-// finish their own release. The Kernel and the Execution stay open: they
-// are the host's to close, after this.
+// Close refuses new Opens, waits for the ones in flight and releases every
+// generation this Owner then holds: the recovery listeners and the Writer
+// of each. Every outstanding Handle is stale afterwards. The Kernel and the
+// Execution stay open: they are the host's to close, after this.
 func (a *Owner) Close(ctx context.Context) error {
+	a.mu.Lock()
+	a.closing = true
+	a.mu.Unlock()
+	a.inflight.Wait()
 	a.mu.Lock()
 	var owned []*openSession
 	var sids []session.SessionID
