@@ -2,7 +2,7 @@
 // holds: Open acquires a Session's Writer, runs the takeover disposition
 // and hands out the Handle every command runs through; one generation of
 // ownership exists at a time, and Close releases it. The services a Handle
-// is driven with are the Kernel's and the Execution's; this package adds
+// is driven with are the Kernel's and the Engine's; this package adds
 // nothing but the ownership table.
 package owner
 
@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/felinics/twilight/agentcore/runtime"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
@@ -41,14 +41,14 @@ type openSession struct {
 }
 
 // Owner holds the Sessions this process owns over the Session-side ports
-// they commit through; the Execution advances them.
+// they commit through; the Engine advances them.
 type Owner struct {
 	// Writers opens and closes the Sessions' Writers.
 	Writers writer.Writers
 	// Maintenance deletes Sessions; Admission releases their artifacts.
 	Maintenance session.Maintenance
 	Admission   writer.Admission
-	Execution   *runtime.Execution
+	Execution   execution.Engine
 
 	mu   sync.Mutex
 	open map[session.SessionID]*openSession
@@ -59,9 +59,9 @@ type Owner struct {
 	inflight sync.WaitGroup
 }
 
-// New returns an Owner over the Kernel's Session ports and the Execution x,
+// New returns an Owner over the Kernel's Session ports and the Engine x,
 // with no Session open.
-func New(k *sessionkernel.Kernel, x *runtime.Execution) *Owner {
+func New(k *sessionkernel.Kernel, x execution.Engine) *Owner {
 	return &Owner{Writers: k.Writers, Maintenance: k.Store, Admission: k.Admission, Execution: x,
 		open: make(map[session.SessionID]*openSession)}
 }
@@ -100,7 +100,7 @@ func (a *Owner) Open(ctx context.Context, sid session.SessionID) (*Handle, error
 		return nil, err
 	}
 	gen.w = w
-	n, err := a.Execution.Open(ctx, w)
+	n, err := a.Execution.Takeover(ctx, w)
 	if err != nil {
 		_ = a.release(context.WithoutCancel(ctx), sid, gen, true)
 		return nil, err
@@ -132,7 +132,7 @@ func (a *Owner) beginClose(sid session.SessionID, gen *openSession) *openSession
 func (a *Owner) release(ctx context.Context, sid session.SessionID, gen *openSession, closeWriter bool) error {
 	var err error
 	if closeWriter {
-		a.Execution.Stop(sid)
+		a.Execution.Detach(sid)
 		err = writer.CloseWriter(ctx, a.Writers, sid)
 	}
 	a.mu.Lock()

@@ -1,14 +1,12 @@
-// Package runtime is the conversation's execution over the fact and effect
-// layers: the SessionRuntime admits inputs into Turns and advances the
-// Session to its next quiescent point, and the Execution assembles the
-// drive chain (the settlement subscription, the Driver, the Recovery, the
-// decision identities, the effect port) over one Session kernel. The Turn
-// protocol itself -- the Coordinator, the quiescence guards, the request
-// and result vocabulary -- is the session kernel's (agentcore/sessionkernel);
-// this package re-exports that vocabulary for the hosts and the runtime.
-// Every call runs on the caller's goroutine and ctx; which calls run in
-// the background, what a reply is and which policies run at quiescence are
-// the host's decisions, taken on the Settlement each call returns.
+// Package runtime is the conversation process over one owned Session: the
+// SessionRuntime admits inputs into Turns and advances the Session to its
+// next quiescent point through the Engine it is given. The Turn protocol
+// itself -- the Coordinator, the quiescence guards, the request and result
+// vocabulary -- is the session kernel's; this package re-exports that
+// vocabulary for the hosts. Every call runs on the caller's goroutine and
+// ctx; which calls run in the background, what a reply is and which
+// policies run at quiescence are the host's decisions, taken on the
+// Settlement each call returns.
 package runtime
 
 import (
@@ -17,7 +15,7 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/chatlog"
-	"github.com/felinics/twilight/agentcore/driver"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
@@ -57,11 +55,11 @@ type Settlement struct {
 }
 
 // Config composes one SessionRuntime. Writer is the ownership capability
-// every command commits through; Driver, Turns, Chatlog and Projections are
+// every command commits through; Engine, Turns, Chatlog and Projections are
 // the composed core services of the same Session.
 type Config struct {
 	Writer      writer.Writer
-	Driver      *driver.Driver
+	Engine      execution.Engine
 	Turns       Turns
 	Chatlog     *chatlog.Commands
 	Projections session.ProjectionReader
@@ -110,7 +108,7 @@ var (
 // goroutine of its own.
 type SessionRuntime struct {
 	w      writer.Writer
-	driver *driver.Driver
+	engine execution.Engine
 	turns  Turns
 	chat   *chatlog.Commands
 	proj   session.ProjectionReader
@@ -127,8 +125,8 @@ func New(cfg Config) (*SessionRuntime, error) { //nolint:gocritic // hugeParam: 
 	if cfg.Writer == nil {
 		return nil, errors.New("runtime: a writer is required")
 	}
-	if cfg.Driver == nil {
-		return nil, errors.New("runtime: a driver is required")
+	if cfg.Engine == nil {
+		return nil, errors.New("runtime: an engine is required")
 	}
 	if cfg.Turns == nil {
 		return nil, errors.New("runtime: turn commands are required")
@@ -154,7 +152,7 @@ func New(cfg Config) (*SessionRuntime, error) { //nolint:gocritic // hugeParam: 
 	if budget <= 0 {
 		budget = DefaultTurnBudget
 	}
-	return &SessionRuntime{w: cfg.Writer, driver: cfg.Driver, turns: cfg.Turns, chat: cfg.Chatlog, proj: cfg.Projections,
+	return &SessionRuntime{w: cfg.Writer, engine: cfg.Engine, turns: cfg.Turns, chat: cfg.Chatlog, proj: cfg.Projections,
 		sid: cfg.Writer.SessionID(), preset: cfg.Preset, newID: newID, routeRetries: retry, turnBudget: budget}, nil
 }
 
@@ -273,7 +271,7 @@ func (r *SessionRuntime) active(ctx context.Context) (turn.TurnID, bool, error) 
 // answer; AlreadyDriving reports a concurrent local driver of the same Run
 // carried it, in which case the answer is the status as read.
 func (r *SessionRuntime) drive(ctx context.Context, turnID turn.TurnID) (DriveResult, error) {
-	taken, err := r.driver.Drive(ctx, r.w, turnID)
+	taken, err := r.engine.Drive(ctx, r.w, turnID)
 	if err != nil {
 		return DriveResult{}, err
 	}

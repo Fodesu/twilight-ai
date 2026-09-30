@@ -12,8 +12,9 @@ import (
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/owner"
-	rt "github.com/felinics/twilight/agentcore/runtime"
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -50,8 +51,8 @@ func newAuthority(t *testing.T) (*owner.Owner, *sessionkernel.Kernel) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x, err := rt.NewExecution(rt.ExecutionConfig{Executor: exec, Decisions: decisions},
-		rt.ExecutionSources{Runs: k.Runs, Projections: k.Projections, Content: k.Content})
+	x, err := execution.New(execution.Config{Executor: effect.PortsOf(exec), Decisions: decisions},
+		execution.Sources{Runs: k.Runs, Projections: k.Projections, Content: k.Content})
 	if err != nil {
 		t.Fatal(err)
 	}

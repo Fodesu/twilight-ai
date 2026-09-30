@@ -1,0 +1,359 @@
+package execution
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/module"
+	"github.com/felinics/twilight/agentcore/preset"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
+	"github.com/felinics/twilight/agentcore/turn"
+)
+
+// scriptedPort is an ExecutionPort a test scripts: every dispatched key
+// gets an Outcome channel the test fills, Attach answers the attachment the
+// test set, and Settlements tells the Watcher of every Outcome handed back
+// so it is read at once.
+type scriptedPort struct {
+	mu         sync.Mutex
+	attachment effect.AttachmentState
+	dispatched []effect.Assignment
+	outcomes   map[effect.AssignmentKey]chan effect.Outcome
+	settled    map[effect.AssignmentKey]effect.Outcome
+	acked      []effect.AssignmentKey
+	notices    chan effect.AssignmentKey
+}
+
+func newScriptedPort(attachment effect.AttachmentState) *scriptedPort {
+	return &scriptedPort{attachment: attachment, outcomes: map[effect.AssignmentKey]chan effect.Outcome{},
+		settled: map[effect.AssignmentKey]effect.Outcome{}, notices: make(chan effect.AssignmentKey, 16)}
+}
+
+func (p *scriptedPort) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) { return nil, nil }
+func (p *scriptedPort) Dispatch(_ context.Context, a effect.Assignment) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dispatched = append(p.dispatched, a)
+	if _, ok := p.outcomes[a.Key()]; !ok {
+		p.outcomes[a.Key()] = make(chan effect.Outcome, 1)
+	}
+	return nil
+}
+func (p *scriptedPort) Attach(context.Context, effect.AssignmentKey) (effect.Attachment, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return effect.Attachment{State: p.attachment, Execution: effect.ExecutionRunning, BackendAttached: p.attachment == effect.AttachmentActive}, nil
+}
+func (p *scriptedPort) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
+	return p.Attach(ctx, key)
+}
+func (p *scriptedPort) GetStatus(context.Context, effect.AssignmentKey) (effect.ExecutionStatus, error) {
+	return effect.ExecutionRunning, nil
+}
+func (p *scriptedPort) GetOutcome(_ context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if out, ok := p.settled[key]; ok {
+		return out, nil
+	}
+	ch, ok := p.outcomes[key]
+	if !ok {
+		return effect.Outcome{}, effect.ErrExecutionNotFound
+	}
+	select {
+	case out := <-ch:
+		p.settled[key] = out
+		return out, nil
+	default:
+		return effect.Outcome{}, effect.ErrOutcomeNotReady
+	}
+}
+func (p *scriptedPort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
+func (p *scriptedPort) Acknowledge(_ context.Context, key effect.AssignmentKey) error {
+	p.mu.Lock()
+	p.acked = append(p.acked, key)
+	p.mu.Unlock()
+	return nil
+}
+
+// Settlements forwards the keys complete hands back.
+func (p *scriptedPort) Settlements(ctx context.Context, _ string, _ uint64, fn func(effect.Settlement) bool) error {
+	seq := uint64(0)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case key := <-p.notices:
+			seq++
+			if !fn(effect.Settlement{Key: key, Epoch: "e", Sequence: seq}) {
+				return nil
+			}
+		}
+	}
+}
+
+// complete makes key's Outcome readable and notices the Watcher.
+func (p *scriptedPort) complete(key effect.AssignmentKey, out effect.Outcome) {
+	p.mu.Lock()
+	ch, ok := p.outcomes[key]
+	if !ok {
+		ch = make(chan effect.Outcome, 1)
+		p.outcomes[key] = ch
+	}
+	p.mu.Unlock()
+	out.Key = key
+	ch <- out
+	p.notices <- key
+}
+
+func (p *scriptedPort) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.dispatched)
+}
+
+// staticBuilder is the one decision builder the tests register: one user
+// message under the preset's model.
+type staticBuilder struct{ ap preset.AgentPreset }
+
+func (b staticBuilder) Build(_ context.Context, in decision.Input) (decision.Prompt, error) {
+	ids := make([]run.InputID, len(in.Inputs))
+	for i, x := range in.Inputs {
+		ids[i] = x.ID
+	}
+	req := model.ModelRequest{Model: string(b.ap.Model), Messages: []model.Message{{Role: model.MessageRoleUser,
+		Content: []model.MessagePart{{Type: model.MessagePartTypeText, Text: "go"}}}}}
+	return decision.Prompt{Model: b.ap.Model, Request: req, InputIDs: ids}, nil
+}
+
+const builderRef preset.PromptBuilderRef = "test/static"
+
+func catalog(t *testing.T) *decision.Catalog {
+	t.Helper()
+	c, err := decision.NewCatalog(map[decision.BuilderRef]decision.PromptBuilderFactory{
+		builderRef: func(ap preset.AgentPreset, _ decision.Sources) decision.Builder { return staticBuilder{ap} },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// sessionSide is the Session side one Engine test needs: a Store, Writers,
+// the run adapter and the Turn protocol's committer over them.
+type sessionSide struct {
+	store   session.Stores
+	writers writer.Writers
+	runs    *sessionstore.SessionRunStore
+	proj    session.ProjectionReader
+	turns   *sessionkernel.Coordinator
+	chat    *chatlog.Commands
+}
+
+func newSessionSide(t *testing.T) *sessionSide {
+	t.Helper()
+	registry, err := module.BuildRegistry(chatlog.Module, sessionstore.Module, turn.Module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := filestoretest.Store(t)
+	bindings, retention := artifacttest.Stores(t)
+	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: retention}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
+	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: sessionstoretest.Frozen(t, bindings)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := session.NewProjectionReader(store, registry, nil)
+	t.Cleanup(func() { _ = writer.CloseWriters(context.Background(), writers) })
+	return &sessionSide{store: store, writers: writers, runs: runs, proj: proj,
+		turns: &sessionkernel.Coordinator{Projections: proj, Runs: runs}, chat: &chatlog.Commands{Now: time.Now}}
+}
+
+func (s *sessionSide) writer(t *testing.T, sid session.SessionID) writer.Writer {
+	t.Helper()
+	w, err := s.writers.Writer(context.Background(), sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// startTurn creates sid, submits one input and starts a Turn under the
+// preset registered in x; the Run is Open and undriven.
+func (s *sessionSide) startTurn(t *testing.T, x *engine, sid session.SessionID) (writer.Writer, turn.TurnRef) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := x.presets.Register("p", preset.AgentPreset{Model: "m-1", PromptBuilder: builderRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := s.writer(t, sid)
+	in, err := s.chat.Submit(ctx, w, "in-1", run.MustParseCanonicalJSON(`{"text":"hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
+	if _, err := s.turns.Start(ctx, w, sessionkernel.StartRequest{Ref: tref, Inputs: []run.AgentInput{in}, Preset: ref}); err != nil {
+		t.Fatal(err)
+	}
+	return w, tref
+}
+
+func newEngine(t *testing.T, cfg Config, s *sessionSide) *engine {
+	t.Helper()
+	if cfg.Executor.Execution == nil {
+		cfg.Executor = effect.PortsOf(newScriptedPort(effect.AttachmentMissing))
+	}
+	if cfg.Decisions == nil {
+		cfg.Decisions = catalog(t)
+	}
+	src := Sources{}
+	if s != nil {
+		src = Sources{Runs: s.runs, Projections: s.proj}
+	}
+	x, err := New(cfg, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(x.Close)
+	return x.(*engine)
+}
+
+// A component failure reaches the transient stream exactly once: through
+// the configured Fail callback, which owns that delivery, or directly when
+// no callback is configured.
+func TestComponentFailureReportedOnce(t *testing.T) {
+	const sid session.SessionID = "s-fail"
+	boom := errors.New("boom")
+	for _, tc := range []struct {
+		name         string
+		withCallback bool
+		wantCalls    int
+		wantEvents   int
+	}{
+		{"callback owns delivery", true, 1, 0},
+		{"no callback publishes directly", false, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			cfg := Config{}
+			if tc.withCallback {
+				cfg.Fail = func(session.SessionID, error) { calls++ }
+			}
+			x := newEngine(t, cfg, nil)
+			events := x.progress.Subscribe(ctx, sid)
+			x.recovery.report(sid, boom)
+			got := 0
+			timeout := time.After(100 * time.Millisecond)
+		drain:
+			for {
+				select {
+				case e := <-events:
+					if !errors.Is(e.Err, boom) {
+						t.Fatalf("event = %+v, want Err boom", e)
+					}
+					got++
+				case <-timeout:
+					break drain
+				}
+			}
+			if calls != tc.wantCalls || got != tc.wantEvents {
+				t.Fatalf("callback calls = %d, progress events = %d; want %d and %d", calls, got, tc.wantCalls, tc.wantEvents)
+			}
+		})
+	}
+}
+
+// The redispatch budget of the config is the recovery's.
+func TestMaxRedispatchesReachesRecovery(t *testing.T) {
+	x := newEngine(t, Config{MaxRedispatches: 7}, nil)
+	if x.recovery.maxRedispatches != 7 {
+		t.Fatalf("recovery.maxRedispatches = %d, want 7", x.recovery.maxRedispatches)
+	}
+}
+
+// A reattached Outcome is settled and reported through Notify; the Engine
+// does not drive the Run on. The Run's model step is Executing when the
+// Engine takes the Session over, the executor still holds the attempt, its
+// Outcome arrives, and the Run stands settled at the model step's completion
+// with nothing dispatched after it until the host drives.
+func TestReattachedOutcomeNotifiesWithoutDriving(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	const sid session.SessionID = "s-notify"
+	s := newSessionSide(t)
+	port := newScriptedPort(effect.AttachmentActive)
+	notified := make(chan session.SessionID, 4)
+	x := newEngine(t, Config{Executor: effect.PortsOf(port), Notify: func(id session.SessionID) { notified <- id }}, s)
+	w, tref := s.startTurn(t, x, sid)
+
+	// One Advance dispatches the model effect and returns: the state an
+	// owner that died mid-flight leaves, an Executing step with its attempt
+	// on the executor. The same Loop instance the Engine drives with is used,
+	// so its already-driving guard sees exactly what a takeover sees.
+	surface, err := turn.ReadSurface(ctx, s.proj, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := x.driver.loops.For(surface.Turns[tref.TurnID].Preset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := l.Advance(ctx, s.runs.Bind(w), surface.Turns[tref.TurnID].RunID, nil)
+	if err != nil || len(res.Dispatched) != 1 {
+		t.Fatalf("advance = %+v %v, want one dispatch", res, err)
+	}
+
+	// Takeover: the executor still holds the attempt (Active), so the target
+	// is kept and its Outcome awaited.
+	if n, err := x.Takeover(ctx, w); err != nil || n != 0 {
+		t.Fatalf("takeover = %d %v, want 0 dispositions", n, err)
+	}
+	a := port.dispatched[0]
+	port.complete(a.Key(), effect.Outcome{Result: effect.ModelSucceeded{Result: model.ModelResult{Text: "done", FinishReason: model.FinishReasonStop}}})
+
+	select {
+	case got := <-notified:
+		if got != sid {
+			t.Fatalf("notified %s, want %s", got, sid)
+		}
+	case <-ctx.Done():
+		t.Fatal("no Notify after the reattached Outcome settled")
+	}
+	// Nothing was dispatched after the settlement: the Engine did not drive.
+	time.Sleep(50 * time.Millisecond)
+	if n := port.count(); n != 1 {
+		t.Fatalf("dispatches after settlement = %d, want 1 (the engine drove the Run itself)", n)
+	}
+	rec, err := s.runs.Record(ctx, sid, turn.DeriveRunID(sid, tref.TurnID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Snapshot.State.Status != run.RunCompleted {
+		t.Fatalf("run after settlement = %v, want completed", rec.Snapshot.State.Status)
+	}
+	select {
+	case got := <-notified:
+		t.Fatalf("second Notify %s", got)
+	default:
+	}
+}

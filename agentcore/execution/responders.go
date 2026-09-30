@@ -1,4 +1,4 @@
-package driver
+package execution
 
 import (
 	"context"
@@ -40,13 +40,13 @@ type WaitingCall struct {
 // Responders answers the ExternalResponse waits of the Runs this process
 // drives, one Responder per ToolRef. Each wait is answered by one goroutine
 // at a time across every drive and every resume of this process.
-type Responders struct {
+type responders struct {
 	// Runs is the Run module's Session adapter the answers commit through.
-	Runs *sessionstore.SessionRunStore
+	runs *sessionstore.SessionRunStore
 	// Tools are the Responders by the ToolRef whose waits they answer.
-	Tools map[run.ToolRef]Responder
+	tools map[run.ToolRef]Responder
 	// Fail receives an answer that could not be settled; nil discards it.
-	Fail func(session.SessionID, error)
+	fail func(session.SessionID, error)
 
 	mu sync.Mutex
 	// answering are the ResponseIDs a Responder is working on.
@@ -59,20 +59,20 @@ type answer struct {
 	call      WaitingCall
 }
 
-func (rs *Responders) fail(sid session.SessionID, err error) {
-	if rs.Fail != nil {
-		rs.Fail(sid, err)
+func (rs *responders) report(sid session.SessionID, err error) {
+	if rs.fail != nil {
+		rs.fail(sid, err)
 	}
 }
 
 // claim returns the ExternalResponse waits of the Run that have a Responder
 // and are not being answered, marking them as being answered; the caller
 // releases each with release.
-func (rs *Responders) claim(ctx context.Context, w writer.Writer, runID run.RunID) []answer {
-	if len(rs.Tools) == 0 {
+func (rs *responders) claim(ctx context.Context, w writer.Writer, runID run.RunID) []answer {
+	if len(rs.tools) == 0 {
 		return nil
 	}
-	snap, err := rs.Runs.Bind(w).Load(ctx, runID)
+	snap, err := rs.runs.Bind(w).Load(ctx, runID)
 	if err != nil || snap.State.Status.Terminal() {
 		return nil
 	}
@@ -86,7 +86,7 @@ func (rs *Responders) claim(ctx context.Context, w writer.Writer, runID run.RunI
 		if c.Status != run.ToolWaiting || c.Waiting == nil || c.Waiting.Kind != run.ResponseExternal {
 			continue
 		}
-		responder, ok := rs.Tools[c.ToolRef]
+		responder, ok := rs.tools[c.ToolRef]
 		if !ok {
 			continue
 		}
@@ -106,7 +106,7 @@ func (rs *Responders) claim(ctx context.Context, w writer.Writer, runID run.RunI
 	return out
 }
 
-func (rs *Responders) release(a *answer) {
+func (rs *responders) release(a *answer) {
 	rs.mu.Lock()
 	delete(rs.answering, a.call.Request.ID)
 	rs.mu.Unlock()
@@ -117,7 +117,7 @@ func (rs *Responders) release(a *answer) {
 // at least one answer was committed, so the drive continues. A lost
 // ownership ends the drive with its error; other failures reach Fail and
 // leave the wait for the next drive.
-func (rs *Responders) answerWaiting(ctx context.Context, w writer.Writer, runID run.RunID) (settled bool, err error) {
+func (rs *responders) answerWaiting(ctx context.Context, w writer.Writer, runID run.RunID) (settled bool, err error) {
 	answers := rs.claim(ctx, w, runID)
 	if len(answers) == 0 {
 		return false, nil
@@ -147,8 +147,8 @@ func (rs *Responders) answerWaiting(ctx context.Context, w writer.Writer, runID 
 // of the Session, each in its own goroutine under lifetime, and calls then
 // for each committed answer. It returns at once. Reads of the Runs go by
 // ctx; the answers and their settlement go by lifetime.
-func (rs *Responders) answerAll(ctx context.Context, w writer.Writer, lifetime context.Context, then func(*answer)) {
-	if len(rs.Tools) == 0 {
+func (rs *responders) answerAll(ctx context.Context, w writer.Writer, lifetime context.Context, then func(*answer)) {
+	if len(rs.tools) == 0 {
 		return
 	}
 	state, _, err := w.Projections().Load(ctx, w.SessionID(), sessionstore.MachineProjectionID, sessionstore.MachineProjection.Version)
@@ -166,7 +166,7 @@ func (rs *Responders) answerAll(ctx context.Context, w writer.Writer, lifetime c
 				defer rs.release(&a)
 				ok, err := rs.respond(lifetime, w, &a)
 				if err != nil {
-					rs.fail(w.SessionID(), err)
+					rs.report(w.SessionID(), err)
 				}
 				if ok {
 					then(&a)
@@ -178,7 +178,7 @@ func (rs *Responders) answerAll(ctx context.Context, w writer.Writer, lifetime c
 
 // respond asks the Responder and settles its answer; ok reports a committed
 // settlement. A cancelled ctx leaves the wait for the next drive.
-func (rs *Responders) respond(ctx context.Context, w writer.Writer, a *answer) (bool, error) {
+func (rs *responders) respond(ctx context.Context, w writer.Writer, a *answer) (bool, error) {
 	if ctx.Err() != nil {
 		return false, nil
 	}
@@ -190,7 +190,7 @@ func (rs *Responders) respond(ctx context.Context, w writer.Writer, a *answer) (
 		if lostOwnership(err) {
 			return false, err
 		}
-		rs.fail(w.SessionID(), fmt.Errorf("driver: settle response of run %s call %s: %w", a.call.Request.RunID, a.call.Request.CallID, err))
+		rs.report(w.SessionID(), fmt.Errorf("execution: settle response of run %s call %s: %w", a.call.Request.RunID, a.call.Request.CallID, err))
 		return false, nil
 	}
 	return true, nil
@@ -202,7 +202,7 @@ func lostOwnership(err error) bool {
 
 // settleResponse commits the answer as SubmitToolResponse, or the error as
 // RejectToolCall; a Run already terminal is settled by another actor.
-func (rs *Responders) settleResponse(ctx context.Context, w writer.Writer, a *answer, payload run.CanonicalJSON, rerr error) error {
+func (rs *responders) settleResponse(ctx context.Context, w writer.Writer, a *answer, payload run.CanonicalJSON, rerr error) error {
 	req := a.call.Request
 	var cmd run.AgentCommand
 	if rerr != nil {
@@ -222,7 +222,7 @@ func (rs *Responders) settleResponse(ctx context.Context, w writer.Writer, a *an
 	if err != nil {
 		return err
 	}
-	_, err = rs.Runs.Bind(w).Commit(ctx, store.CommitRequest{Command: env})
+	_, err = rs.runs.Bind(w).Commit(ctx, store.CommitRequest{Command: env})
 	if errors.Is(err, run.ErrRunTerminal) {
 		return nil // settled by another actor already: nothing to do here
 	}
