@@ -36,6 +36,7 @@ type TurnView struct {
 	// settled by its Run's end alone has none.
 	Settlement        Settlement `json:"settlement,omitempty"`
 	FailureClass      string     `json:"failureClass,omitempty"`
+	Reason            string     `json:"reason,omitempty"`
 	ReplacementTurnID TurnID     `json:"replacementTurnId,omitempty"`
 }
 
@@ -127,7 +128,7 @@ func applySurface(state any, e module.DecodedEvent) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		v.Settlement, v.FailureClass = p.Settlement, p.FailureClass
+		v.Settlement, v.FailureClass, v.Reason = p.Settlement, p.FailureClass, p.Reason
 		if p.Settlement == SettlementStopped {
 			v.Status = TurnStopped
 		} else {

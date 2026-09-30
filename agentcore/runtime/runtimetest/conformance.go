@@ -278,7 +278,7 @@ func testStop(t *testing.T, factory Factory) {
 			sawEnded = true
 		}
 	}
-	if !sawEnded || failed == nil || failed.Settlement != turn.SettlementStopped || failed.FailureClass != "cancelled" || failed.RunID != resp.RunID {
+	if !sawEnded || failed == nil || failed.Settlement != turn.SettlementStopped || failed.FailureClass != "cancelled" || failed.Reason != "user" || failed.RunID != resp.RunID {
 		t.Fatalf("stop group = %v, failed=%+v", eventTypes(group), failed)
 	}
 	// A settled Turn admits nothing else (TRN-EVT-3).

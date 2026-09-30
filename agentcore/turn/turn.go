@@ -77,11 +77,15 @@ type StartedPayload struct {
 	Preset   preset.PresetRef  `json:"preset"`
 }
 
+// FailedPayload settles a Turn as failed or stopped. Reason is the
+// caller's stated reason for a stop, kept as given; FailureClass is the
+// settlement's class.
 type FailedPayload struct {
 	TurnID       TurnID     `json:"turnId"`
 	RunID        run.RunID  `json:"runId"`
 	Settlement   Settlement `json:"settlement"`
 	FailureClass string     `json:"failureClass,omitempty"`
+	Reason       string     `json:"reason,omitempty"`
 }
 
 type SupersededPayload struct {

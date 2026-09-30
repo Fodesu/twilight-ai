@@ -211,7 +211,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 	work := unit.Work{CommitID: ledger.CommitID(env.ID), Parts: []unit.Part{cancel,
 		unit.PartFunc(func(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
 			return turnBatch(turnID, now, writer.TypedEvent{Type: turn.TypeFailed,
-				Value: turn.FailedPayload{TurnID: turnID, RunID: runID, Settlement: turn.SettlementStopped, FailureClass: "cancelled"}}), nil
+				Value: turn.FailedPayload{TurnID: turnID, RunID: runID, Settlement: turn.SettlementStopped, FailureClass: "cancelled", Reason: req.Reason}}), nil
 		}),
 	}}
 	if err := c.commit(ctx, w, "stop", work); err != nil && !errors.Is(err, run.ErrRunTerminal) {
