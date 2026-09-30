@@ -86,6 +86,9 @@ type Config struct {
 	// TargetResolver supplies the opaque resource target of each effect
 	// (RUN-LOP-9); nil gives every effect no target.
 	TargetResolver loop.TargetResolver
+	// Dispatch bounds the re-offers of an Assignment the executor refused as
+	// retryable; the zero value selects loop's defaults.
+	Dispatch loop.DispatchPolicy
 	// Notify is called after the Engine settles an Outcome or commits an
 	// answer outside a caller's Drive: the host advances the Session from
 	// there. nil discards.
@@ -153,7 +156,7 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 		}
 	}
 	sink := progressSink{x.progress}
-	lps := &loops{ports: cfg.Executor, presets: presets, decisions: cfg.Decisions, targets: cfg.TargetResolver,
+	lps := &loops{ports: cfg.Executor, presets: presets, decisions: cfg.Decisions, targets: cfg.TargetResolver, dispatch: cfg.Dispatch,
 		sources: decision.Sources{Projections: src.Projections, Content: src.Content}, watcher: x.watcher, planner: cfg.Planner}
 	x.recovery = &recovery{runs: src.Runs, ports: cfg.Executor, loops: lps, watcher: x.watcher, fail: report, notify: notify,
 		missingEffects: cfg.MissingEffects, redispatches: cfg.Redispatches, maxRedispatches: cfg.MaxRedispatches, sink: sink}

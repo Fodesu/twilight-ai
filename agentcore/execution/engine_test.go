@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
@@ -284,11 +285,16 @@ func TestComponentFailureReportedOnce(t *testing.T) {
 	}
 }
 
-// The redispatch budget of the config is the recovery's.
-func TestMaxRedispatchesReachesRecovery(t *testing.T) {
-	x := newEngine(t, Config{MaxRedispatches: 7}, nil)
+// The redispatch budget and the dispatch re-offer policy of the config reach
+// the components that apply them.
+func TestPoliciesReachComponents(t *testing.T) {
+	policy := loop.DispatchPolicy{Retries: 5, Backoff: 7 * time.Millisecond}
+	x := newEngine(t, Config{MaxRedispatches: 7, Dispatch: policy}, nil)
 	if x.recovery.maxRedispatches != 7 {
 		t.Fatalf("recovery.maxRedispatches = %d, want 7", x.recovery.maxRedispatches)
+	}
+	if x.recovery.loops.dispatch != policy {
+		t.Fatalf("loops.dispatch = %+v, want %+v", x.recovery.loops.dispatch, policy)
 	}
 }
 
