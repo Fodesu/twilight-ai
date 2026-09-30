@@ -1,4 +1,4 @@
-package runtime
+package sessionkernel
 
 import (
 	"fmt"
@@ -17,7 +17,7 @@ func surfaceOf(v writer.View) (turn.TurnSurface, error) {
 	}
 	surface, ok := state.(turn.TurnSurface)
 	if !ok {
-		return turn.TurnSurface{}, fmt.Errorf("runtime: surface projection is %T", state)
+		return turn.TurnSurface{}, fmt.Errorf("sessionkernel: surface projection is %T", state)
 	}
 	return surface, nil
 }
@@ -57,7 +57,7 @@ func RequireQuiescentRun(v writer.View) error {
 	}
 	machine, ok := mstate.(sessionstore.Machine)
 	if !ok {
-		return fmt.Errorf("runtime: machine projection is %T", mstate)
+		return fmt.Errorf("sessionkernel: machine projection is %T", mstate)
 	}
 	state, ok := machine.Active[active.RunID]
 	if !ok {

@@ -23,6 +23,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
 	"github.com/felinics/twilight/agentcore/run/store"
 	rt "github.com/felinics/twilight/agentcore/runtime"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -55,7 +56,7 @@ type harness struct {
 	seq       int
 	writers   writer.Writers
 	rt        *sessionstore.SessionRunStore
-	c         *rt.Coordinator
+	c         *sessionkernel.Coordinator
 }
 
 func newHarness(t testing.TB, f Fixture) *harness {
@@ -84,12 +85,12 @@ func (h *harness) open() {
 		h.t.Fatal(err)
 	}
 	h.rt = runs
-	h.c = &rt.Coordinator{Projections: session.NewProjectionReader(h.store, h.registry, nil), Runs: runs, Now: clock}
+	h.c = &sessionkernel.Coordinator{Projections: session.NewProjectionReader(h.store, h.registry, nil), Runs: runs, Now: clock}
 }
 
 // takeover opens a new owner process and returns the superseded Coordinator
 // and its Writer, so a test can observe their fencing.
-func (h *harness) takeover() (*rt.Coordinator, writer.Writer) {
+func (h *harness) takeover() (*sessionkernel.Coordinator, writer.Writer) {
 	h.t.Helper()
 	old, oldWriter := h.c, h.writer()
 	h.open()

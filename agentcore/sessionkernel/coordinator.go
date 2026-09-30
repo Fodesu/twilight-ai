@@ -1,4 +1,4 @@
-package runtime
+package sessionkernel
 
 import (
 	"context"
@@ -49,7 +49,7 @@ func (c *Coordinator) surface(ctx context.Context, sid session.SessionID) (turn.
 // owned checks that the request addresses the Session the Writer owns.
 func owned(w writer.Writer, ref turn.TurnRef) error {
 	if w == nil {
-		return errors.New("runtime: command requires the session's writer")
+		return errors.New("sessionkernel: command requires the session's writer")
 	}
 	if ref.SessionID != w.SessionID() {
 		return fmt.Errorf("%w: request for %s through the writer of %s", turn.ErrConflict, ref.SessionID, w.SessionID())
@@ -77,7 +77,7 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, wo
 	case writer.CommitConflict:
 		return fmt.Errorf("%w: %s replayed with different content", turn.ErrConflict, op)
 	default:
-		return fmt.Errorf("runtime: %s: %s: %s", op, res.Outcome, res.Detail)
+		return fmt.Errorf("sessionkernel: %s: %s: %s", op, res.Outcome, res.Detail)
 	}
 }
 
@@ -94,7 +94,7 @@ func turnBatch(turnID turn.TurnID, now int64, events ...writer.TypedEvent) []wri
 // same View, that every input is still submitted.
 func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartRequest) (TurnResult, error) {
 	if req.Ref.SessionID == "" || req.Ref.TurnID == "" || req.Preset.ID == "" || req.Preset.Digest == "" {
-		return TurnResult{}, errors.New("runtime: start requires ref and preset")
+		return TurnResult{}, errors.New("sessionkernel: start requires ref and preset")
 	}
 	if err := owned(w, req.Ref); err != nil {
 		return TurnResult{}, err
@@ -103,7 +103,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 	seen := map[run.InputID]struct{}{}
 	for i, in := range req.Inputs {
 		if _, dup := seen[in.ID]; dup || in.ID == "" {
-			return TurnResult{}, errors.New("runtime: start inputs must have unique non-empty IDs")
+			return TurnResult{}, errors.New("sessionkernel: start inputs must have unique non-empty IDs")
 		}
 		seen[in.ID] = struct{}{}
 		inputIDs[i] = chatlog.InputID(in.ID)

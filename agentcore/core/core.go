@@ -1,76 +1,53 @@
-// Package core composes the agent core -- the fact layer (Store, Writers,
-// SessionRunStore, Coordinator), the decision layer (preset registry and
-// prompt builder catalog) and the effect layer (an Executor port, the drive
-// chain over it) -- into one Core: the services a caller drives a Session
-// with, and the Session lifecycle over the Store that needs no ownership
-// (create, fork, collect, read). Ownership of a Session -- opening it for
-// commands and releasing it -- is the owner package's. The Core is
-// deployment-neutral and carries no product policy: what to send, whether
-// to drive in the background and when to compact are the application's
-// decisions.
+// Package core composes the agent core -- the session kernel (fact layer,
+// projections, Turn protocol, content) and the execution side over it (the
+// settlement subscription, the drive chain, the execution port, the decision
+// identities) -- into one Core for hosts that run both sides in one process.
+// The composition is a convenience for single-process deployments; the two
+// sides assemble independently (sessionkernel.New and runtime.NewExecution)
+// and which process hosts which is a deployment choice.
 package core
 
 import (
 	"context"
 	"errors"
-	"fmt"
+	"time"
+
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/executor"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
-	"github.com/felinics/twilight/agentcore/history"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
-	"github.com/felinics/twilight/agentcore/run/sessionstore"
-	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/turn"
-	"time"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 )
 
-// Artifacts groups the artifact ports (OWN-PRT-3): the binding index the
-// Writers resolve against and the retention ledger their claims live in.
-// Both are required and durable; the facts of a Session name frozen bodies
-// through them, so they must survive every restart the facts survive. There
-// is no memory implementation of either.
-type Artifacts struct {
-	Bindings artifact.BindingStore
-	Ledger   artifact.RetentionLedger
-}
+// Artifacts groups the artifact ports (OWN-PRT-3). It is the session
+// kernel's port group, re-exported for hosts that compose a whole Core.
+type Artifacts = sessionkernel.Artifacts
 
-// WorkerConfig composes the execution Worker of this Core (RUN-EXE-8): the
-// record store it owns its records in (durable, OWN-PRT-3), the Routes it
-// routes effects to and its tuning options. Routes name the Executor port's
-// backend as one of their Default routes when the port is supplied or
-// remote. A nil Worker drives Ports.Executor directly.
-type WorkerConfig struct {
-	Executions executionstore.Store
-	Routes     []executor.Route
-	Options    executor.WorkerOptions
-}
+// ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1).
+type ForkRequest = sessionkernel.ForkRequest
 
-// Ports are the roles a Core is composed from (OWN-PRT-1). Every field
-// is an interface or a core value. The Store, the Executor, the Content
-// store and both Artifacts are required and durable (OWN-PRT-3); the other
-// nil fields take the in-process defaults documented on each.
+// Ports are the roles a Core is composed from (OWN-PRT-1): the session
+// kernel's ports plus the execution side's. Every field is an interface or
+// a core value. The Store, the Executor, the Content store and both
+// Artifacts are required and durable (OWN-PRT-3); the other nil fields take
+// the in-process defaults documented on each.
 type Ports struct {
 	// Store is the Session kernel (required).
 	Store session.Stores
 	// Content is the cas ContentStore the frozen bodies live in under
-	// sessionstore.FrozenAuthority (RUN-WIR-4). The run store writes them; the
-	// materializer reads them for prompts, replies and transcripts.
-	// Required.
+	// sessionstore.FrozenAuthority (RUN-WIR-4). Required.
 	Content artifact.ContentStore
 	// Artifacts are the binding store and retention ledger (required).
 	Artifacts Artifacts
@@ -107,7 +84,8 @@ type Ports struct {
 	// (RUN-LOP-9). It belongs to the application's resource layer; nil
 	// gives every effect no target (APP-TGT-1).
 	TargetResolver loop.TargetResolver
-	// Observers are notified of every group the Writers apply (EXT-WRT-7).
+	// Observers are notified of every group the Writers apply (EXT-WRT-7)
+	// besides the event stream.
 	Observers []writer.CommitObserver
 	// Registry is the module registry every Writer, projection and event
 	// stream of this Core decodes through. When nil, New builds one from
@@ -137,63 +115,59 @@ type Ports struct {
 	OrphanProbe time.Duration
 }
 
-// Core is the composed core. Exported fields are the ports
-// and core services; none is a product facade.
+// WorkerConfig composes the execution Worker of this Core (RUN-EXE-8): the
+// record store it owns its records in (durable, OWN-PRT-3), the Routes it
+// routes effects to and its tuning options. Routes name the Executor port's
+// backend as one of their Default routes when the port is supplied or
+// remote. A nil Worker drives Ports.Executor directly.
+type WorkerConfig struct {
+	Executions executionstore.Store
+	Routes     []executor.Route
+	Options    executor.WorkerOptions
+}
+
+// Core is the composed core for a single-process host: the session kernel
+// plus the execution side. Exported fields are the ports and core services;
+// none is a product facade.
 type Core struct {
-	Store     session.Stores
-	Writers   writer.Writers
-	Registry  *module.Registry
-	Admission writer.Admission
-	// Runs is the Run module's Session adapter: the Run core's store bound
-	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
-	Runs *sessionstore.SessionRunStore
-	// Turns commits the Turn protocol and reads Turn status.
-	Turns *rt.Coordinator
+	*sessionkernel.Kernel
+	// Worker is the composed execution Worker, nil when the Core drives the
+	// Executor port directly; it closes with the Core, after its services.
+	Worker *executor.Worker
+	// Watcher is the settlement subscription every Loop and Reconciler of
+	// this Core waits on; a host component that waits for an effect of its
+	// own (compaction's summary) shares it instead of subscribing again.
+	Watcher *effect.Watcher
 	// Driver drives an active Turn; Recovery runs the takeover disposition
 	// when a Session opens and ends its listeners when it closes. Both sit
 	// on the Loops and the Watcher the Core built and closes.
 	Driver   *driver.Driver
 	Recovery *driver.Recovery
-	// Watcher is the settlement subscription every Loop and Reconciler of
-	// this Core waits on; a host component that waits for an effect of its
-	// own (compaction's summary) shares it instead of subscribing again.
-	Watcher *effect.Watcher
-	// Worker is the composed execution Worker, nil when the Core drives the
-	// Executor port directly; it closes with the Core, after its services.
-	Worker *executor.Worker
-	// Bus is the event stream: a CommitObserver on the Writers and the
-	// channel provisional observations relay to.
-	Bus      *observe.Bus
+	// Presets is the registry of decision identities the Loops resolve and
+	// the Turn protocol starts Turns under.
 	Presets  preset.Registry
 	Executor effect.ExecutionPort
-	Frozen   frozen.Store
-	// Projections reads every projection through the Session's Writer.
-	Projections session.ProjectionReader
-	// Content materializes the frozen bodies projections name (CHT-MAT-1).
-	Content chatlog.ContentResolver
-	// Chatlog commits the chatlog's own facts (APP-INP-1, APP-CKP-1).
-	Chatlog *chatlog.Commands
-	// History answers fork-boundary questions.
-	History history.History
-	Clock   func() time.Time
 }
 
-// New composes a Core from its ports.
+// New composes a Core from its ports: the session kernel assembles the
+// durable semantic mechanism; the execution side assembles over it.
 func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by-value options struct read once
 	if p.Executor == nil && p.Worker == nil {
 		return nil, errors.New("core: an Executor port or a Worker is required")
 	}
-	if p.Store == nil {
-		return nil, errors.New("core: a session Store is required")
-	}
-	if p.Content == nil {
-		return nil, errors.New("core: a content Store is required (OWN-PRT-3)")
-	}
-	if p.Artifacts.Bindings == nil || p.Artifacts.Ledger == nil {
-		return nil, errors.New("core: a binding store and a retention ledger are required (OWN-PRT-3)")
+	if p.Decisions == nil {
+		return nil, errors.New("core: a prompt builder catalog is required (Ports.Decisions); the core ships no default")
 	}
 	if p.MissingEffects == reconcile.RedispatchMissing && p.Redispatches == nil {
 		return nil, errors.New("core: MissingEffects=redispatch requires a dispatch ledger (Ports.Redispatches, RUN-EXE-15)")
+	}
+	kernel, err := sessionkernel.New(sessionkernel.Ports{
+		Store: p.Store, Content: p.Content, Artifacts: p.Artifacts,
+		Observers: p.Observers, Registry: p.Registry, Modules: p.Modules,
+		Clock: p.Clock, Cache: p.Cache, CacheEvery: p.CacheEvery, Ownership: p.Ownership,
+	})
+	if err != nil {
+		return nil, err
 	}
 	executorPort := p.Executor
 	var worker *executor.Worker
@@ -207,81 +181,23 @@ func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by
 		}
 		worker, executorPort = w, w
 	}
-	store := p.Store
-	registry := p.Registry
-	if registry == nil {
-		var err error
-		if registry, err = NewRegistry(p.Modules); err != nil {
-			return nil, err
-		}
-	}
-	// The event stream observes every group the Writers apply (EXT-WRT-7)
-	// and decodes through the Registry, so both exist before the Writers do.
-	bus := observe.NewBus(registry, store)
-	observers := append([]writer.CommitObserver{bus}, p.Observers...)
-	bindings, retention := p.Artifacts.Bindings, p.Artifacts.Ledger
-	// A projection cache lets a reopened Session start folding instead of
-	// refolding the whole log (EXT-PRJ-3). An adapter that can store entries
-	// durably provides its own; otherwise they live as long as the process.
-	cache := p.Cache
-	if cache == nil {
-		if provider, ok := store.(session.ProjectionCacheProvider); ok {
-			cache = provider.ProjectionCache()
-		} else {
-			cache = session.NewMemoryProjectionCache()
-		}
-	}
-	// Frozen bodies live in the content store and are admitted through the
-	// same binding store the Writers resolve against (RUN-WIR-4).
-	fz, err := sessionstore.FrozenValues(p.Content, bindings)
-	if err != nil {
-		return nil, err
-	}
-	now := p.Clock
-	if now == nil {
-		now = time.Now
-	}
-	admission := writer.Admission{Bindings: bindings, Ledger: retention}
-	writers := writer.NewWriters(store, registry, admission, p.Ownership,
-		writer.WritersConfig{Cache: cache, CachePolicy: sessionstore.WriterCachePolicy(p.CacheEvery), Observers: observers})
-	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: fz, Cache: cache, Now: now})
-	if err != nil {
-		return nil, err
-	}
 	presets := p.Presets
 	if presets == nil {
 		presets = preset.NewMemory()
 	}
-	decisions := p.Decisions
-	if decisions == nil {
-		return nil, errors.New("core: a prompt builder catalog is required (Ports.Decisions); the core ships no default")
-	}
-	// The read model folds from the Store through the cache: reading a Session
-	// takes no ownership (OWN-HDL-2). The Writer keeps its own transactional
-	// projections for the commit critical section.
-	projections := session.NewProjectionReader(store, registry, cache)
-	content := sessionstore.NewContent(fz)
-	a := &Core{
-		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
-		Turns:   &rt.Coordinator{Projections: projections, Runs: runs, Now: now},
-		Worker: worker, Bus: bus, Presets: presets, Executor: executorPort, Frozen: fz,
-		Projections: projections, Content: content,
-		Chatlog: &chatlog.Commands{Now: now},
-		History: history.History{Store: store, Registry: registry, Projections: projections},
-		Clock:   now,
-	}
+	sink := busSink{kernel.Bus}
+	a := &Core{Kernel: kernel, Worker: worker, Presets: presets, Executor: executorPort}
 	a.Watcher = &effect.Watcher{Port: executorPort, Probe: p.OrphanProbe}
-	sink := busSink{bus}
 	// A nil resolver gives every effect no target (APP-TGT-1).
-	loops := &driver.Loops{Executor: executorPort, Presets: presets, Decisions: decisions, Targets: p.TargetResolver,
-		Sources: decision.Sources{Projections: projections, Content: content}, Watcher: a.Watcher, Planner: p.Planner}
-	a.Recovery = &driver.Recovery{Runs: runs, Executor: executorPort, Loops: loops, Watcher: a.Watcher, Fail: p.Fail,
+	loops := &driver.Loops{Executor: executorPort, Presets: presets, Decisions: p.Decisions, Targets: p.TargetResolver,
+		Sources: decision.Sources{Projections: kernel.Projections, Content: kernel.Content}, Watcher: a.Watcher, Planner: p.Planner}
+	a.Recovery = &driver.Recovery{Runs: kernel.Runs, Executor: executorPort, Loops: loops, Watcher: a.Watcher, Fail: p.Fail,
 		MissingEffects: p.MissingEffects, Redispatches: p.Redispatches, OrphanProbe: p.OrphanProbe, Sink: sink}
 	var responders *driver.Responders
 	if len(p.Responders) > 0 {
-		responders = &driver.Responders{Runs: runs, Tools: p.Responders, Fail: p.Fail}
+		responders = &driver.Responders{Runs: kernel.Runs, Tools: p.Responders, Fail: p.Fail}
 	}
-	a.Driver = &driver.Driver{Runs: runs, Loops: loops, Recovery: a.Recovery, Responders: responders, Sink: sink}
+	a.Driver = &driver.Driver{Runs: kernel.Runs, Loops: loops, Recovery: a.Recovery, Responders: responders, Sink: sink}
 	return a, nil
 }
 
@@ -303,113 +219,19 @@ func (s busSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic
 // modules as trusted core, extensions after them. Extensions cannot declare
 // authoritative projections.
 func NewRegistry(extensions []module.ModuleDescriptor) (*module.Registry, error) {
-	return module.BuildRegistryWithExtensions(
-		[]module.ModuleDescriptor{chatlog.Module, sessionstore.Module, turn.Module}, extensions)
+	return sessionkernel.NewRegistry(extensions)
 }
 
-// Close ends every Session's recovery listeners, the settlement
-// subscription and the Writers, then the Worker: the Core's drives may
-// still be settling outcomes through it. The owner releases the Sessions it
-// holds before this.
+// Close ends the execution side, then the session kernel: the recovery
+// listeners, the settlement subscription, the Writers and, last, the
+// Worker the drives may still be settling outcomes through. The owner
+// releases the Sessions it holds before this.
 func (a *Core) Close(ctx context.Context) error {
 	a.Recovery.Close()
 	a.Watcher.Close()
-	err := writer.CloseWriters(ctx, a.Writers)
+	err := a.Kernel.Close(ctx)
 	if a.Worker != nil {
 		a.Worker.Close()
 	}
 	return err
-}
-
-// CreateSession creates the Session; ext are the segment's module extension
-// slots (nil for none), carried opaquely by the kernel (SES-WIR-5).
-func (a *Core) CreateSession(ctx context.Context, sid session.SessionID, ext module.Extensions) error {
-	_, err := a.Store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Ext: ext})
-	return err
-}
-
-// EnsureSession makes sure the Session exists, whatever record created it:
-// a root made here, a fork or a spawned child all count. Create alone would
-// refuse a Session whose segment fields differ (SES-CRT-1), so existence is
-// probed first.
-func (a *Core) EnsureSession(ctx context.Context, sid session.SessionID) error {
-	if _, err := a.Store.Header(ctx, sid); err == nil {
-		return nil
-	} else if !session.IsCode(err, session.ErrNotFound) {
-		return err
-	}
-	if err := a.CreateSession(ctx, sid, nil); err != nil {
-		// A concurrent creator winning the race is still "exists".
-		if _, herr := a.Store.Header(ctx, sid); herr == nil {
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
-// ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1): the
-// child inherits every commit of Parent up to and including At and continues
-// from there under its own identity.
-type ForkRequest struct {
-	Parent session.SessionID
-	At     ledger.CommitSeq
-	Child  session.SessionID
-	// Ext are the child segment's module extension slots (SES-WIR-5).
-	Ext module.Extensions
-}
-
-// Fork creates the child Session (SES-FRK-1) and claims the artifacts its
-// inherited prefix references (EXT-WRT-8). The child is not opened.
-func (a *Core) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
-	if req.Parent == "" || req.Child == "" {
-		return session.SegmentHeader{}, errors.New("core: fork requires parent and child session ids")
-	}
-	if req.Parent == req.Child {
-		return session.SegmentHeader{}, errors.New("core: a session cannot fork itself")
-	}
-	// A fork point inside a Turn would hand the child a Turn whose Run is
-	// the parent's execution (SES-FRK-5): semantic history branches only at
-	// quiescent points (OWN-FRK-1).
-	if active, ok, err := a.History.ActiveAt(ctx, req.Parent, req.At); err != nil {
-		return session.SegmentHeader{}, err
-	} else if ok {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: req.Child,
-			Detail: fmt.Sprintf("turn %s of %s is active at commit %d; fork at a quiescent point", active, req.Parent, req.At)}
-	}
-	return writer.Fork(ctx, a.Store, a.Registry, writer.ForkRequest{
-		Parent: req.Parent, At: req.At, Child: req.Child, CreatedAtUnixMilli: a.Clock().UnixMilli(), Ext: req.Ext,
-	})
-}
-
-// ForkBeforeTurn forks Parent at the commit just before turnID started
-// (OWN-FRK-2): the child holds the conversation as it was when that Turn's
-// inputs were still submitted and undelivered.
-func (a *Core) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
-	seq, err := a.History.StartCommit(ctx, parent, turnID)
-	if err != nil {
-		return session.SegmentHeader{}, err
-	}
-	if seq == 0 {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
-			Detail: fmt.Sprintf("turn %s started in the first commit of %s; there is no prefix to fork", turnID, parent)}
-	}
-	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
-}
-
-// Collect reclaims the storage of deleted Sessions no live Session reaches
-// (SES-GC-2) and releases the claims of the commits it reclaimed (SES-GC-3).
-func (a *Core) Collect(ctx context.Context) (session.CollectReport, error) {
-	return writer.Collect(ctx, a.Store, a.Admission)
-}
-
-// --- reads by SessionID ----------------------------------------------------------------
-
-// Reading a Session needs no ownership: projections are queried by identity.
-// Commands take the Writer of an open owner.Handle.
-
-// Projection reads any registered projection through the Session's Writer
-// (APP-MEM-1).
-func (a *Core) Projection(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
-	return a.Projections.Load(ctx, sid, id, v)
 }
