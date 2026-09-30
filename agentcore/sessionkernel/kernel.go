@@ -88,7 +88,7 @@ type Kernel struct {
 	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
 	Runs *sessionstore.SessionRunStore
 	// Turns commits the Turn protocol and reads Turn status.
-	Turns *Coordinator
+	Turns *turn.Coordinator
 	// Bus is the committed event stream: a CommitObserver on the Writers
 	// (OBS-1), carrying the applied groups decoded, in commit order. It
 	// carries facts only; transient observations are not part of it.
@@ -164,7 +164,7 @@ func New(p Ports) (*Kernel, error) { //nolint:gocritic // hugeParam: Ports is a 
 	content := sessionstore.NewContent(fz)
 	return &Kernel{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
-		Turns:       &Coordinator{Projections: projections, Runs: runs, Now: now},
+		Turns:       &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
 		Bus:         bus, Frozen: fz, Projections: projections, Content: content,
 		Chatlog:     &chatlog.Commands{Now: now},
 		History:     history.History{Store: store, Registry: registry, Projections: projections},

@@ -1,4 +1,4 @@
-package sessionkernel
+package turn
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/turn"
 	"time"
 )
 
@@ -42,17 +41,17 @@ func (c *Coordinator) now() int64 {
 	return time.Now().UnixMilli()
 }
 
-func (c *Coordinator) surface(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error) {
-	return turn.ReadSurface(ctx, c.Projections, sid)
+func (c *Coordinator) surface(ctx context.Context, sid session.SessionID) (TurnSurface, error) {
+	return ReadSurface(ctx, c.Projections, sid)
 }
 
 // owned checks that the request addresses the Session the Writer owns.
-func owned(w writer.Writer, ref turn.TurnRef) error {
+func owned(w writer.Writer, ref TurnRef) error {
 	if w == nil {
-		return errors.New("sessionkernel: command requires the session's writer")
+		return errors.New("turn: command requires the session's writer")
 	}
 	if ref.SessionID != w.SessionID() {
-		return fmt.Errorf("%w: request for %s through the writer of %s", turn.ErrConflict, ref.SessionID, w.SessionID())
+		return fmt.Errorf("%w: request for %s through the writer of %s", ErrConflict, ref.SessionID, w.SessionID())
 	}
 	return nil
 }
@@ -67,7 +66,7 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, wo
 		case errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}):
 			return fmt.Errorf("%w: %w", store.ErrOwnershipLost, err)
 		case errors.Is(err, chatlog.ErrNotSubmitted), errors.Is(err, sessionstore.ErrRunExists):
-			return fmt.Errorf("%w: %w", turn.ErrConflict, err)
+			return fmt.Errorf("%w: %w", ErrConflict, err)
 		}
 		return err
 	}
@@ -75,18 +74,18 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, wo
 	case writer.CommitApplied, writer.CommitAlreadyApplied, writer.CommitNoop:
 		return nil
 	case writer.CommitConflict:
-		return fmt.Errorf("%w: %s replayed with different content", turn.ErrConflict, op)
+		return fmt.Errorf("%w: %s replayed with different content", ErrConflict, op)
 	default:
-		return fmt.Errorf("sessionkernel: %s: %s: %s", op, res.Outcome, res.Detail)
+		return fmt.Errorf("turn: %s: %s: %s", op, res.Outcome, res.Detail)
 	}
 }
 
 // turnBatch is one batch of events in the Turn's stream.
-func turnBatch(turnID turn.TurnID, now int64, events ...writer.TypedEvent) []writer.TypedBatch {
+func turnBatch(turnID TurnID, now int64, events ...writer.TypedEvent) []writer.TypedBatch {
 	for i := range events {
 		events[i].RecordedAtUnixMilli = now
 	}
-	return []writer.TypedBatch{{Domain: turn.Stream(turnID), Events: events}}
+	return []writer.TypedBatch{{Domain: Stream(turnID), Events: events}}
 }
 
 // Start opens a new Turn: the Turn's started fact, the chatlog's deliveries
@@ -94,7 +93,7 @@ func turnBatch(turnID turn.TurnID, now int64, events ...writer.TypedEvent) []wri
 // same View, that every input is still submitted.
 func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartRequest) (TurnResult, error) {
 	if req.Ref.SessionID == "" || req.Ref.TurnID == "" || req.Preset.ID == "" || req.Preset.Digest == "" {
-		return TurnResult{}, errors.New("sessionkernel: start requires ref and preset")
+		return TurnResult{}, errors.New("turn: start requires ref and preset")
 	}
 	if err := owned(w, req.Ref); err != nil {
 		return TurnResult{}, err
@@ -103,15 +102,15 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 	seen := map[run.InputID]struct{}{}
 	for i, in := range req.Inputs {
 		if _, dup := seen[in.ID]; dup || in.ID == "" {
-			return TurnResult{}, errors.New("sessionkernel: start inputs must have unique non-empty IDs")
+			return TurnResult{}, errors.New("turn: start inputs must have unique non-empty IDs")
 		}
 		seen[in.ID] = struct{}{}
 		inputIDs[i] = chatlog.InputID(in.ID)
 	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	p := turn.PlanDigest(turnID, req.Preset.Digest, inputIDs)
-	commitID := ledger.CommitID(turn.StartOperationDigest(sid, turnID, p))
-	runID := turn.DeriveRunID(sid, turnID)
+	p := PlanDigest(turnID, req.Preset.Digest, inputIDs)
+	commitID := ledger.CommitID(StartOperationDigest(sid, turnID, p))
+	runID := DeriveRunID(sid, turnID)
 	newRun, err := run.BuildNewRun(runID, ledger.CausationID(commitID))
 	if err != nil {
 		return TurnResult{}, err
@@ -123,13 +122,13 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 				return nil, err
 			}
 			if _, exists := surface.Turns[turnID]; exists {
-				return nil, fmt.Errorf("%w: turn %s already started", turn.ErrConflict, turnID)
+				return nil, fmt.Errorf("%w: turn %s already started", ErrConflict, turnID)
 			}
 			if _, active := surface.Active(); active {
-				return nil, fmt.Errorf("%w: session already has an active turn", turn.ErrConflict)
+				return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
 			}
 			return turnBatch(turnID, now,
-				writer.TypedEvent{Type: turn.TypeStarted, Value: turn.StartedPayload{TurnID: turnID, RunID: runID, InputIDs: inputIDs, Preset: req.Preset}}), nil
+				writer.TypedEvent{Type: TypeStarted, Value: StartedPayload{TurnID: turnID, RunID: runID, InputIDs: inputIDs, Preset: req.Preset}}), nil
 		}),
 		chatlog.DeliverInputs(chatlog.TurnID(turnID), runID, req.Inputs),
 		sessionstore.CreateRun(newRun, req.Inputs),
@@ -149,19 +148,19 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 		return TurnResult{}, err
 	}
 	sid := req.Ref.SessionID
-	surface, err := turn.ReadSurface(ctx, w.Projections(), sid)
+	surface, err := ReadSurface(ctx, w.Projections(), sid)
 	if err != nil {
 		return TurnResult{}, err
 	}
 	view, ok := surface.Turns[req.Ref.TurnID]
-	if !ok || view.Status != turn.TurnActive {
-		return TurnResult{}, fmt.Errorf("%w: turn %s is not active", turn.ErrConflict, req.Ref.TurnID)
+	if !ok || view.Status != TurnActive {
+		return TurnResult{}, fmt.Errorf("%w: turn %s is not active", ErrConflict, req.Ref.TurnID)
 	}
 	// AcceptInput is not a hard-CAS command: no Base is needed; the machine
 	// projection is read only for the Run's protocol version.
 	runID := view.RunID
 	if len(req.Inputs) == 0 {
-		return TurnResult{}, fmt.Errorf("%w: deliver without inputs", turn.ErrConflict)
+		return TurnResult{}, fmt.Errorf("%w: deliver without inputs", ErrConflict)
 	}
 	cmd := run.AcceptInput{Inputs: req.Inputs}
 	env, err := schema.Wire().Envelope(runID, schema.Identity().DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
@@ -191,16 +190,16 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 		return TurnResult{}, err
 	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	surface, err := turn.ReadSurface(ctx, w.Projections(), sid)
+	surface, err := ReadSurface(ctx, w.Projections(), sid)
 	if err != nil {
 		return TurnResult{}, err
 	}
 	view, ok := surface.Turns[turnID]
-	if !ok || view.Status != turn.TurnActive {
-		return TurnResult{}, fmt.Errorf("%w: turn %s is not active", turn.ErrConflict, turnID)
+	if !ok || view.Status != TurnActive {
+		return TurnResult{}, fmt.Errorf("%w: turn %s is not active", ErrConflict, turnID)
 	}
 	runID := view.RunID
-	env, err := schema.Wire().Envelope(runID, turn.CancelCommandID(sid, turnID, runID), run.CancelRun{})
+	env, err := schema.Wire().Envelope(runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -210,8 +209,8 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 	}
 	work := unit.Work{CommitID: ledger.CommitID(env.ID), Parts: []unit.Part{cancel,
 		unit.PartFunc(func(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
-			return turnBatch(turnID, now, writer.TypedEvent{Type: turn.TypeFailed,
-				Value: turn.FailedPayload{TurnID: turnID, RunID: runID, Settlement: turn.SettlementStopped, FailureClass: "cancelled", Reason: req.Reason}}), nil
+			return turnBatch(turnID, now, writer.TypedEvent{Type: TypeFailed,
+				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled", Reason: req.Reason}}), nil
 		}),
 	}}
 	if err := c.commit(ctx, w, "stop", work); err != nil && !errors.Is(err, run.ErrRunTerminal) {
@@ -220,24 +219,24 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 	return c.respond(ctx, req.Ref)
 }
 
-func (c *Coordinator) Status(ctx context.Context, ref turn.TurnRef) (TurnResult, error) {
+func (c *Coordinator) Status(ctx context.Context, ref TurnRef) (TurnResult, error) {
 	return c.respond(ctx, ref)
 }
 
 // respond reads the projections and fills the disposition.
-func (c *Coordinator) respond(ctx context.Context, ref turn.TurnRef) (TurnResult, error) {
+func (c *Coordinator) respond(ctx context.Context, ref TurnRef) (TurnResult, error) {
 	surface, err := c.surface(ctx, ref.SessionID)
 	if err != nil {
 		return TurnResult{}, err
 	}
 	view, ok := surface.Turns[ref.TurnID]
 	if !ok {
-		return TurnResult{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
+		return TurnResult{}, fmt.Errorf("%w: unknown turn %s", ErrConflict, ref.TurnID)
 	}
 	return c.responseFor(ctx, ref, &view)
 }
 
-func (c *Coordinator) responseFor(ctx context.Context, ref turn.TurnRef, view *turn.TurnView) (TurnResult, error) {
+func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnView) (TurnResult, error) {
 	resp := TurnResult{Ref: ref, Status: view.Status, RunID: view.RunID, End: view.Ended()}
 	if view.End != nil {
 		resp.Disposition = ResumeFinished

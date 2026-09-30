@@ -1,6 +1,6 @@
 // Package turn is the Turn module: the logical Turn's own facts
 // (started, failed, superseded), the identity derivations that name them,
-// the protocol vocabulary operated on them and the surface that projects
+// the protocol that commits a Turn's transitions (Coordinator) and the surface that projects
 // Turn state from the Session's facts. Which Run executes a Turn and where
 // an input was delivered are other modules' facts; the surface joins them
 // and writes no derived copy.

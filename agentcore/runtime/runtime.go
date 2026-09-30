@@ -20,15 +20,14 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // Turns is the Turn protocol the runtime routes inputs into and reads
 // status back from: the session kernel's Commands and Reader.
 type Turns interface {
-	sessionkernel.Commands
-	sessionkernel.Reader
+	turn.Commands
+	turn.Reader
 }
 
 // DriveResult is what one drive of a Turn reports: the Turn's committed
@@ -38,7 +37,7 @@ type Turns interface {
 // the Turn, so it is not a Turn disposition: the Turn's durable vocabulary
 // stays the Turn module's.
 type DriveResult struct {
-	sessionkernel.TurnResult
+	turn.TurnResult
 	AlreadyDriving bool
 }
 
@@ -247,12 +246,12 @@ func (r *SessionRuntime) Resume(ctx context.Context) (Settlement, bool, error) {
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
 // stopped Turn's drive observes the cancellation and returns.
-func (r *SessionRuntime) Stop(ctx context.Context, reason string) (sessionkernel.TurnResult, bool, error) {
+func (r *SessionRuntime) Stop(ctx context.Context, reason string) (turn.TurnResult, bool, error) {
 	active, ok, err := r.active(ctx)
 	if err != nil || !ok {
-		return sessionkernel.TurnResult{}, false, err
+		return turn.TurnResult{}, false, err
 	}
-	resp, err := r.turns.Stop(ctx, r.w, sessionkernel.StopRequest{Ref: r.ref(active), Reason: reason})
+	resp, err := r.turns.Stop(ctx, r.w, turn.StopRequest{Ref: r.ref(active), Reason: reason})
 	return resp, true, err
 }
 
@@ -291,13 +290,13 @@ func (r *SessionRuntime) route(ctx context.Context, inputs []run.AgentInput) (tu
 	}
 	if active, ok := surface.Active(); ok {
 		ref := r.ref(active.TurnID)
-		if _, err := r.turns.Deliver(ctx, r.w, sessionkernel.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
+		if _, err := r.turns.Deliver(ctx, r.w, turn.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
 			return turn.TurnRef{}, err
 		}
 		return ref, nil
 	}
 	ref := r.ref(r.newID())
-	if _, err := r.turns.Start(ctx, r.w, sessionkernel.StartRequest{Ref: ref, Inputs: inputs, Preset: r.preset}); err != nil {
+	if _, err := r.turns.Start(ctx, r.w, turn.StartRequest{Ref: ref, Inputs: inputs, Preset: r.preset}); err != nil {
 		return turn.TurnRef{}, err
 	}
 	return ref, nil
@@ -321,7 +320,7 @@ func (r *SessionRuntime) absorbed(ctx context.Context, in run.AgentInput) (Drive
 // absorbedStatus is the AlreadyDriving answer for a Turn another driver
 // carries: its status as read, or its Ref alone when the read fails.
 func (r *SessionRuntime) absorbedStatus(ctx context.Context, ref turn.TurnRef) (DriveResult, error) {
-	out := DriveResult{TurnResult: sessionkernel.TurnResult{Ref: ref}, AlreadyDriving: true}
+	out := DriveResult{TurnResult: turn.TurnResult{Ref: ref}, AlreadyDriving: true}
 	resp, err := r.turns.Status(ctx, ref)
 	if err == nil {
 		out.TurnResult = resp

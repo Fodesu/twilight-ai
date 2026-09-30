@@ -20,7 +20,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
@@ -160,7 +159,7 @@ type sessionSide struct {
 	writers writer.Writers
 	runs    *sessionstore.SessionRunStore
 	proj    session.ProjectionReader
-	turns   *sessionkernel.Coordinator
+	turns   *turn.Coordinator
 	chat    *chatlog.Commands
 }
 
@@ -180,7 +179,7 @@ func newSessionSide(t *testing.T) *sessionSide {
 	proj := session.NewProjectionReader(store, registry, nil)
 	t.Cleanup(func() { _ = writer.CloseWriters(context.Background(), writers) })
 	return &sessionSide{store: store, writers: writers, runs: runs, proj: proj,
-		turns: &sessionkernel.Coordinator{Projections: proj, Runs: runs}, chat: &chatlog.Commands{Now: time.Now}}
+		turns: &turn.Coordinator{Projections: proj, Runs: runs}, chat: &chatlog.Commands{Now: time.Now}}
 }
 
 func (s *sessionSide) writer(t *testing.T, sid session.SessionID) writer.Writer {
@@ -210,7 +209,7 @@ func (s *sessionSide) startTurn(t *testing.T, x *engine, sid session.SessionID) 
 		t.Fatal(err)
 	}
 	tref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	if _, err := s.turns.Start(ctx, w, sessionkernel.StartRequest{Ref: tref, Inputs: []run.AgentInput{in}, Preset: ref}); err != nil {
+	if _, err := s.turns.Start(ctx, w, turn.StartRequest{Ref: tref, Inputs: []run.AgentInput{in}, Preset: ref}); err != nil {
 		t.Fatal(err)
 	}
 	return w, tref

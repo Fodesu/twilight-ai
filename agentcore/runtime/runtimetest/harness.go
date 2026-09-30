@@ -22,7 +22,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
 	"github.com/felinics/twilight/agentcore/run/store"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -55,7 +54,7 @@ type harness struct {
 	seq       int
 	writers   writer.Writers
 	rt        *sessionstore.SessionRunStore
-	c         *sessionkernel.Coordinator
+	c         *turn.Coordinator
 }
 
 func newHarness(t testing.TB, f Fixture) *harness {
@@ -84,12 +83,12 @@ func (h *harness) open() {
 		h.t.Fatal(err)
 	}
 	h.rt = runs
-	h.c = &sessionkernel.Coordinator{Projections: session.NewProjectionReader(h.store, h.registry, nil), Runs: runs, Now: clock}
+	h.c = &turn.Coordinator{Projections: session.NewProjectionReader(h.store, h.registry, nil), Runs: runs, Now: clock}
 }
 
 // takeover opens a new owner process and returns the superseded Coordinator
 // and its Writer, so a test can observe their fencing.
-func (h *harness) takeover() (*sessionkernel.Coordinator, writer.Writer) {
+func (h *harness) takeover() (*turn.Coordinator, writer.Writer) {
 	h.t.Helper()
 	old, oldWriter := h.c, h.writer()
 	h.open()
@@ -169,12 +168,12 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 	return out
 }
 
-func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) sessionkernel.StartRequest {
-	return sessionkernel.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: presetRef}
+func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) turn.StartRequest {
+	return turn.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: presetRef}
 }
 
 // start submits ids and starts turnID with them.
-func (h *harness) start(turnID turn.TurnID, ids ...string) sessionkernel.TurnResult {
+func (h *harness) start(turnID turn.TurnID, ids ...string) turn.TurnResult {
 	h.t.Helper()
 	resp, err := h.c.Start(h.ctx, h.writer(), h.startRequest(turnID, h.submit(ids...)...))
 	if err != nil {
@@ -183,7 +182,7 @@ func (h *harness) start(turnID turn.TurnID, ids ...string) sessionkernel.TurnRes
 	return resp
 }
 
-func (h *harness) status(turnID turn.TurnID) sessionkernel.TurnResult {
+func (h *harness) status(turnID turn.TurnID) turn.TurnResult {
 	h.t.Helper()
 	resp, err := h.c.Status(h.ctx, h.ref(turnID))
 	if err != nil {

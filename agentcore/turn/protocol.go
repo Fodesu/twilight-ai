@@ -1,4 +1,4 @@
-package sessionkernel
+package turn
 
 import (
 	"context"
@@ -6,26 +6,25 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // StartRequest opens a new Turn under Preset with Inputs delivered into its
 // Run.
 type StartRequest struct {
-	Ref    turn.TurnRef
+	Ref    TurnRef
 	Inputs []run.AgentInput
 	Preset preset.PresetRef
 }
 
 // DeliverRequest carries Inputs into an active Turn's Run.
 type DeliverRequest struct {
-	Ref    turn.TurnRef
+	Ref    TurnRef
 	Inputs []run.AgentInput
 }
 
 // StopRequest settles the active Turn as stopped with Reason.
 type StopRequest struct {
-	Ref    turn.TurnRef
+	Ref    TurnRef
 	Reason string
 }
 
@@ -43,9 +42,9 @@ const (
 // TurnResult is the Turn protocol's answer: the Turn's status, and where it
 // stands when it is still active.
 type TurnResult struct {
-	Ref         turn.TurnRef
+	Ref         TurnRef
 	RunID       run.RunID
-	Status      turn.TurnStatus
+	Status      TurnStatus
 	Disposition ResumeDisposition
 	End         run.RunEnd
 	Waiting     []run.ResponseRequest
@@ -64,5 +63,5 @@ type Commands interface {
 
 // Reader is the Turn status read; it needs no ownership.
 type Reader interface {
-	Status(context.Context, turn.TurnRef) (TurnResult, error)
+	Status(context.Context, TurnRef) (TurnResult, error)
 }

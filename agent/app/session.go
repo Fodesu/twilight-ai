@@ -16,7 +16,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	rt "github.com/felinics/twilight/agentcore/runtime"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
@@ -78,7 +77,7 @@ var ErrRouteContended = rt.ErrRouteContended
 type Result struct {
 	TurnID      turn.TurnID
 	Status      turn.TurnStatus
-	Disposition sessionkernel.ResumeDisposition
+	Disposition turn.ResumeDisposition
 	// AlreadyDriving reports that another driver in this process carries the
 	// Turn: the input is committed, its settlement and reply are reported by
 	// that driver. It is a fact about this process, not a Turn disposition.
@@ -257,7 +256,7 @@ func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) 
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
 // stopped Turn's drive observes the cancellation and returns.
-func (s *Session) Stop(ctx context.Context, reason string) (sessionkernel.TurnResult, bool, error) {
+func (s *Session) Stop(ctx context.Context, reason string) (turn.TurnResult, bool, error) {
 	return s.rt.Stop(ctx, reason)
 }
 
@@ -302,7 +301,7 @@ func (s *Session) settled(ctx context.Context, st rt.Settlement) []Result {
 // materialization failures are reported to Warn and leave Reply empty.
 func (s *Session) result(ctx context.Context, resp *rt.DriveResult) Result {
 	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, AlreadyDriving: resp.AlreadyDriving}
-	if !resp.AlreadyDriving && resp.Disposition == sessionkernel.ResumeFinished {
+	if !resp.AlreadyDriving && resp.Disposition == turn.ResumeFinished {
 		text, err := s.app.Reply(ctx, resp.Ref)
 		if err != nil {
 			s.app.warn(fmt.Errorf("app: materialize reply of turn %s: %w", resp.Ref.TurnID, err))
@@ -495,7 +494,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, erro
 	if err != nil {
 		return "", false, err
 	}
-	id, err := s.app.Kernel.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, sessionkernel.RequireQuiescentRun)
+	id, err := s.app.Kernel.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, turn.RequireQuiescentRun)
 	if err != nil {
 		return "", false, err
 	}

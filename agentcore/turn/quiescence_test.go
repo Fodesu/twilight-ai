@@ -1,4 +1,4 @@
-package sessionkernel
+package turn
 
 import (
 	"errors"
@@ -7,7 +7,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/turn"
 	"strings"
 	"testing"
 )
@@ -36,8 +35,8 @@ func (v guardView) Projection(id module.ProjectionID, _ module.ProjectionVersion
 	return v.state, v.err
 }
 
-func activeSurface(runID run.RunID) turn.TurnSurface {
-	return turn.TurnSurface{Order: []turn.TurnID{"t1"}, Turns: map[turn.TurnID]turn.TurnView{"t1": {TurnID: "t1", Status: turn.TurnActive, RunID: runID}}}
+func activeSurface(runID run.RunID) TurnSurface {
+	return TurnSurface{Order: []TurnID{"t1"}, Turns: map[TurnID]TurnView{"t1": {TurnID: "t1", Status: TurnActive, RunID: runID}}}
 }
 
 func machineWith(current run.Current) sessionstore.Machine {
@@ -53,8 +52,8 @@ func TestRequireQuiescentRun(t *testing.T) {
 		view guardView
 		ok   bool
 	}{
-		"no turns":                          {view: guardView{state: turn.TurnSurface{}}, ok: true},
-		"completed turn":                    {view: guardView{state: surfaceWith(turn.TurnCompleted)}, ok: true},
+		"no turns":                          {view: guardView{state: TurnSurface{}}, ok: true},
+		"completed turn":                    {view: guardView{state: surfaceWith(TurnCompleted)}, ok: true},
 		"active turn, run open":             {view: guardView{state: activeSurface("r1"), machine: machineWith(run.Open{})}, ok: true},
 		"active turn, no live run":          {view: guardView{state: activeSurface("r1"), machine: sessionstore.Machine{}}, ok: true},
 		"tool step without executing calls": {view: guardView{state: activeSurface("r1"), machine: machineWith(pending)}, ok: true},
@@ -67,14 +66,14 @@ func TestRequireQuiescentRun(t *testing.T) {
 		if tc.ok && err != nil {
 			t.Errorf("%s: err = %v, want nil", name, err)
 		}
-		if !tc.ok && !errors.Is(err, turn.ErrConflict) {
+		if !tc.ok && !errors.Is(err, ErrConflict) {
 			t.Errorf("%s: err = %v, want conflict", name, err)
 		}
 	}
 }
 
-func surfaceWith(status turn.TurnStatus) turn.TurnSurface {
-	return turn.TurnSurface{Order: []turn.TurnID{"t1"}, Turns: map[turn.TurnID]turn.TurnView{"t1": {TurnID: "t1", Status: status}}}
+func surfaceWith(status TurnStatus) TurnSurface {
+	return TurnSurface{Order: []TurnID{"t1"}, Turns: map[TurnID]TurnView{"t1": {TurnID: "t1", Status: status}}}
 }
 
 func TestRequireNoActiveTurn(t *testing.T) {
@@ -84,9 +83,9 @@ func TestRequireNoActiveTurn(t *testing.T) {
 		wantErr error  // errors.Is
 		mention string // substring of the error
 	}{
-		"no turns":          {view: guardView{state: turn.TurnSurface{}}},
-		"completed turn":    {view: guardView{state: surfaceWith(turn.TurnCompleted)}},
-		"active turn":       {view: guardView{state: surfaceWith(turn.TurnActive)}, wantErr: turn.ErrConflict, mention: "t1"},
+		"no turns":          {view: guardView{state: TurnSurface{}}},
+		"completed turn":    {view: guardView{state: surfaceWith(TurnCompleted)}},
+		"active turn":       {view: guardView{state: surfaceWith(TurnActive)}, wantErr: ErrConflict, mention: "t1"},
 		"projection failed": {view: guardView{err: boom}, wantErr: boom},
 		"foreign state":     {view: guardView{state: "nope"}, mention: "string"},
 	}

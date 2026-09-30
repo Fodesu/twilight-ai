@@ -1,4 +1,4 @@
-package sessionkernel_test
+package turn_test
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"testing"
 )
@@ -38,7 +37,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &sessionkernel.Coordinator{Projections: session.NewProjectionReader(store, registry, nil), Runs: runs}
+	c := &turn.Coordinator{Projections: session.NewProjectionReader(store, registry, nil), Runs: runs}
 	w, err := writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +68,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 
 	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	p := preset.PresetRef{ID: "p1", Digest: "sha256:p1"}
-	start := sessionkernel.StartRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-1")}, Preset: p}
+	start := turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-1")}, Preset: p}
 	resp, err := c.Start(ctx, w, start)
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -80,7 +79,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	if again, err := c.Start(ctx, w, start); err != nil || again.RunID != resp.RunID {
 		t.Fatalf("start replay = %+v %v", again, err)
 	}
-	if _, err := c.Deliver(ctx, w, sessionkernel.DeliverRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-2")}}); err != nil {
+	if _, err := c.Deliver(ctx, w, turn.DeliverRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-2")}}); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
 	status, err := c.Status(ctx, ref)

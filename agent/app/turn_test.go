@@ -15,7 +15,6 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -64,9 +63,9 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	done := make(chan sessionkernel.TurnResult, 1)
+	done := make(chan turn.TurnResult, 1)
 	go func() {
-		resp, err := h.Kernel.Turns.Start(ctx, s.Handle().Writer(), sessionkernel.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref})
+		resp, err := h.Kernel.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).
 			if _, err = h.Execution.Drive(ctx, s.Handle().Writer(), ref1.TurnID); err == nil {
@@ -98,7 +97,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		return err == nil && len(surface.Turns["t1"].InputIDs) == 2
 	})
 	close(tool.release)
-	if resp := <-deliverDone; !resp.AlreadyDriving && resp.Disposition != sessionkernel.ResumeFinished {
+	if resp := <-deliverDone; !resp.AlreadyDriving && resp.Disposition != turn.ResumeFinished {
 		t.Fatalf("deliver = %+v, want already driving or finished", resp)
 	}
 	resp := <-done
@@ -149,17 +148,17 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := h.Kernel.Turns.Start(ctx, s.Handle().Writer(), sessionkernel.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref}); err == nil {
+		if _, err := h.Kernel.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref}); err == nil {
 			_, _ = h.Execution.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
 		}
 	}()
 	<-tool.started
 
-	resp, err := h.Kernel.Turns.Stop(ctx, s.Handle().Writer(), sessionkernel.StopRequest{Ref: ref1, Reason: "user"})
+	resp, err := h.Kernel.Turns.Stop(ctx, s.Handle().Writer(), turn.StopRequest{Ref: ref1, Reason: "user"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != turn.TurnStopped || resp.Disposition != sessionkernel.ResumeFinished || resp.End == nil {
+	if resp.Status != turn.TurnStopped || resp.Disposition != turn.ResumeFinished || resp.End == nil {
 		t.Fatalf("stop response = %+v", resp)
 	}
 	if _, stopped := resp.End.(run.RunStoppedEnd); !stopped {
@@ -229,7 +228,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	started, err := h.Kernel.Turns.Start(ctx, s.Handle().Writer(), sessionkernel.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: pref})
+	started, err := h.Kernel.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: pref})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +247,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if calls[0].Status != run.ToolExecuting || calls[1].Status != run.ToolPending || calls[2].Status != run.ToolWaiting {
 		t.Fatalf("calls before stop = %+v", calls)
 	}
-	if _, err := h.Kernel.Turns.Stop(ctx, s.Handle().Writer(), sessionkernel.StopRequest{Ref: ref}); err != nil {
+	if _, err := h.Kernel.Turns.Stop(ctx, s.Handle().Writer(), turn.StopRequest{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	record, err := h.Kernel.Runs.Record(ctx, sid, started.RunID)

@@ -14,7 +14,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -72,7 +71,7 @@ func Example_recoverableTurn() {
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "turn-1"}
 	startDone := make(chan error, 1)
 	go func() {
-		_, err := p1.Kernel.Turns.Start(ctx, owned1.Handle.Writer(), sessionkernel.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
+		_, err := p1.Kernel.Turns.Start(ctx, owned1.Handle.Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
 			Preset: profile1})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).

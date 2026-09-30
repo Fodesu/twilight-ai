@@ -58,7 +58,7 @@ func (c children) AwaitingRecovery(ctx context.Context, ref turn.TurnRef) (bool,
 	if err != nil {
 		return false, err
 	}
-	return res.Status == turn.TurnActive && res.Disposition == sessionkernel.ResumeWaitingForRecovery, nil
+	return res.Status == turn.TurnActive && res.Disposition == turn.ResumeWaitingForRecovery, nil
 }
 
 // InputText is the text of the Turn's first input as this agent shapes
