@@ -6,7 +6,6 @@ import (
 
 	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/spawn"
-	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/session"
@@ -71,7 +70,7 @@ func (c children) InputText(ctx context.Context, ref turn.TurnRef) (string, erro
 	if err != nil {
 		return "", err
 	}
-	in, ok := chat.Inputs.Get(chatlog.InputID(view.InputIDs[0]))
+	in, ok := chat.Inputs.Get(view.InputIDs[0])
 	if !ok {
 		return "", nil
 	}

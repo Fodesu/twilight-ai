@@ -54,7 +54,7 @@ type Engine interface {
 	Close()
 }
 
-// Sources are the Session-side services the drive chain reads; a
+// Sources are the Session-side services the Engine reads; a
 // composition root assembles them over the same stores the Sessions live
 // in.
 type Sources struct {
@@ -67,7 +67,7 @@ type Sources struct {
 }
 
 // Config composes one Engine: the effect layer it drives, the decision
-// identities it resolves and the policies of the drive chain.
+// identities it resolves and the policies it drives under.
 type Config struct {
 	// Executor is the effect layer (RUN-EXE-3): Execution is required, the
 	// optional capabilities are used when set.
@@ -114,7 +114,7 @@ type Config struct {
 	OrphanProbe time.Duration
 }
 
-// engine is the assembled drive chain behind Engine.
+// engine is the assembly behind Engine.
 type engine struct {
 	ports    effect.Ports
 	presets  preset.Registry
