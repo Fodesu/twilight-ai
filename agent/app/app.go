@@ -197,12 +197,9 @@ type Application struct {
 	// core it owns them over.
 	Owner *owner.Owner
 	Core  *core.Core
-	bus   *observe.Bus
 	spawn *spawn.Responder
-	// worker is the Worker Build composed, if any; Close stops it after the
-	// Authority (RUN-EXE-8).
-	worker     *executor.Worker
-	warn       func(error)
+	// warn receives failures of background work.
+	warn func(error)
 	inbox      inbox.Store
 	ownership  session.OpenOptions
 	activation *Activation
@@ -357,19 +354,10 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 			return nil, errors.New("app: Workspaces.SnapshotAfterTurn requires Snapshots or Provider")
 		}
 	}
-	port, worker, err := buildExecutor(&c, routes)
+	port, wc, err := buildExecutor(&c, routes)
 	if err != nil {
 		return nil, err
 	}
-	app.worker = worker
-	// The event stream is a CommitObserver on the Writers (EXT-WRT-7) and
-	// decodes through the Registry, so both exist before the Core does.
-	registry, err := core.NewRegistry(c.Modules)
-	if err != nil {
-		return nil, err
-	}
-	app.bus = observe.NewBus(registry, c.Store)
-	observers := append([]writer.CommitObserver{app.bus}, c.Observers...)
 	decisions := c.Decisions
 	if decisions == nil {
 		decisions = prompt.DefaultCatalog()
@@ -384,11 +372,11 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	kernel, err := core.New(core.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,
 		MissingEffects: c.MissingEffects, Redispatches: c.Redispatches, OrphanProbe: c.OrphanProbe,
-		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Registry: registry,
+		Executor: port, Worker: wc, TargetResolver: c.TargetResolver, Observers: c.Observers, Modules: c.Modules,
 		// The Sessions' compaction policy runs between the steps of a Turn
 		// (APP-CKP-1, RUN-LOP-10); provisional observations of effects in
-		// flight reach the same stream as the committed facts (OBS-1).
-		Planner: app, Sink: busSink{app.bus}, Responders: responders,
+		// flight reach the Core's event stream (OBS-1).
+		Planner: app, Responders: responders,
 		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
 	})
 	if err != nil {
@@ -420,44 +408,24 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 }
 
 // rollback releases what a failed Build created, in reverse order of
-// creation: the Core, the Worker, the sandbox. Nothing was opened yet, so
-// there is no ownership to release.
+// creation: the Core (its Worker with it) and the sandbox. Nothing was
+// opened yet, so there is no ownership to release.
 func (app *Application) rollback() {
 	app.bgCancel()
 	ctx := context.Background()
 	if app.Core != nil {
 		_ = app.Core.Close(ctx)
 	}
-	if app.worker != nil {
-		app.worker.Close()
-	}
 	if app.sandbox != nil {
 		_ = app.sandbox.Close(ctx)
 	}
 }
 
-// busSink is the drive's loop.EventSink: provisional observations become
-// transient Bus events; committed observations are already on the Bus from
-// the Writer, so they are dropped here.
-type busSink struct{ bus *observe.Bus }
-
-func (s busSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic // hugeParam: EventSink contract takes the Event by value
-	if s.bus == nil || e.Durability != loop.EventProvisional {
-		return nil
-	}
-	s.bus.Publish(session.SessionID(e.Session), observe.Progress{RunID: e.RunID, Effect: e.Effect, Generation: e.Generation,
-		Sequence: e.Sequence, Kind: string(e.Kind), Payload: e.Payload})
-	return nil
-}
-
-// forwardingObserver forwards to a Bus that is bound after the Writers are
-// built; commits before binding (none: Build binds before any Session opens)
-// are dropped.
 // fail reports a failure of background work to Warn and, as an Event, to the
 // Session's subscribers (OBS-1).
 func (app *Application) fail(sid session.SessionID, err error) {
 	app.warn(err)
-	app.bus.Failed(sid, err)
+	app.Core.Bus.Failed(sid, err)
 }
 
 // RegisterPreset adds or replaces a decision identity after Build.
@@ -487,14 +455,14 @@ func (app *Application) PresetRef(id preset.PresetID) (preset.PresetRef, error) 
 // (OBS-1): every event of every group applied by this application's
 // Writers, in commit order, plus failures of background drives.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
-	return app.bus.Subscribe(ctx, sid)
+	return app.Core.Bus.Subscribe(ctx, sid)
 }
 
 // EventsFrom is the catch-up form of Events: the Session's committed events
 // from CommitSeq from, then the live stream. A client that keeps the last
 // Position it handled resumes here after a disconnect without a gap.
 func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, from ledger.CommitSeq) (<-chan Event, error) {
-	return app.bus.SubscribeFrom(ctx, sid, from)
+	return app.Core.Bus.SubscribeFrom(ctx, sid, from)
 }
 
 // Close cancels the spawn effect's child drives, stops recovery listeners
@@ -523,18 +491,15 @@ func (app *Application) Close(ctx context.Context) error {
 	if werr := app.releases.wait(ctx); werr != nil && err == nil {
 		err = werr
 	}
-	// Ownership is released first, then the Core's services close under
-	// it, then the Worker: the Core's drives may still be settling outcomes
-	// through it. Records keep their leases until they expire and the next
-	// incarnation adopts them (RUN-EXE-8, SPN-4).
+	// Ownership is released first, then the Core closes, its Worker with
+	// it: the Core's drives may still be settling outcomes through it.
+	// Records keep their leases until they expire and the next incarnation
+	// adopts them (RUN-EXE-8, SPN-4).
 	if oerr := app.Owner.Close(ctx); oerr != nil && err == nil {
 		err = oerr
 	}
 	if cerr := app.Core.Close(ctx); cerr != nil && err == nil {
 		err = cerr
-	}
-	if app.worker != nil {
-		app.worker.Close()
 	}
 	if app.sandbox != nil {
 		if cerr := app.sandbox.Close(ctx); cerr != nil && err == nil {
@@ -544,21 +509,19 @@ func (app *Application) Close(ctx context.Context) error {
 	return err
 }
 
-// buildExecutor is the effect Port the Authority drives against. The local
-// mode is a Worker over the colocated Backend (RUN-EXE-8). A supplied Port or
-// the remote client is used as is unless extra routes (spawn) are configured,
-// in which case a Worker routes to them and to the Port as its default
-// Backend; the remote Worker keeps its own record of the physical execution.
-func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *executor.Worker, error) {
-	worker := func(routes ...executor.Route) (effect.ExecutionPort, *executor.Worker, error) {
+// buildExecutor decides the effect Port the Authority drives against and,
+// when this process owns execution records, the Worker the Core composes
+// over it (RUN-EXE-8). The local mode routes to the colocated Backend; a
+// supplied Port or the remote client is used as is unless extra routes
+// (spawn) are configured, in which case the Worker routes to them and to
+// the Port as its default Backend; the remote Worker keeps its own record
+// of the physical execution.
+func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *core.WorkerConfig, error) {
+	worker := func(routes ...executor.Route) (effect.ExecutionPort, *core.WorkerConfig, error) {
 		if c.Executions == nil {
 			return nil, nil, errors.New("app: an execution record store (Config.Executions) is required when Build composes a Worker")
 		}
-		w, err := executor.NewWorker(context.Background(), c.Executions, append(extra, routes...), c.Worker)
-		if err != nil {
-			return nil, nil, err
-		}
-		return w, w, nil
+		return nil, &core.WorkerConfig{Executions: c.Executions, Routes: append(extra, routes...), Options: c.Worker}, nil
 	}
 	if c.Executor.Port != nil {
 		if len(extra) == 0 {

@@ -18,9 +18,12 @@ import (
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
+	"github.com/felinics/twilight/agentcore/executor"
+	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/history"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
+	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -44,6 +47,17 @@ import (
 type Artifacts struct {
 	Bindings artifact.BindingStore
 	Ledger   artifact.RetentionLedger
+}
+
+// WorkerConfig composes the execution Worker of this Core (RUN-EXE-8): the
+// record store it owns its records in (durable, OWN-PRT-3), the Routes it
+// routes effects to and its tuning options. Routes name the Executor port's
+// backend as one of their Default routes when the port is supplied or
+// remote. A nil Worker drives Ports.Executor directly.
+type WorkerConfig struct {
+	Executions executionstore.Store
+	Routes     []executor.Route
+	Options    executor.WorkerOptions
 }
 
 // Ports are the roles a Core is composed from (OWN-PRT-1). Every field
@@ -75,15 +89,17 @@ type Ports struct {
 	// Redispatches is the dispatch ledger RedispatchMissing writes; durable
 	// like every store (OWN-PRT-3). Unused under DisposeMissing.
 	Redispatches redispatch.Store
-	// Executor is the effect layer port (RUN-EXE-3): required.
+	// Executor is the effect layer port (RUN-EXE-3): required unless a Worker
+	// is composed, which replaces it as the port the Core drives.
 	Executor effect.ExecutionPort
+	// Worker composes the execution Worker this Core drives; nil drives
+	// Executor directly. The Worker owns the execution records (takeover
+	// disposition, RUN-EXE-8) and closes with the Core, after its services.
+	Worker *WorkerConfig
 	// Planner, when set, is consulted between the steps of every Run with
 	// the Writer of the Session being driven: the application's in-turn
 	// context policy.
 	Planner driver.Planner
-	// Sink receives the drives' provisional observations (progress frames);
-	// nil discards them.
-	Sink loop.EventSink
 	// Responders answer ExternalResponse waits by the ToolRef whose calls
 	// they answer; nil answers none.
 	Responders map[run.ToolRef]driver.Responder
@@ -141,7 +157,13 @@ type Core struct {
 	// Watcher is the settlement subscription every Loop and Reconciler of
 	// this Core waits on; a host component that waits for an effect of its
 	// own (compaction's summary) shares it instead of subscribing again.
-	Watcher  *effect.Watcher
+	Watcher *effect.Watcher
+	// Worker is the composed execution Worker, nil when the Core drives the
+	// Executor port directly; it closes with the Core, after its services.
+	Worker *executor.Worker
+	// Bus is the event stream: a CommitObserver on the Writers and the
+	// channel provisional observations relay to.
+	Bus      *observe.Bus
 	Presets  preset.Registry
 	Executor effect.ExecutionPort
 	Frozen   frozen.Store
@@ -158,8 +180,8 @@ type Core struct {
 
 // New composes a Core from its ports.
 func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by-value options struct read once
-	if p.Executor == nil {
-		return nil, errors.New("core: an Executor port is required")
+	if p.Executor == nil && p.Worker == nil {
+		return nil, errors.New("core: an Executor port or a Worker is required")
 	}
 	if p.Store == nil {
 		return nil, errors.New("core: a session Store is required")
@@ -173,6 +195,18 @@ func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by
 	if p.MissingEffects == reconcile.RedispatchMissing && p.Redispatches == nil {
 		return nil, errors.New("core: MissingEffects=redispatch requires a dispatch ledger (Ports.Redispatches, RUN-EXE-15)")
 	}
+	executorPort := p.Executor
+	var worker *executor.Worker
+	if p.Worker != nil {
+		if p.Worker.Executions == nil {
+			return nil, errors.New("core: a composed Worker requires an execution record store (Ports.Worker.Executions)")
+		}
+		w, err := executor.NewWorker(context.Background(), p.Worker.Executions, p.Worker.Routes, p.Worker.Options)
+		if err != nil {
+			return nil, err
+		}
+		worker, executorPort = w, w
+	}
 	store := p.Store
 	registry := p.Registry
 	if registry == nil {
@@ -181,6 +215,10 @@ func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by
 			return nil, err
 		}
 	}
+	// The event stream observes every group the Writers apply (EXT-WRT-7)
+	// and decodes through the Registry, so both exist before the Writers do.
+	bus := observe.NewBus(registry, store)
+	observers := append([]writer.CommitObserver{bus}, p.Observers...)
 	bindings, retention := p.Artifacts.Bindings, p.Artifacts.Ledger
 	// A projection cache lets a reopened Session start folding instead of
 	// refolding the whole log (EXT-PRJ-3). An adapter that can store entries
@@ -205,7 +243,7 @@ func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by
 	}
 	admission := writer.Admission{Bindings: bindings, Ledger: retention}
 	writers := writer.NewWriters(store, registry, admission, p.Ownership,
-		writer.WritersConfig{Cache: cache, CachePolicy: sessionstore.WriterCachePolicy(p.CacheEvery), Observers: p.Observers})
+		writer.WritersConfig{Cache: cache, CachePolicy: sessionstore.WriterCachePolicy(p.CacheEvery), Observers: observers})
 	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: fz, Cache: cache, Now: now})
 	if err != nil {
 		return nil, err
@@ -226,23 +264,39 @@ func New(p Ports) (*Core, error) { //nolint:gocritic // hugeParam: Ports is a by
 	a := &Core{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
 		Turns:   &rt.Coordinator{Projections: projections, Runs: runs, Now: now},
-		Presets: presets, Executor: p.Executor, Frozen: fz, Projections: projections, Content: content,
+		Worker: worker, Bus: bus, Presets: presets, Executor: executorPort, Frozen: fz,
+		Projections: projections, Content: content,
 		Chatlog: &chatlog.Commands{Now: now},
 		History: history.History{Store: store, Registry: registry, Projections: projections},
 		Clock:   now,
 	}
-	a.Watcher = &effect.Watcher{Port: p.Executor, Probe: p.OrphanProbe}
+	a.Watcher = &effect.Watcher{Port: executorPort, Probe: p.OrphanProbe}
+	sink := busSink{bus}
 	// A nil resolver gives every effect no target (APP-TGT-1).
-	loops := &driver.Loops{Executor: p.Executor, Presets: presets, Decisions: decisions, Targets: p.TargetResolver,
+	loops := &driver.Loops{Executor: executorPort, Presets: presets, Decisions: decisions, Targets: p.TargetResolver,
 		Sources: decision.Sources{Projections: projections, Content: content}, Watcher: a.Watcher, Planner: p.Planner}
-	a.Recovery = &driver.Recovery{Runs: runs, Executor: p.Executor, Loops: loops, Watcher: a.Watcher, Fail: p.Fail,
-		MissingEffects: p.MissingEffects, Redispatches: p.Redispatches, OrphanProbe: p.OrphanProbe, Sink: p.Sink}
+	a.Recovery = &driver.Recovery{Runs: runs, Executor: executorPort, Loops: loops, Watcher: a.Watcher, Fail: p.Fail,
+		MissingEffects: p.MissingEffects, Redispatches: p.Redispatches, OrphanProbe: p.OrphanProbe, Sink: sink}
 	var responders *driver.Responders
 	if len(p.Responders) > 0 {
 		responders = &driver.Responders{Runs: runs, Tools: p.Responders, Fail: p.Fail}
 	}
-	a.Driver = &driver.Driver{Runs: runs, Loops: loops, Recovery: a.Recovery, Responders: responders, Sink: p.Sink}
+	a.Driver = &driver.Driver{Runs: runs, Loops: loops, Recovery: a.Recovery, Responders: responders, Sink: sink}
 	return a, nil
+}
+
+// busSink is the drive's loop.EventSink: provisional observations become
+// transient Bus events; committed observations are already on the Bus from
+// the Writer, so they are dropped here.
+type busSink struct{ bus *observe.Bus }
+
+func (s busSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic // hugeParam: EventSink contract takes the Event by value
+	if s.bus == nil || e.Durability != loop.EventProvisional {
+		return nil
+	}
+	s.bus.Publish(session.SessionID(e.Session), observe.Progress{RunID: e.RunID, Effect: e.Effect, Generation: e.Generation,
+		Sequence: e.Sequence, Kind: string(e.Kind), Payload: e.Payload})
+	return nil
 }
 
 // NewRegistry builds the module registry of a Core: the first-party
@@ -254,12 +308,17 @@ func NewRegistry(extensions []module.ModuleDescriptor) (*module.Registry, error)
 }
 
 // Close ends every Session's recovery listeners, the settlement
-// subscription and the Writers. The owner releases the Sessions it holds
-// before this.
+// subscription and the Writers, then the Worker: the Core's drives may
+// still be settling outcomes through it. The owner releases the Sessions it
+// holds before this.
 func (a *Core) Close(ctx context.Context) error {
 	a.Recovery.Close()
 	a.Watcher.Close()
-	return writer.CloseWriters(ctx, a.Writers)
+	err := writer.CloseWriters(ctx, a.Writers)
+	if a.Worker != nil {
+		a.Worker.Close()
+	}
+	return err
 }
 
 // CreateSession creates the Session; ext are the segment's module extension
