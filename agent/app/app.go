@@ -407,11 +407,14 @@ func (app *Application) rollback() {
 	}
 }
 
-// fail reports a failure of background work to Warn and, as an Event, to the
-// Session's subscribers (OBS-1).
+// fail reports a failure of the application's own background work (a
+// settlement that errored, a snapshot that failed) to Warn and, as an
+// Event, to the Session's subscribers (OBS-1). The Execution's components
+// report through their own Fail callback, which NewExecution wires to the
+// same stream.
 func (app *Application) fail(sid session.SessionID, err error) {
 	app.warn(err)
-	app.Kernel.Bus.Failed(sid, err)
+	app.Execution.Progress.Failed(sid, err)
 }
 
 // RegisterPreset adds or replaces a decision identity after Build.
@@ -437,18 +440,58 @@ func (app *Application) PresetRef(id preset.PresetID) (preset.PresetRef, error) 
 	return ref, nil
 }
 
-// Events subscribes to one Session's event stream from this moment on
-// (OBS-1): every event of every group applied by this application's
-// Writers, in commit order, plus failures of background drives.
+// Events subscribes to one Session's observation stream from this moment
+// on (OBS-1): the Kernel's committed stream merged with the Execution's
+// transient progress and failures. Committed events keep their commit
+// order; transient items may interleave and may be lost.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
-	return app.Kernel.Bus.Subscribe(ctx, sid)
+	return mergeEvents(ctx, app.Kernel.Bus.Subscribe(ctx, sid), app.Execution.Progress.Subscribe(ctx, sid))
 }
 
 // EventsFrom is the catch-up form of Events: the Session's committed events
-// from CommitSeq from, then the live stream. A client that keeps the last
-// Position it handled resumes here after a disconnect without a gap.
+// from CommitSeq from, then the live stream, with the transient stream live
+// from now on. A client that keeps the last Position it handled resumes
+// here after a disconnect without a gap.
 func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, from ledger.CommitSeq) (<-chan Event, error) {
-	return app.Kernel.Bus.SubscribeFrom(ctx, sid, from)
+	committed, err := app.Kernel.Bus.SubscribeFrom(ctx, sid, from)
+	if err != nil {
+		return nil, err
+	}
+	return mergeEvents(ctx, committed, app.Execution.Progress.Subscribe(ctx, sid)), nil
+}
+
+// mergeEvents forwards both observation streams into one channel until ctx
+// ends; each source closes independently and drops out of the merge.
+func mergeEvents(ctx context.Context, committed, transient <-chan Event) <-chan Event {
+	out := make(chan Event, 64)
+	go func() {
+		defer close(out)
+		for committed != nil || transient != nil {
+			select {
+			case e, ok := <-committed:
+				if !ok {
+					committed = nil
+					continue
+				}
+				select {
+				case out <- e:
+				case <-ctx.Done():
+					return
+				}
+			case e, ok := <-transient:
+				if !ok {
+					transient = nil
+					continue
+				}
+				select {
+				case out <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out
 }
 
 // Close cancels the spawn effect's child drives, stops recovery listeners

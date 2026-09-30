@@ -89,8 +89,9 @@ type Kernel struct {
 	Runs *sessionstore.SessionRunStore
 	// Turns commits the Turn protocol and reads Turn status.
 	Turns *Coordinator
-	// Bus is the event stream: a CommitObserver on the Writers and the
-	// channel provisional observations relay to.
+	// Bus is the committed event stream: a CommitObserver on the Writers
+	// (OBS-1), carrying the applied groups decoded, in commit order. It
+	// carries facts only; transient observations are not part of it.
 	Bus *observe.Bus
 	Frozen frozen.Store
 	// Projections reads every projection through the Session's Writer.

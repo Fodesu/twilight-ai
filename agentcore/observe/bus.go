@@ -1,10 +1,13 @@
-// Package observe is the Session event stream (OBS-1): a
-// writer.CommitObserver that decodes every applied commit through the
-// Registry and fans it out, in commit order, to the subscribers of each
-// Session. UI, SSE and CLI observation all derive from this one source. A
-// subscription is a catch-up subscription: it may start from a CommitSeq,
-// reading the ledger up to its head and continuing live, so a consumer that
-// keeps its own checkpoint resumes after a crash without a gap.
+// Package observe carries a Session's observations (OBS-1) in two streams.
+// The Bus is the committed stream: a writer.CommitObserver that decodes
+// every applied commit through the Registry and fans it out, in commit
+// order, to the subscribers of each Session. Its subscription is a catch-up
+// subscription: it may start from a CommitSeq, reading the ledger up to its
+// head and continuing live, so a consumer that keeps its own checkpoint
+// resumes after a crash without a gap. The Progresses are the transient
+// stream: what the executor reported of an effect while it ran, and the
+// failures of background work -- none of it a fact, all of it expendable. A
+// host that serves one audience from both merges the two.
 package observe
 
 import (
@@ -18,18 +21,20 @@ import (
 	"sync"
 )
 
-// Event is one item of a Session's event stream. Every observation of a
-// Session derives from applied commits, so an Event is normally one
-// committed event decoded through the Registry: Module, Version and Value
-// are the decoded payload, Unknown reports a type or version this process
-// has no codec for (the event is still delivered). An Event with Err set and
-// a zero Row is a failure of background work (a drive that errored); it is
-// reported here for the same audience but never enters the stream.
+// Event is one item of a Session's observation stream, in either of two
+// shapes. A committed Event carries one event decoded from the applied
+// commits through the Registry: Module, Version and Value are the decoded
+// payload, Unknown reports a type or version this process has no codec for
+// (the event is still delivered) and Err reports the decode or history-read
+// failure. A transient Event has a zero Row: Progress carries what the
+// executor reported of an effect while it ran, or Err alone carries a
+// failure of background work; neither is a fact, either may be lost, and
+// the committed result that follows replaces it.
 type Event struct {
 	Session session.SessionID
 	// Position is the event's place in the Session's ledger: the commit's
 	// Seq and the event's index within the commit. It is what a consumer
-	// checkpoints; zero on a failure or progress Event.
+	// checkpoints; zero on a transient Event.
 	Position ledger.Position
 	Row      ledger.Event
 	Module   module.ModuleKey
@@ -66,7 +71,9 @@ type History interface {
 // ErrNoHistory reports SubscribeFrom on a Bus built without a History.
 var ErrNoHistory = errors.New("observe: the bus has no history to catch up from")
 
-// Bus decodes applied commits and fans them out per Session.
+// Bus decodes applied commits and fans them out per Session. It carries
+// committed facts only; the transient observations of the running effects
+// are the Progresses' stream.
 type Bus struct {
 	registry *module.Registry
 	history  History
@@ -107,17 +114,6 @@ func (b *Bus) decode(sid session.SessionID, commit *ledger.Commit) []Event {
 	return events
 }
 
-// Failed reports a background failure to the Session's subscribers.
-func (b *Bus) Failed(sid session.SessionID, err error) {
-	b.publish(sid, Event{Session: sid, Err: err})
-}
-
-// Publish delivers a transient progress observation to the Session's
-// subscribers (RUN-EXE-12).
-func (b *Bus) Publish(sid session.SessionID, p Progress) {
-	b.publish(sid, Event{Session: sid, Progress: &p})
-}
-
 func (b *Bus) publish(sid session.SessionID, events ...Event) {
 	b.mu.Lock()
 	subs := make([]*subscriber, 0, len(b.subs[sid]))
@@ -142,9 +138,8 @@ func (b *Bus) Subscribe(ctx context.Context, sid session.SessionID) <-chan Event
 // the Session from CommitSeq from, in order, then the live stream. The
 // subscriber is attached before the history is read, so no commit made
 // meanwhile is lost, and a live commit the history already covered is
-// dropped, so none is delivered twice. Failure and progress Events, which
-// have no Position, are delivered as they come. The channel closes when ctx
-// is done; a read failure closes it after an Event with Err.
+// dropped, so none is delivered twice. The channel closes when ctx is done;
+// a read failure closes it after an Event with Err.
 func (b *Bus) SubscribeFrom(ctx context.Context, sid session.SessionID, from ledger.CommitSeq) (<-chan Event, error) {
 	if b.history == nil {
 		return nil, ErrNoHistory
@@ -230,7 +225,7 @@ func (s *subscriber) drain(ctx context.Context, unsubscribe func()) {
 		}
 		for i := range live {
 			e := &live[i]
-			if e.Err == nil && e.Progress == nil && e.Position.Commit < skipBelow {
+			if e.Position.Commit < skipBelow {
 				// Delivered from the history already.
 				continue
 			}

@@ -82,8 +82,9 @@ type Execution struct {
 	// on the Loops and the Watcher NewExecution built.
 	Driver   *driver.Driver
 	Recovery *driver.Recovery
-
-	bus *observe.Bus
+	// Progress is the transient stream of the running effects: the drive
+	// chain's provisional observations and the failures this side reports.
+	Progress *observe.Progresses
 }
 
 // NewExecution assembles the execution side over k, the Session kernel of
@@ -103,18 +104,28 @@ func NewExecution(cfg ExecutionConfig, k *sessionkernel.Kernel) (*Execution, err
 	if presets == nil {
 		presets = preset.NewMemory()
 	}
-	x := &Execution{Executor: cfg.Executor, Presets: presets, bus: k.Bus}
+	x := &Execution{Executor: cfg.Executor, Presets: presets, Progress: observe.NewProgresses()}
 	x.Watcher = &effect.Watcher{Port: cfg.Executor, Probe: cfg.OrphanProbe}
+	// Failures the components report outside any caller's call reach the
+	// caller's callback and the Session's transient stream (OBS-1).
+	fail := cfg.Fail
+	if fail == nil {
+		fail = func(session.SessionID, error) {}
+	}
+	report := func(sid session.SessionID, err error) {
+		fail(sid, err)
+		x.Progress.Failed(sid, err)
+	}
 	// A nil resolver gives every effect no target (APP-TGT-1).
 	loops := &driver.Loops{Executor: cfg.Executor, Presets: presets, Decisions: cfg.Decisions, Targets: cfg.TargetResolver,
 		Sources: decision.Sources{Projections: k.Projections, Content: k.Content}, Watcher: x.Watcher, Planner: cfg.Planner}
-	x.Recovery = &driver.Recovery{Runs: k.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: cfg.Fail,
-		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, OrphanProbe: cfg.OrphanProbe, Sink: busSink{x.bus}}
+	x.Recovery = &driver.Recovery{Runs: k.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: report,
+		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, OrphanProbe: cfg.OrphanProbe, Sink: progressSink{x.Progress}}
 	var responders *driver.Responders
 	if len(cfg.Responders) > 0 {
-		responders = &driver.Responders{Runs: k.Runs, Tools: cfg.Responders, Fail: cfg.Fail}
+		responders = &driver.Responders{Runs: k.Runs, Tools: cfg.Responders, Fail: report}
 	}
-	x.Driver = &driver.Driver{Runs: k.Runs, Loops: loops, Recovery: x.Recovery, Responders: responders, Sink: busSink{x.bus}}
+	x.Driver = &driver.Driver{Runs: k.Runs, Loops: loops, Recovery: x.Recovery, Responders: responders, Sink: progressSink{x.Progress}}
 	return x, nil
 }
 
@@ -145,16 +156,16 @@ func (x *Execution) Close() {
 	x.Watcher.Close()
 }
 
-// busSink is the drive's loop.EventSink: provisional observations become
-// transient Bus events; committed observations are already on the Bus from
-// the Writer, so they are dropped here.
-type busSink struct{ bus *observe.Bus }
+// progressSink is the drive's loop.EventSink: provisional observations
+// become transient Progress events; committed observations are already on
+// the committed stream from the Writer, so they are dropped here.
+type progressSink struct{ progress *observe.Progresses }
 
-func (s busSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic // hugeParam: EventSink contract takes the Event by value
-	if s.bus == nil || e.Durability != loop.EventProvisional {
+func (s progressSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic // hugeParam: EventSink contract takes the Event by value
+	if e.Durability != loop.EventProvisional {
 		return nil
 	}
-	s.bus.Publish(session.SessionID(e.Session), observe.Progress{RunID: e.RunID, Effect: e.Effect, Generation: e.Generation,
+	s.progress.Publish(session.SessionID(e.Session), observe.Progress{RunID: e.RunID, Effect: e.Effect, Generation: e.Generation,
 		Sequence: e.Sequence, Kind: string(e.Kind), Payload: e.Payload})
 	return nil
 }
