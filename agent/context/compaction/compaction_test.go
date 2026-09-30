@@ -3,7 +3,9 @@ package compaction_test
 import (
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/session"
 	"testing"
 )
 
@@ -75,5 +77,45 @@ func TestRetainLastPairClosure(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The summary effect's key derives from the Session and the digest of the
+// context it replaces: the same context asks for the same effect, another
+// context or another Session asks for another.
+func TestSummaryEffectIDDerivesFromContext(t *testing.T) {
+	entries := pairEntries()
+	pairs := make([]chatlog.EntryDigestPair, len(entries))
+	for i := range entries {
+		pairs[i] = entries[i].Pair()
+	}
+	base, err := chatlog.DigestBaseContext(pairs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shorter, err := chatlog.DigestBaseContext(pairs[:2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := compaction.SummaryEffectID("s", base)
+	cases := []struct {
+		name string
+		sid  session.SessionID
+		base jsonstable.Digest
+		want bool
+	}{
+		{"same context", "s", base, true},
+		{"other context", "s", shorter, false},
+		{"other session", "other", base, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := compaction.SummaryEffectID(tc.sid, tc.base) == same; got != tc.want {
+				t.Fatalf("equal = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if same == "" || string(same)[:7] != "sha256:" {
+		t.Fatalf("effect id = %q, want a sha256 digest", same)
 	}
 }
