@@ -157,11 +157,6 @@ type Reconciler struct {
 	// ends, kept targets not yet delivered are dropped. Required with
 	// Deliver (ErrDeliverWithoutLifetime).
 	Lifetime context.Context
-	// OrphanProbe is how often a kept target still waiting is re-attached
-	// to see whether its record has lost its Worker, in which case recovery
-	// is asked for once per orphaned episode (RUN-EXE-6). Zero selects
-	// DefaultOrphanProbe; negative disables the probe.
-	OrphanProbe time.Duration
 
 	// Missing is the policy for an effect the executor holds nothing for.
 	// The zero value disposes (RUN-CMT-7); RedispatchMissing requires
@@ -186,10 +181,6 @@ type Reconciler struct {
 
 // DefaultMaxRedispatches is the redispatch budget of one effect.
 const DefaultMaxRedispatches = 3
-
-// DefaultOrphanProbe is how often a kept target still waiting is re-attached
-// to see whether its record has lost its Worker.
-const DefaultOrphanProbe = 15 * time.Second
 
 // AssignmentFromTarget rebuilds the Assignment of an Executing target from
 // the machine state, so the executor can be asked whether it still holds an
@@ -386,56 +377,25 @@ func (r *Reconciler) now() int64 {
 // Deliver once the executor's settlement notice, or the Watcher's periodic
 // read, finds it; a definitive read (the executor holds nothing readable
 // for the key) goes to Fail. Nothing here holds a request open for the
-// length of the execution. While the target waits, the orphan probe
-// re-attaches it at OrphanProbe intervals and asks for recovery once per
-// orphaned episode (RUN-EXE-6); Lifetime ends both.
+// length of the execution, and nothing here probes the record: the Watcher
+// re-attaches every key it holds and asks for the recovery of an orphaned
+// one (RUN-EXE-6). Lifetime ends the registration.
 func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
 	if r.Deliver == nil || r.Lifetime == nil || r.Watcher == nil {
 		return
 	}
-	probeCtx, stopProbe := context.WithCancel(r.Lifetime)
 	cancel := r.Watcher.Watch(r.Lifetime, key,
 		func(out effect.Outcome) {
-			stopProbe()
 			if r.Lifetime.Err() == nil {
 				r.Deliver(out)
 			}
 		},
 		func(err error) {
-			stopProbe()
 			if r.Lifetime.Err() == nil {
 				r.fail(key, err)
 			}
 		})
-	go func() {
-		<-probeCtx.Done()
-		if r.Lifetime.Err() != nil {
-			cancel()
-		}
-	}()
-	if r.OrphanProbe < 0 {
-		return
-	}
-	if _, ok := r.Executions.(effect.Recoverer); !ok {
-		return
-	}
-	interval := r.OrphanProbe
-	if interval == 0 {
-		interval = DefaultOrphanProbe
-	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		asked := false
-		for {
-			select {
-			case <-probeCtx.Done():
-				return
-			case <-ticker.C:
-				r.probeOrphan(probeCtx, key, &asked)
-			}
-		}
-	}()
+	context.AfterFunc(r.Lifetime, cancel)
 }
 
 func (r *Reconciler) fail(key effect.AssignmentKey, err error) {
@@ -452,25 +412,6 @@ func (r *Reconciler) fail(key effect.AssignmentKey, err error) {
 func (r *Reconciler) recoverOrphan(ctx context.Context, key effect.AssignmentKey) {
 	if rec, ok := r.Executions.(effect.Recoverer); ok {
 		_ = rec.RecoverExecution(ctx, key)
-	}
-}
-
-// probeOrphan re-attaches a kept target still waiting and asks for recovery
-// when its record has become orphaned. asked keeps the request to once per
-// orphaned episode; a record under a live lease again resets it.
-func (r *Reconciler) probeOrphan(ctx context.Context, key effect.AssignmentKey, asked *bool) {
-	attachment, err := r.Executions.Attach(ctx, key)
-	if err != nil {
-		return
-	}
-	switch attachment.State {
-	case effect.AttachmentOrphaned:
-		if !*asked {
-			*asked = true
-			r.recoverOrphan(ctx, key)
-		}
-	case effect.AttachmentActive:
-		*asked = false
 	}
 }
 

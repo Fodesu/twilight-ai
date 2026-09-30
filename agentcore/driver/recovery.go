@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -48,10 +47,6 @@ type Recovery struct {
 	// MaxRedispatches bounds redispatches per effect; zero selects the
 	// reconciler's default.
 	MaxRedispatches int
-	// OrphanProbe is how often an effect still waiting is attached and, when
-	// orphaned, handed to RecoverExecution by the Reconciler of a takeover;
-	// zero selects its default.
-	OrphanProbe time.Duration
 	// Sink receives the provisional observations of a Run driven on after a
 	// reattached Outcome; nil discards them.
 	Sink loop.EventSink
@@ -130,7 +125,6 @@ func (r *Recovery) Recover(ctx context.Context, w writer.Writer) (int, error) {
 			r.fail(sid, fmt.Errorf("driver: outcome of run %s effect %s cannot be read; the target stays executing until the next takeover: %w", key.RunID, key.Effect, err))
 		}}
 	rec.Missing = r.MissingEffects
-	rec.OrphanProbe = r.OrphanProbe
 	if r.MissingEffects == reconcile.RedispatchMissing {
 		// Missing effects are handed to the Executor again within the
 		// budget; the dispatch ledger remembers the attempts.

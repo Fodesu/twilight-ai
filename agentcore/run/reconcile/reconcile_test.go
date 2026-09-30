@@ -358,7 +358,7 @@ func TestPlanAsksRecovererForOrphans(t *testing.T) {
 	}
 }
 
-// A kept target still waiting is re-attached at OrphanProbe intervals: a
+// A kept target still waiting is re-attached by the Watcher's probe: a
 // record that has become orphaned is recovered once per episode, and the
 // Outcome the recovery produces is delivered.
 func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
@@ -376,7 +376,9 @@ func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
 		return effect.Outcome{Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "recovered"})}}, nil
 	}
 	delivered := make(chan effect.Outcome, 1)
-	r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: watching(t, port), OrphanProbe: 10 * time.Millisecond, Deliver: func(out effect.Outcome) { delivered <- out }}
+	w := &effect.Watcher{Port: port, Poll: 5 * time.Millisecond, Reconnect: 5 * time.Millisecond, Probe: 10 * time.Millisecond}
+	t.Cleanup(w.Close)
+	r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: w, Deliver: func(out effect.Outcome) { delivered <- out }}
 	if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
 		t.Fatal(err)
 	}

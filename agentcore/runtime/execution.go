@@ -71,9 +71,9 @@ type ExecutionConfig struct {
 	// decides whether a failure reaches the Progress stream; when nil, the
 	// Execution publishes each failure to Progress itself.
 	Fail func(session.SessionID, error)
-	// OrphanProbe is how often an effect still waiting is attached and, when
-	// orphaned, handed to RecoverExecution: by the Watcher of a live drive
-	// and by the Reconciler of a takeover. Zero selects the defaults.
+	// OrphanProbe is how often the Watcher attaches a key still waiting and
+	// hands an orphaned one to RecoverExecution; zero selects
+	// effect.DefaultWatchProbe.
 	OrphanProbe time.Duration
 }
 
@@ -133,7 +133,7 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 	loops := &driver.Loops{Executor: cfg.Executor, Presets: presets, Decisions: cfg.Decisions, Targets: cfg.TargetResolver,
 		Sources: decision.Sources{Projections: src.Projections, Content: src.Content}, Watcher: x.Watcher, Planner: cfg.Planner}
 	x.Recovery = &driver.Recovery{Runs: src.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: report,
-		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, MaxRedispatches: cfg.MaxRedispatches, OrphanProbe: cfg.OrphanProbe, Sink: progressSink{x.Progress}}
+		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, MaxRedispatches: cfg.MaxRedispatches, Sink: progressSink{x.Progress}}
 	var responders *driver.Responders
 	if len(cfg.Responders) > 0 {
 		responders = &driver.Responders{Runs: src.Runs, Tools: cfg.Responders, Fail: report}
