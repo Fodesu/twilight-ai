@@ -92,7 +92,7 @@ func (l *Loops) For(ref preset.PresetRef) (*loop.Loop, error) {
 	if l.Planner != nil {
 		settings.BeforePrepare = l.beforePrepare
 	}
-	lp, err := loop.New(l.Executor, builder, settings)
+	lp, err := loop.New(effect.PortsOf(l.Executor), builder, settings)
 	if err != nil {
 		return nil, err
 	}

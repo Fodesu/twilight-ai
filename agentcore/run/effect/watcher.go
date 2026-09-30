@@ -24,6 +24,13 @@ import (
 // goroutines and N requests.
 type Watcher struct {
 	Port ExecutionPort
+	// Settlements is the port's notice stream, when the executor offers one;
+	// nil serves the registered keys by polling alone. Recover is the port's
+	// recovery capability, asked to take an orphaned key back; nil leaves
+	// orphaned keys to an external controller. A Watcher built with both nil
+	// fills them from Port on its first Watch.
+	Settlements SettlementPort
+	Recover     Recoverer
 	// Poll is how often every registered key is read regardless of notices:
 	// the bound on how late a settlement can be seen when the stream is
 	// silent for any reason. Zero selects DefaultWatchPoll.
@@ -33,11 +40,10 @@ type Watcher struct {
 	Reconnect time.Duration
 	// Probe is how long a registered key may wait without an Outcome before
 	// the Watcher attaches it (RUN-EXE-3): an orphaned execution, whose
-	// Worker died holding it, is handed to Port's RecoverExecution when
-	// Port implements Recoverer, so a live drive survives a worker
-	// replacement without an owner takeover (CLD-DEV-2). Each key is probed
-	// at most once per Probe. Zero selects DefaultWatchProbe; negative
-	// disables probing.
+	// Worker died holding it, is handed to Recover when set, so a live
+	// drive survives a worker replacement without an owner takeover
+	// (CLD-DEV-2). Each key is probed at most once per Probe. Zero selects
+	// DefaultWatchProbe; negative disables probing.
 	Probe time.Duration
 
 	mu      sync.Mutex
@@ -90,6 +96,10 @@ func (w *Watcher) Watch(ctx context.Context, key AssignmentKey, deliver func(Out
 	w.keys[key] = entry
 	if !w.running {
 		w.running = true
+		if w.Settlements == nil && w.Recover == nil {
+			ports := PortsOf(w.Port)
+			w.Settlements, w.Recover = ports.Settlements, ports.Recover
+		}
 		w.wake = make(chan struct{}, 1)
 		w.ctx, w.stop = context.WithCancel(context.WithoutCancel(ctx))
 		w.done = make(chan struct{})
@@ -162,8 +172,8 @@ func (w *Watcher) run() {
 		reconnect = DefaultWatchReconnect
 	}
 	notices := make(chan AssignmentKey, 64)
-	if settlements, ok := w.Port.(SettlementPort); ok {
-		go w.stream(settlements, notices, reconnect)
+	if w.Settlements != nil {
+		go w.stream(w.Settlements, notices, reconnect)
 	}
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
@@ -212,16 +222,15 @@ func (w *Watcher) probeStale(probe time.Duration) {
 		}
 	}
 	w.mu.Unlock()
-	recoverer, canRecover := w.Port.(Recoverer)
 	for _, key := range due {
 		if w.ctx.Err() != nil {
 			return
 		}
 		att, err := w.Port.Attach(w.ctx, key)
-		if err != nil || att.State != AttachmentOrphaned || !canRecover {
+		if err != nil || att.State != AttachmentOrphaned || w.Recover == nil {
 			continue
 		}
-		_ = recoverer.RecoverExecution(w.ctx, key)
+		_ = w.Recover.RecoverExecution(w.ctx, key)
 	}
 }
 

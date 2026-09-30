@@ -7,6 +7,7 @@ import (
 
 	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -98,7 +99,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 		drive func(t *testing.T) *Loop
 	}{
 		{"advance", func(t *testing.T) *Loop {
-			l, err := New(newRecordingExecutor(), staticBuilder{}, Settings{})
+			l, err := New(effect.PortsOf(newRecordingExecutor()), staticBuilder{}, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -111,7 +112,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 		{"deliver", func(t *testing.T) *Loop {
 			rt, w := loopRuntime(t)
 			exec := newRecordingExecutor()
-			l, err := New(exec, staticBuilder{}, Settings{})
+			l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}

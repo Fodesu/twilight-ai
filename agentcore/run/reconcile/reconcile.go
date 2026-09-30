@@ -122,11 +122,12 @@ var ErrTargetWithoutEffect = errors.New("reconcile: executing target records no 
 type Reconciler struct {
 	// Executions is the execution store's port, asked once per Executing
 	// target. Nil with Abandon unset is an error whenever a target exists:
-	// "no executor to ask" is not "no execution" (RUN-CMT-7). A port that
-	// also implements effect.Recoverer is asked to take an orphaned record
-	// back; one that does not leaves orphaned records to an external
-	// controller.
+	// "no executor to ask" is not "no execution" (RUN-CMT-7).
 	Executions effect.ExecutionPort
+	// Recover is the executor's recovery capability, asked to take an
+	// orphaned record back; nil leaves orphaned records to an external
+	// controller.
+	Recover effect.Recoverer
 	// Abandon disposes every Executing target without asking an executor and
 	// without closing the keys (RUN-EXE-16). It is the caller's statement
 	// that no executor serves this Scope at all: none holds an attempt, and
@@ -404,14 +405,14 @@ func (r *Reconciler) fail(key effect.AssignmentKey, err error) {
 	}
 }
 
-// recoverOrphan asks the executor to take an orphaned record back, when the
-// port can (effect.Recoverer). It is the Owner acting on its own Run's
-// effect: the record was just observed orphaned, so this is the moment to
-// ask. A failed or impossible recovery leaves the target deferred; giving
-// the execution up is a separate decision, made through Dispose.
+// recoverOrphan asks the executor to take an orphaned record back, when
+// Recover is set. It is the Owner acting on its own Run's effect: the
+// record was just observed orphaned, so this is the moment to ask. A failed
+// or impossible recovery leaves the target deferred; giving the execution
+// up is a separate decision, made through Dispose.
 func (r *Reconciler) recoverOrphan(ctx context.Context, key effect.AssignmentKey) {
-	if rec, ok := r.Executions.(effect.Recoverer); ok {
-		_ = rec.RecoverExecution(ctx, key)
+	if r.Recover != nil {
+		_ = r.Recover.RecoverExecution(ctx, key)
 	}
 }
 

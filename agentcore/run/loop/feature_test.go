@@ -380,7 +380,7 @@ func (f *Feature) ensureLoop() {
 	if f.wrapPort != nil {
 		port = f.wrapPort(port)
 	}
-	l, err := loop.New(port, f.builder, loop.Settings{})
+	l, err := loop.New(effect.PortsOf(port), f.builder, loop.Settings{})
 	if err != nil {
 		f.t.Fatal(err)
 	}

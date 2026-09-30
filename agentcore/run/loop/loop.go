@@ -24,6 +24,10 @@ import (
 // effect inside Advance and never learns which attempt the Executor made
 // for it.
 type Loop struct {
+	// Ports is the effect layer the Loop dispatches through and the optional
+	// capabilities it uses when present: progress frames relayed to the
+	// sink, settled effects acknowledged. Executor is Ports.Execution.
+	Ports    effect.Ports
 	Executor Executor
 	Builder  decision.Builder
 	Settings Settings
@@ -46,10 +50,10 @@ type runSlot struct {
 	refs    int
 }
 
-// New validates the settings (RUN-LOP-1) and binds the executor and the
+// New validates the settings (RUN-LOP-1) and binds the effect ports and the
 // prompt builder.
-func New(exec Executor, builder decision.Builder, settings Settings) (*Loop, error) {
-	if exec == nil {
+func New(ports effect.Ports, builder decision.Builder, settings Settings) (*Loop, error) {
+	if ports.Execution == nil {
 		return nil, errors.New("agent: loop: nil executor")
 	}
 	if builder == nil {
@@ -61,7 +65,7 @@ func New(exec Executor, builder decision.Builder, settings Settings) (*Loop, err
 	if settings.Scheduling.MaxParallel < 0 {
 		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
-	return &Loop{Executor: exec, Builder: builder, Settings: settings, slots: make(map[run.RunID]*runSlot)}, nil
+	return &Loop{Ports: ports, Executor: ports.Execution, Builder: builder, Settings: settings, slots: make(map[run.RunID]*runSlot)}, nil
 }
 
 func (l *Loop) toolScheduling() run.ToolScheduling {
@@ -466,8 +470,8 @@ func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, even
 			}
 			for _, k := range res.Dispatched {
 				pending[k] = l.awaitOutcome(readCtx, k, outcomes)
-				if port, ok := l.Executor.(effect.ProgressPort); ok && events != nil {
-					go l.forwardProgress(readCtx, port, k, events)
+				if l.Ports.Progress != nil && events != nil {
+					go l.forwardProgress(readCtx, l.Ports.Progress, k, events)
 				}
 			}
 		}
@@ -527,7 +531,7 @@ func (l *Loop) watcher() *effect.Watcher {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.ownWatcher == nil {
-		l.ownWatcher = &effect.Watcher{Port: l.Executor}
+		l.ownWatcher = &effect.Watcher{Port: l.Executor, Settlements: l.Ports.Settlements, Recover: l.Ports.Recover}
 	}
 	return l.ownWatcher
 }

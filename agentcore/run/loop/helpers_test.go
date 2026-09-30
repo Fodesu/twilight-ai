@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	. "github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
@@ -171,5 +172,5 @@ func newLoop(t testing.TB, sink EventSink, models local.ModelCatalog, tools loca
 	if err != nil {
 		return nil, err
 	}
-	return New(exec, builder, settings)
+	return New(effect.PortsOf(exec), builder, settings)
 }

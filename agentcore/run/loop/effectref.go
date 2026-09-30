@@ -63,8 +63,8 @@ func (l *Loop) settle(ctx context.Context, rt store.RunStore, events EventSink, 
 	// The settlement is a Session fact: the executor may collect the
 	// effect's record (RUN-EXE-13). A refused or failed acknowledgement
 	// changes nothing here; the executor's time-based collection covers it.
-	if a, ok := l.Executor.(Acknowledger); ok {
-		_ = a.Acknowledge(ctx, AssignmentKey{Session: rt.Scope(), RunID: e.runID, Effect: e.id})
+	if l.Ports.Ack != nil {
+		_ = l.Ports.Ack.Acknowledge(ctx, AssignmentKey{Session: rt.Scope(), RunID: e.runID, Effect: e.id})
 	}
 	if res.Snapshot.State.Status.Terminal() {
 		return res.Snapshot.State.Result, nil

@@ -345,7 +345,7 @@ func TestPlanAsksRecovererForOrphans(t *testing.T) {
 		{effect.AttachmentMissing, 0},
 	} {
 		port := &recoveringPort{fakePort: &fakePort{state: tc.state}}
-		if _, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1")); err != nil {
+		if _, err := (&Reconciler{Executions: port, Recover: port}).Plan(context.Background(), "s", executingModel("c1")); err != nil {
 			t.Fatalf("%s: plan: %v", tc.state, err)
 		}
 		if len(port.recovered) != tc.wantRecovered {
@@ -376,9 +376,9 @@ func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
 		return effect.Outcome{Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "recovered"})}}, nil
 	}
 	delivered := make(chan effect.Outcome, 1)
-	w := &effect.Watcher{Port: port, Poll: 5 * time.Millisecond, Reconnect: 5 * time.Millisecond, Probe: 10 * time.Millisecond}
+	w := &effect.Watcher{Port: port, Recover: port, Poll: 5 * time.Millisecond, Reconnect: 5 * time.Millisecond, Probe: 10 * time.Millisecond}
 	t.Cleanup(w.Close)
-	r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: w, Deliver: func(out effect.Outcome) { delivered <- out }}
+	r := &Reconciler{Executions: port, Recover: port, Lifetime: ctx, Watcher: w, Deliver: func(out effect.Outcome) { delivered <- out }}
 	if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
 		t.Fatal(err)
 	}
