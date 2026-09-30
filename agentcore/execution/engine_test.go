@@ -42,7 +42,9 @@ func newScriptedPort(attachment effect.AttachmentState) *scriptedPort {
 		settled: map[effect.AssignmentKey]effect.Outcome{}, notices: make(chan effect.AssignmentKey, 16)}
 }
 
-func (p *scriptedPort) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) { return nil, nil }
+func (p *scriptedPort) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
+	return nil, nil
+}
 func (p *scriptedPort) Dispatch(_ context.Context, a effect.Assignment) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

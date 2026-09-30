@@ -199,7 +199,7 @@ func (x *engine) Once(ctx context.Context, a effect.Assignment) (effect.Outcome,
 	return out, nil
 }
 
-func (x *engine) Presets() preset.Registry     { return x.presets }
+func (x *engine) Presets() preset.Registry      { return x.presets }
 func (x *engine) Progress() *observe.Progresses { return x.progress }
 
 // Close ends the recovery listeners, then the settlement subscription.

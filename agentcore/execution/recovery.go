@@ -25,9 +25,9 @@ import (
 type recovery struct {
 	// runs is the Run module's Session adapter; recovery binds it to the
 	// Writer the Session was opened with.
-	runs   *sessionstore.SessionRunStore
-	ports  effect.Ports
-	loops  *loops
+	runs  *sessionstore.SessionRunStore
+	ports effect.Ports
+	loops *loops
 	// watcher is where every Reconciler waits for Outcomes: the settlement
 	// subscription shared with the loops; required.
 	watcher *effect.Watcher
