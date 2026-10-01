@@ -26,10 +26,17 @@ import (
 )
 
 // Turns is the Turn protocol the Controller routes inputs into and reads
-// status back from: the Turn module's Commands and Reader.
+// status back from. Each command takes the Writer of the Session it commits
+// to, the caller's ownership capability, so every command lands on the same
+// Writer, epoch and projection view as the other domains' commands and a
+// stale owner is fenced by the Writer itself. Every command returns as soon
+// as its commit landed; driving a Run is not among them. Status needs no
+// ownership.
 type Turns interface {
-	turn.Commands
-	turn.Reader
+	Start(context.Context, writer.Writer, turn.StartRequest) (turn.TurnResult, error)
+	Deliver(context.Context, writer.Writer, turn.DeliverRequest) (turn.TurnResult, error)
+	Stop(context.Context, writer.Writer, turn.StopRequest) (turn.TurnResult, error)
+	Status(context.Context, turn.TurnRef) (turn.TurnResult, error)
 }
 
 // Standing is where a Turn stands for the process that stepped it: what

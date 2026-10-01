@@ -1,11 +1,8 @@
 package turn
 
 import (
-	"context"
-
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/session/writer"
 )
 
 // StartRequest opens a new Turn under Preset with Inputs delivered into its
@@ -53,20 +50,4 @@ type TurnResult struct {
 	Disposition ResumeDisposition
 	End         run.RunEnd
 	Waiting     []run.ResponseRequest
-}
-
-// Commands are the Turn protocol commits. Each takes the Writer of the
-// Session it commits to: the caller's ownership capability, so every command
-// lands on the same Writer, epoch and projection view as the other domains'
-// commands, and a stale owner is fenced by the Writer itself. Driving a Run
-// is not among them: every method returns as soon as its commit landed.
-type Commands interface {
-	Start(context.Context, writer.Writer, StartRequest) (TurnResult, error)
-	Deliver(context.Context, writer.Writer, DeliverRequest) (TurnResult, error)
-	Stop(context.Context, writer.Writer, StopRequest) (TurnResult, error)
-}
-
-// Reader is the Turn status read; it needs no ownership.
-type Reader interface {
-	Status(context.Context, TurnRef) (TurnResult, error)
 }

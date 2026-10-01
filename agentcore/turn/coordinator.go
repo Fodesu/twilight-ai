@@ -258,8 +258,3 @@ func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnVi
 	}
 	return resp, nil
 }
-
-var (
-	_ Commands = (*Coordinator)(nil)
-	_ Reader   = (*Coordinator)(nil)
-)
