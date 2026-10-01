@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/checkpoint"
+	"github.com/felinics/twilight/agent/checkpoint"
 )
 
 // Factory builds a fresh, empty Store for one subtest.

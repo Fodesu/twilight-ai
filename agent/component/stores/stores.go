@@ -10,12 +10,12 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agent/checkpoint"
 	"github.com/felinics/twilight/agent/config"
 	"github.com/felinics/twilight/agent/store/postgres"
 	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/checkpoint"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/run/redispatch"

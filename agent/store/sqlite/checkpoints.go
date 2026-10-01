@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/felinics/twilight/agentcore/checkpoint"
+	"github.com/felinics/twilight/agent/checkpoint"
 )
 
 // CheckpointStore is checkpoint.Store over the checkpoints table: one row

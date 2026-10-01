@@ -3,8 +3,8 @@ package postgres
 import (
 	"context"
 
+	"github.com/felinics/twilight/agent/checkpoint"
 	"github.com/felinics/twilight/agent/store/postgres/internal/db"
-	"github.com/felinics/twilight/agentcore/checkpoint"
 )
 
 // CheckpointStore is checkpoint.Store over the checkpoints table.

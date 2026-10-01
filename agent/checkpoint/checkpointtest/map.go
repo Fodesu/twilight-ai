@@ -6,7 +6,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/felinics/twilight/agentcore/checkpoint"
+	"github.com/felinics/twilight/agent/checkpoint"
 )
 
 // Map is checkpoint.Store over a Go map; the zero value is ready.
@@ -18,10 +18,10 @@ type Map struct {
 var _ checkpoint.Store = (*Map)(nil)
 
 // Load returns the consumer's position in ledger (checkpoint.Store).
-func (m *Map) Load(_ context.Context, consumer, ledger string) (uint64, bool, error) {
+func (m *Map) Load(_ context.Context, consumer, ledger string) (next uint64, ok bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	next, ok := m.next[[2]string{consumer, ledger}]
+	next, ok = m.next[[2]string{consumer, ledger}]
 	return next, ok, nil
 }
 

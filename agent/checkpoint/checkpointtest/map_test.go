@@ -3,7 +3,7 @@ package checkpointtest
 import (
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/checkpoint"
+	"github.com/felinics/twilight/agent/checkpoint"
 )
 
 func TestMapConformance(t *testing.T) {

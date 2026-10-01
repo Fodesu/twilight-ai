@@ -3,9 +3,9 @@ package sqlite_test
 import (
 	"testing"
 
+	"github.com/felinics/twilight/agent/checkpoint"
+	"github.com/felinics/twilight/agent/checkpoint/checkpointtest"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
-	"github.com/felinics/twilight/agentcore/checkpoint"
-	"github.com/felinics/twilight/agentcore/checkpoint/checkpointtest"
 )
 
 func TestCheckpointStoreConformance(t *testing.T) {
