@@ -18,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
@@ -94,6 +95,18 @@ func (h *harness) takeover() (*turn.Coordinator, writer.Writer) {
 	h.open()
 	h.writer() // ownership changes hands on Open of the new Writer, not on a read
 	return old, oldWriter
+}
+
+// recover runs the takeover disposition of rec over every active Run of the
+// current owner and returns the accepted recovery commands.
+func (h *harness) recover(rec *reconcile.Reconciler) (int, error) {
+	h.t.Helper()
+	w := h.writer()
+	snapshots, err := h.rt.ActiveRuns(h.ctx, w)
+	if err != nil {
+		return 0, err
+	}
+	return rec.ReconcileAll(h.ctx, h.rt.Bind(w), snapshots)
 }
 
 func (h *harness) fatal(args ...any) { h.t.Helper(); h.t.Fatal(args...) }
@@ -390,7 +403,7 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 }
 
 // executingModel takes the Run to a model step that is Executing with no
-// worker in this process: the state RecoverInterrupted acts on.
+// worker in this process: the state a takeover acts on.
 func (h *harness) executingModel(runID run.RunID) (run.StepID, run.EffectID) {
 	h.t.Helper()
 	step := h.prepare(runID, nil)

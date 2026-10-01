@@ -186,7 +186,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		cfg := durablePorts(t, app.Config{Sessions: app.SessionPorts{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: takeover}}, Spawn: &spawn.Options{}})
 		// The child's own model execution belongs to process 1's Worker; process
 		// 2's clock runs an hour ahead so that record reads as orphaned, and
-		// RecoverInterrupted asks process 2's Worker (effect.Recoverer) to
+		// the takeover asks process 2's Worker (effect.Recoverer) to
 		// take it back and restart it (RUN-CMT-7, RUN-EXE-6).
 		var clock func() time.Time
 		if takeover {

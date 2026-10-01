@@ -388,8 +388,8 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 	}
 	key := exec.last().Key()
 	// The new owner disposes the attempt (no executor to reattach).
-	if n, err := rt.RecoverInterrupted(ctx, w, &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
-		t.Fatalf("RecoverInterrupted = %d %v", n, err)
+	if n, err := recoverRuns(ctx, t, rt, w, &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
+		t.Fatalf("takeover = %d %v", n, err)
 	}
 	before := len(recordFacts(t, rt, "run-1"))
 	result := mustFreezeResult(t, textResult("late"))
@@ -412,7 +412,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 	}
 }
 
-// Takeover with a reachable executor: the new owner's RecoverInterrupted asks
+// Takeover with a reachable executor: the new owner's takeover asks
 // the executor, which still holds an attempt for the effect, so the step stays
 // Executing under its original effect and that Outcome settles it (RUN-CMT-7).
 func TestTakeoverReattachesRunningAttempt(t *testing.T) {
@@ -447,9 +447,9 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 		reattached = append(reattached, out)
 		mu.Unlock()
 	}
-	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: deliverToNew})
+	n, err := recoverRuns(ctx, t, stack.runtime, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: deliverToNew})
 	if err != nil || n != 0 {
-		t.Fatalf("RecoverInterrupted with a reachable executor = %d %v, want 0 dispositions", n, err)
+		t.Fatalf("takeover with a reachable executor = %d %v, want 0 dispositions", n, err)
 	}
 	if len(exec.attached) != 1 || exec.attached[0].Key() != a.Key() {
 		t.Fatalf("attach asked about %+v, want %+v", exec.attached, a.Key())
@@ -502,9 +502,9 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	}
 	a := exec.last()
 	stack.open(t)
-	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: func(effect.Outcome) {}})
+	n, err := recoverRuns(ctx, t, stack.runtime, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: func(effect.Outcome) {}})
 	if err != nil || n != 1 || len(exec.attached) != 1 {
-		t.Fatalf("RecoverInterrupted = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
+		t.Fatalf("takeover = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
 	}
 	// The unreachable attempt is withdrawn: the Run is Open, the step is not
 	// counted, and the next Advance plans again (TRN-DUR-1).

@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agentcore/module"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
@@ -173,4 +174,15 @@ func newLoop(t testing.TB, models local.ModelCatalog, tools local.ToolCatalog, b
 		return nil, err
 	}
 	return New(effect.PortsOf(exec), builder, settings)
+}
+
+// recoverRuns runs the takeover disposition of rec over every active Run of
+// the Session w owns and returns the accepted recovery commands.
+func recoverRuns(ctx context.Context, t testing.TB, rt *sessionstore.SessionRunStore, w writer.Writer, rec *reconcile.Reconciler) (int, error) {
+	t.Helper()
+	snapshots, err := rt.ActiveRuns(ctx, w)
+	if err != nil {
+		return 0, err
+	}
+	return rec.ReconcileAll(ctx, rt.Bind(w), snapshots)
 }

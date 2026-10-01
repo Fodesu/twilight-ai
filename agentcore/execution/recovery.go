@@ -269,11 +269,14 @@ func (r *recovery) Open(ctx context.Context, w writer.Writer) (int, error) {
 	return n, err
 }
 
-// Recover runs the takeover disposition for the Session: the reconciler
-// compares every Executing target with the execution store and disposes
-// only what no record answers for. It is the explicit recovery behind an
-// unknown dispatch boundary -- a drive kept the call Executing, so the
-// durable record, not a duplicate dispatch, decides the settlement.
+// Recover runs the takeover disposition for the Session (RUN-CMT-7): every
+// Executing target of its active Runs is compared with the execution store
+// and only what no record answers for is disposed. The recovery commands
+// are identified by the effects they dispose, so a repeated takeover, or a
+// later owner's, replays them idempotently. It is also the explicit
+// recovery behind an unknown dispatch boundary -- a drive kept the call
+// Executing, so the durable record, not a duplicate dispatch, decides the
+// settlement. It returns the number of accepted recovery commands.
 func (r *recovery) Recover(ctx context.Context, w writer.Writer) (int, error) {
 	lt := r.lifetimeOf(w)
 	rec := &reconcile.Reconciler{Executions: r.ports.Execution, Recover: r.ports.Recover, Missing: r.missingEffects}
@@ -283,7 +286,21 @@ func (r *recovery) Recover(ctx context.Context, w writer.Writer) (int, error) {
 		rec.Attempts, rec.Epoch, rec.MaxRedispatches = r.redispatches, w.Epoch(), r.maxRedispatches
 		rec.Redispatch = func(ctx context.Context, key effect.AssignmentKey) error { return r.redispatch(ctx, lt.w, key) }
 	}
-	return r.runs.RecoverInterrupted(ctx, w, &awaiting{r: r, lt: lt, rec: rec})
+	snapshots, err := r.runs.ActiveRuns(ctx, w)
+	if err != nil {
+		return 0, err
+	}
+	a := &awaiting{r: r, lt: lt, rec: rec}
+	st := r.runs.Bind(w)
+	n := 0
+	for i := range snapshots {
+		accepted, err := a.reconcile(ctx, st, &snapshots[i])
+		n += accepted
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // awaiting is the takeover disposition of one Session: the reconciler
@@ -296,7 +313,7 @@ type awaiting struct {
 	rec *reconcile.Reconciler
 }
 
-func (a *awaiting) Reconcile(ctx context.Context, st store.RunStore, snapshot *store.Snapshot) (int, error) {
+func (a *awaiting) reconcile(ctx context.Context, st store.RunStore, snapshot *store.Snapshot) (int, error) {
 	if err := a.lt.ctx.Err(); err != nil {
 		return 0, err
 	}

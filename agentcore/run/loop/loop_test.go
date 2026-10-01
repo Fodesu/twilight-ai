@@ -451,8 +451,8 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	}
 	// The owner's takeover disposition withdraws the orphaned step; the next
 	// Run plans again and calls the model exactly once (RUN-CMT-7).
-	if n, err := rt.RecoverInterrupted(context.Background(), w, &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
-		t.Fatalf("RecoverInterrupted = %d %v", n, err)
+	if n, err := recoverRuns(context.Background(), t, rt.SessionRunStore, w, &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
+		t.Fatalf("takeover = %d %v", n, err)
 	}
 	rt.loseModelStart = false // the transport is healthy again
 	if _, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1"); err != nil {

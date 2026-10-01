@@ -18,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
@@ -111,6 +112,18 @@ func (h *harness) takeover() (*sessionstore.SessionRunStore, writer.Writer) {
 	// when it reads: reads take no lease (OWN-HDL-2).
 	h.writer()
 	return old, oldWriter
+}
+
+// recover runs the takeover disposition of rec over every active Run of the
+// current owner and returns the accepted recovery commands.
+func (h *harness) recover(rec *reconcile.Reconciler) (int, error) {
+	h.t.Helper()
+	w := h.writer()
+	snapshots, err := h.rt.ActiveRuns(h.ctx, w)
+	if err != nil {
+		return 0, err
+	}
+	return rec.ReconcileAll(h.ctx, h.rt.Bind(w), snapshots)
 }
 
 func (h *harness) fatal(args ...any) { h.t.Helper(); h.t.Fatal(args...) }

@@ -50,8 +50,8 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	<-invoker.started
 
 	stack.open(t)
-	if n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
-		t.Fatalf("RecoverInterrupted = %d %v, want 1", n, err)
+	if n, err := recoverRuns(context.Background(), t, stack.runtime, stack.writer(t), &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
+		t.Fatalf("takeover = %d %v, want 1", n, err)
 	}
 	close(invoker.release)
 

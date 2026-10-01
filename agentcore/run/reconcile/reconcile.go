@@ -145,7 +145,7 @@ type Reconciler struct {
 	// Fail receives a kept target whose Outcome will never be readable: the
 	// executor answers its read definitively (effect.ErrExecutionNotFound,
 	// effect.ErrOutcomeUnavailable). The target stays Executing; the next
-	// RecoverInterrupted plans it again, and a record that is gone by then is
+	// takeover plans it again, and a record that is gone by then is
 	// disposed. Nil discards the report.
 	Fail func(effect.AssignmentKey, error)
 	// Watcher is where kept targets wait for their Outcome: one per
@@ -446,7 +446,8 @@ func Apply(ctx context.Context, st store.RunStore, decisions []Decision) (int, e
 
 // Reconcile is Plan then Apply for one Run: the takeover disposition of its
 // Executing targets (RUN-CMT-7). It returns the number of accepted recovery
-// commands.
+// commands. Each command is identified by the effect it disposes (RUN-WIR-1),
+// so a repeated or a later takeover replays the same commands idempotently.
 func (r *Reconciler) Reconcile(ctx context.Context, st store.RunStore, snapshot *store.Snapshot) (int, error) {
 	if r.Lifetime != nil {
 		if err := r.Lifetime.Err(); err != nil {
@@ -458,4 +459,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, st store.RunStore, snapshot 
 		return 0, err
 	}
 	return Apply(ctx, st, decisions)
+}
+
+// ReconcileAll is Reconcile over every snapshot: the takeover disposition of
+// a Scope's active Runs. It returns the accepted recovery commands of all of
+// them; an error stops it with the count so far.
+func (r *Reconciler) ReconcileAll(ctx context.Context, st store.RunStore, snapshots []store.Snapshot) (int, error) {
+	n := 0
+	for i := range snapshots {
+		accepted, err := r.Reconcile(ctx, st, &snapshots[i])
+		n += accepted
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }

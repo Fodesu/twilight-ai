@@ -641,9 +641,9 @@ func testTakeover(t *testing.T, factory Factory) {
 	h.startTool("r2", toolStep, ids[0])
 
 	h.takeover()
-	n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Abandon: true})
+	n, err := h.recover(&reconcile.Reconciler{Abandon: true})
 	if err != nil || n != 2 {
-		t.Fatalf("RecoverInterrupted = %d %v, want 2", n, err)
+		t.Fatalf("takeover = %d %v, want 2", n, err)
 	}
 	// The unreachable model attempt is withdrawn: the Run is Open again with
 	// the late input still pending and the step no longer counted, so the
@@ -698,13 +698,13 @@ func testTakeover(t *testing.T, factory Factory) {
 	}
 	// Same owner repeats: idempotent, nothing new.
 	head := h.head()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Abandon: true}); err != nil || n != 0 || h.head() != head {
-		t.Fatalf("second RecoverInterrupted = %d %v", n, err)
+	if n, err := h.recover(&reconcile.Reconciler{Abandon: true}); err != nil || n != 0 || h.head() != head {
+		t.Fatalf("second takeover = %d %v", n, err)
 	}
 	// Another takeover with nothing Executing does nothing.
 	h.takeover()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Abandon: true}); err != nil || n != 0 {
-		t.Fatalf("RecoverInterrupted with no executing target = %d %v", n, err)
+	if n, err := h.recover(&reconcile.Reconciler{Abandon: true}); err != nil || n != 0 {
+		t.Fatalf("takeover with no executing target = %d %v", n, err)
 	}
 }
 
@@ -756,9 +756,9 @@ func testReattach(t *testing.T, factory Factory) {
 
 	h.takeover()
 	port := &livePort{live: map[run.EffectID]bool{modelEff: true}}
-	n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Executions: port})
+	n, err := h.recover(&reconcile.Reconciler{Executions: port})
 	if err != nil || n != 1 {
-		t.Fatalf("RecoverInterrupted = %d %v, want exactly the tool disposed", n, err)
+		t.Fatalf("takeover = %d %v, want exactly the tool disposed", n, err)
 	}
 	if len(port.asked) != 2 {
 		t.Fatalf("takeover asked about %d targets, want 2", len(port.asked))

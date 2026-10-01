@@ -14,7 +14,7 @@ import (
 )
 
 // The owner process dies while a tool call is Executing. A new owner takes
-// the Session over, RecoverInterrupted settles the call as Unknown, a fresh
+// the Session over, the takeover settles the call as Unknown, a fresh
 // Loop finishes the Run, and the dead owner's late settlement is fenced with
 // ErrOwnershipLost (RUN-CMT-6/7, RUN-LOP-5).
 func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
@@ -48,13 +48,13 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 
 	// The old owner is presumed dead; a new owner opens with Takeover.
 	stack.open(t)
-	n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), &reconcile.Reconciler{Abandon: true})
+	n, err := recoverRuns(context.Background(), t, stack.runtime, stack.writer(t), &reconcile.Reconciler{Abandon: true})
 	if err != nil || n != 1 {
-		t.Fatalf("RecoverInterrupted = %d %v, want 1", n, err)
+		t.Fatalf("takeover = %d %v, want 1", n, err)
 	}
-	again, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), &reconcile.Reconciler{Abandon: true})
+	again, err := recoverRuns(context.Background(), t, stack.runtime, stack.writer(t), &reconcile.Reconciler{Abandon: true})
 	if err != nil || again != 0 {
-		t.Fatalf("second RecoverInterrupted = %d %v, want 0", again, err)
+		t.Fatalf("second takeover = %d %v, want 0", again, err)
 	}
 	snap := loadState(t, stack.runtime, stack.writer(t), "run-1")
 	if _, open := snap.State.Current.(Open); !open {
