@@ -54,6 +54,8 @@ const (
 )
 
 // Decision is one target's verdict and, for Dispose, the recovery command.
+// A target kept or deferred stays Executing under its effect; waiting on
+// that effect's Outcome is the caller's.
 type Decision struct {
 	Target   plan.RecoveryTarget
 	Observed effect.AttachmentState
@@ -65,15 +67,6 @@ type Decision struct {
 // to ask and no Abandon: an executor that cannot be reached proves nothing
 // about the executions it may hold, so the targets cannot be disposed.
 var ErrNoExecutionPort = errors.New("reconcile: executing targets but no execution port to ask; set Abandon to dispose without proof")
-
-// ErrDeliverWithoutLifetime reports Deliver set without the Lifetime that
-// bounds the registrations it needs: kept targets would wait with nothing
-// ending the wait, and nothing would say so.
-var ErrDeliverWithoutLifetime = errors.New("reconcile: Deliver set without a Lifetime to bound the outcome waits")
-
-// ErrDeliverWithoutWatcher reports Deliver set without the Watcher that
-// carries the executor's settlement notices to it.
-var ErrDeliverWithoutWatcher = errors.New("reconcile: Deliver set without a Watcher on the execution port")
 
 // ErrAbandonWithExecutor reports Abandon set beside an Executions port: with
 // an executor to ask, disposal must go through Abort (RUN-EXE-16), and a
@@ -138,27 +131,6 @@ type Reconciler struct {
 	// skip Abort when an executor exists: Abandon beside a non-nil
 	// Executions is ErrAbandonWithExecutor.
 	Abandon bool
-	// Deliver receives the Outcome of every kept target once it can be read;
-	// the caller settles it through the Loop. Nil means kept targets stay
-	// Executing until something else delivers their Outcome.
-	Deliver func(effect.Outcome)
-	// Fail receives a kept target whose Outcome will never be readable: the
-	// executor answers its read definitively (effect.ErrExecutionNotFound,
-	// effect.ErrOutcomeUnavailable). The target stays Executing; the next
-	// takeover plans it again, and a record that is gone by then is
-	// disposed. Nil discards the report.
-	Fail func(effect.AssignmentKey, error)
-	// Watcher is where kept targets wait for their Outcome: one per
-	// (owner, executor), shared by every Plan and by the Loop, so waiting on
-	// N effects costs one settlement subscription rather than N readers.
-	// Required with Deliver (ErrDeliverWithoutWatcher); its Port must be
-	// Executions.
-	Watcher *effect.Watcher
-	// Lifetime bounds the registrations Plan makes with Watcher: when it
-	// ends, kept targets not yet delivered are dropped. Required with
-	// Deliver (ErrDeliverWithoutLifetime).
-	Lifetime context.Context
-
 	// Missing is the policy for an effect the executor holds nothing for.
 	// The zero value disposes (RUN-CMT-7); RedispatchMissing requires
 	// Redispatch and Attempts (RUN-EXE-15).
@@ -229,12 +201,6 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *store.
 	if err := r.checkMissingPolicy(); err != nil {
 		return nil, err
 	}
-	if r.Deliver != nil && r.Lifetime == nil {
-		return nil, ErrDeliverWithoutLifetime
-	}
-	if r.Deliver != nil && r.Watcher == nil {
-		return nil, ErrDeliverWithoutWatcher
-	}
 	if r.Abandon && r.Executions != nil {
 		return nil, ErrAbandonWithExecutor
 	}
@@ -284,9 +250,6 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *store.
 				if d.Verdict == Defer {
 					r.recoverOrphan(ctx, assignment.Key())
 				}
-			}
-			if d.Verdict != Dispose {
-				r.awaitOutcome(assignment.Key())
 			}
 		}
 		if d.Verdict == Dispose {
@@ -374,37 +337,6 @@ func (r *Reconciler) now() int64 {
 	return time.Now().UnixMilli()
 }
 
-// awaitOutcome registers a kept effect with the Watcher: its Outcome goes to
-// Deliver once the executor's settlement notice, or the Watcher's periodic
-// read, finds it; a definitive read (the executor holds nothing readable
-// for the key) goes to Fail. Nothing here holds a request open for the
-// length of the execution, and nothing here probes the record: the Watcher
-// re-attaches every key it holds and asks for the recovery of an orphaned
-// one (RUN-EXE-6). Lifetime ends the registration.
-func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
-	if r.Deliver == nil || r.Lifetime == nil || r.Watcher == nil {
-		return
-	}
-	cancel := r.Watcher.Watch(r.Lifetime, key,
-		func(out effect.Outcome) {
-			if r.Lifetime.Err() == nil {
-				r.Deliver(out)
-			}
-		},
-		func(err error) {
-			if r.Lifetime.Err() == nil {
-				r.fail(key, err)
-			}
-		})
-	context.AfterFunc(r.Lifetime, cancel)
-}
-
-func (r *Reconciler) fail(key effect.AssignmentKey, err error) {
-	if r.Fail != nil {
-		r.Fail(key, err)
-	}
-}
-
 // recoverOrphan asks the executor to take an orphaned record back, when
 // Recover is set. It is the Owner acting on its own Run's effect: the
 // record was just observed orphaned, so this is the moment to ask. A failed
@@ -449,11 +381,6 @@ func Apply(ctx context.Context, st store.RunStore, decisions []Decision) (int, e
 // commands. Each command is identified by the effect it disposes (RUN-WIR-1),
 // so a repeated or a later takeover replays the same commands idempotently.
 func (r *Reconciler) Reconcile(ctx context.Context, st store.RunStore, snapshot *store.Snapshot) (int, error) {
-	if r.Lifetime != nil {
-		if err := r.Lifetime.Err(); err != nil {
-			return 0, err
-		}
-	}
 	decisions, err := r.Plan(ctx, st.Scope(), snapshot)
 	if err != nil {
 		return 0, err

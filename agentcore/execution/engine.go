@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/effect/watch"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
@@ -131,7 +132,7 @@ type Config struct {
 	MaxRedispatches int
 	// OrphanProbe is how often the Watcher attaches a key still waiting and
 	// hands an orphaned one to RecoverExecution; zero selects
-	// effect.DefaultWatchProbe.
+	// watch.DefaultProbe.
 	OrphanProbe time.Duration
 }
 
@@ -139,7 +140,7 @@ type Config struct {
 type engine struct {
 	ports    effect.Ports
 	presets  preset.Registry
-	watcher  *effect.Watcher
+	watcher  *watch.Watcher
 	driver   *driver
 	recovery *recovery
 	progress *observe.Progresses
@@ -163,7 +164,7 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 		presets = preset.NewMemory()
 	}
 	x := &engine{ports: cfg.Executor, presets: presets, progress: observe.NewProgresses()}
-	x.watcher = &effect.Watcher{Port: cfg.Executor.Execution, Settlements: cfg.Executor.Settlements, Recover: cfg.Executor.Recover, Probe: cfg.OrphanProbe}
+	x.watcher = &watch.Watcher{Port: cfg.Executor.Execution, Settlements: cfg.Executor.Settlements, Recover: cfg.Executor.Recover, Probe: cfg.OrphanProbe}
 	// Failures the components report outside any caller's call reach the
 	// caller's callback, which owns their delivery to the transient stream;
 	// without one they reach the stream directly (OBS-1).

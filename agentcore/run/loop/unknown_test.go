@@ -54,7 +54,7 @@ func (p *refusingPort) Dispatch(ctx context.Context, a effect.Assignment) error 
 }
 
 // Settlements keeps the wrapped port's notification capability visible
-// through the wrapper, so the Loop's Watcher does not fall back to polling.
+// through the wrapper, so the owner's watch does not fall back to polling.
 func (p *refusingPort) Settlements(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
 	if s, ok := p.ExecutionPort.(effect.SettlementPort); ok {
 		return s.Settlements(ctx, epoch, after, fn)

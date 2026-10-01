@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/effect/watch"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
@@ -35,7 +36,7 @@ type recovery struct {
 	loops *loops
 	// watcher is where every Reconciler waits for Outcomes: the settlement
 	// subscription shared with the loops; required.
-	watcher *effect.Watcher
+	watcher *watch.Watcher
 	// fail receives failures of work done outside any caller's call, such as
 	// settling a reattached Outcome; nil discards them.
 	fail func(session.SessionID, error)

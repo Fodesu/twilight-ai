@@ -18,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/effect/watch"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/sdk"
@@ -176,7 +177,7 @@ func assignment() effect.Assignment {
 }
 
 func awaitOutcome(ctx context.Context, port effect.ExecutionPort, key effect.AssignmentKey) (effect.Outcome, error) {
-	w := &effect.Watcher{Port: port, Poll: 5 * time.Millisecond}
+	w := &watch.Watcher{Port: port, Poll: 5 * time.Millisecond}
 	defer w.Close()
 	return w.Await(ctx, key)
 }

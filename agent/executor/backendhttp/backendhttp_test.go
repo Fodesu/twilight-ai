@@ -18,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/effect/watch"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/sdk"
@@ -163,7 +164,8 @@ func modelAssignment(effectID run.EffectID) effect.Assignment {
 // await waits for key's Outcome with a Watcher over port: the port's
 // settlement stream when it has one, a read every poll otherwise.
 func await(ctx context.Context, port effect.ExecutionPort, key effect.AssignmentKey, poll time.Duration) (effect.Outcome, error) {
-	w := &effect.Watcher{Port: port, Poll: poll}
+	ports := effect.PortsOf(port)
+	w := &watch.Watcher{Port: port, Settlements: ports.Settlements, Poll: poll}
 	defer w.Close()
 	return w.Await(ctx, key)
 }

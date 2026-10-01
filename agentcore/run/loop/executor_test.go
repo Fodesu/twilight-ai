@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/sdkconv"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/effect/watch"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -437,17 +438,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reattached []effect.Outcome
-	var mu sync.Mutex
-	deliverToNew := func(out effect.Outcome) {
-		if _, err := newLoop.Deliver(ctx, stack.runtime.Bind(stack.writer(t)), out); err != nil {
-			t.Errorf("reattached deliver: %v", err)
-		}
-		mu.Lock()
-		reattached = append(reattached, out)
-		mu.Unlock()
-	}
-	n, err := recoverRuns(ctx, t, stack.runtime, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: deliverToNew})
+	n, err := recoverRuns(ctx, t, stack.runtime, stack.writer(t), &reconcile.Reconciler{Executions: exec})
 	if err != nil || n != 0 {
 		t.Fatalf("takeover with a reachable executor = %d %v, want 0 dispositions", n, err)
 	}
@@ -459,22 +450,20 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 		t.Fatalf("step after reattach = %+v, want Executing under the original effect", step)
 	}
 
-	// The attempt finishes on the executor; its Outcome reaches the new owner.
+	// The attempt finishes on the executor; the new owner reads its Outcome
+	// through a watch over the same port and settles the Run with it.
 	result := mustFreezeResult(t, textResult("done"))
 	exec.deliver(t, a.Key(), effect.Outcome{Result: effect.ModelSucceeded{Result: result}})
-	deadline := time.After(2 * time.Second)
-	for {
-		mu.Lock()
-		got := len(reattached)
-		mu.Unlock()
-		if got == 1 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("reattached outcomes = %d", got)
-		case <-time.After(time.Millisecond):
-		}
+	watcher := &watch.Watcher{Port: exec, Poll: 5 * time.Millisecond}
+	t.Cleanup(watcher.Close)
+	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	out, err := watcher.Await(waitCtx, a.Key())
+	if err != nil {
+		t.Fatalf("await reattached outcome: %v", err)
+	}
+	if _, err := newLoop.Deliver(ctx, stack.runtime.Bind(stack.writer(t)), out); err != nil {
+		t.Fatalf("reattached deliver: %v", err)
 	}
 	record, err := stack.runtime.Record(ctx, testSession, "run-1")
 	if err != nil || record.Snapshot.State.Status != RunCompleted {
@@ -502,7 +491,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	}
 	a := exec.last()
 	stack.open(t)
-	n, err := recoverRuns(ctx, t, stack.runtime, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: func(effect.Outcome) {}})
+	n, err := recoverRuns(ctx, t, stack.runtime, stack.writer(t), &reconcile.Reconciler{Executions: exec})
 	if err != nil || n != 1 || len(exec.attached) != 1 {
 		t.Fatalf("takeover = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
 	}

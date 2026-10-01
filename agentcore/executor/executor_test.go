@@ -16,6 +16,7 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/effect/watch"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/sdk"
@@ -177,7 +178,7 @@ func (b *testBackend) lastKey() effect.AssignmentKey {
 // a test that wants the eventual Outcome waits with a Watcher over the port,
 // which uses its settlement stream and a short read interval otherwise.
 func awaitOutcome(ctx context.Context, port effect.ExecutionPort, key effect.AssignmentKey) (effect.Outcome, error) {
-	w := &effect.Watcher{Port: port, Poll: 5 * time.Millisecond}
+	w := &watch.Watcher{Port: port, Poll: 5 * time.Millisecond}
 	defer w.Close()
 	return w.Await(ctx, key)
 }

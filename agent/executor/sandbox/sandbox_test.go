@@ -20,6 +20,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/effect/watch"
 	"github.com/felinics/twilight/agentcore/run/schema"
 )
 
@@ -80,7 +81,7 @@ func (f *fixture) outcome(a effect.Assignment) effect.Outcome {
 	if err := f.worker.Dispatch(f.ctx, a); err != nil {
 		f.t.Fatalf("dispatch = %v", err)
 	}
-	w := &effect.Watcher{Port: f.worker, Poll: 5 * time.Millisecond}
+	w := &watch.Watcher{Port: f.worker, Poll: 5 * time.Millisecond}
 	defer w.Close()
 	out, err := w.Await(f.ctx, a.Key())
 	if err != nil {

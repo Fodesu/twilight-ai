@@ -1,10 +1,14 @@
-package effect
+// Package watch waits on the Outcomes of many effects over one execution
+// port: one settlement subscription, one read per key, however many wait.
+package watch
 
 import (
 	"context"
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
 // Watcher turns one ExecutionPort into a source of Outcomes for many keys
@@ -23,31 +27,30 @@ import (
 // of waiting on N effects is one connection and N map entries, not N
 // goroutines and N requests.
 type Watcher struct {
-	Port ExecutionPort
+	Port effect.ExecutionPort
 	// Settlements is the port's notice stream, when the executor offers one;
 	// nil serves the registered keys by polling alone. Recover is the port's
 	// recovery capability, asked to take an orphaned key back; nil leaves
-	// orphaned keys to an external controller. A Watcher built with both nil
-	// fills them from Port on its first Watch.
-	Settlements SettlementPort
-	Recover     Recoverer
+	// orphaned keys to an external controller.
+	Settlements effect.SettlementPort
+	Recover     effect.Recoverer
 	// Poll is how often every registered key is read regardless of notices:
 	// the bound on how late a settlement can be seen when the stream is
-	// silent for any reason. Zero selects DefaultWatchPoll.
+	// silent for any reason. Zero selects DefaultPoll.
 	Poll time.Duration
 	// Reconnect is the pause before the stream is opened again after it
-	// ends or fails. Zero selects DefaultWatchReconnect.
+	// ends or fails. Zero selects DefaultReconnect.
 	Reconnect time.Duration
 	// Probe is how long a registered key may wait without an Outcome before
 	// the Watcher attaches it (RUN-EXE-3): an orphaned execution, whose
 	// Worker died holding it, is handed to Recover when set, so a live
 	// drive survives a worker replacement without an owner takeover
 	// (CLD-DEV-2). Each key is probed at most once per Probe. Zero selects
-	// DefaultWatchProbe; negative disables probing.
+	// DefaultProbe; negative disables probing.
 	Probe time.Duration
 
 	mu      sync.Mutex
-	keys    map[AssignmentKey]*waiting
+	keys    map[effect.AssignmentKey]*waiting
 	running bool
 	// wake asks the loop to read every registered key now: a key was just
 	// registered or the stream told us something.
@@ -61,18 +64,18 @@ type Watcher struct {
 	done  chan struct{}
 }
 
-// DefaultWatchPoll is the Watcher's read interval when no notice arrives.
-const DefaultWatchPoll = 30 * time.Second
+// DefaultPoll is the Watcher's read interval when no notice arrives.
+const DefaultPoll = 30 * time.Second
 
-// DefaultWatchReconnect is the Watcher's pause before reopening its stream.
-const DefaultWatchReconnect = time.Second
+// DefaultReconnect is the Watcher's pause before reopening its stream.
+const DefaultReconnect = time.Second
 
-// DefaultWatchProbe is how long a key waits before the Watcher attaches it.
-const DefaultWatchProbe = 15 * time.Second
+// DefaultProbe is how long a key waits before the Watcher attaches it.
+const DefaultProbe = 15 * time.Second
 
-// watch is one registration on a key.
-type watch struct {
-	deliver func(Outcome)
+// registration is one wait on a key.
+type registration struct {
+	deliver func(effect.Outcome)
 	// fail receives a read the port answers definitively: nothing will ever
 	// be read for this key. The registration is dropped afterwards.
 	fail func(error)
@@ -82,7 +85,7 @@ type watch struct {
 // registrations share: a key is read and probed once however many wait on
 // it, and every one of them receives what the read settles.
 type waiting struct {
-	watchers map[*watch]struct{}
+	watchers map[*registration]struct{}
 	// since is when the key was first registered; probed when it was last
 	// attached by the probe.
 	since  time.Time
@@ -100,24 +103,20 @@ type waiting struct {
 // it. A key registered more than once is read once and every registration
 // receives the answer. The returned cancel drops this registration without
 // delivering.
-func (w *Watcher) Watch(ctx context.Context, key AssignmentKey, deliver func(Outcome), fail func(error)) (cancel func()) {
+func (w *Watcher) Watch(ctx context.Context, key effect.AssignmentKey, deliver func(effect.Outcome), fail func(error)) (cancel func()) {
 	w.mu.Lock()
 	if w.keys == nil {
-		w.keys = make(map[AssignmentKey]*waiting)
+		w.keys = make(map[effect.AssignmentKey]*waiting)
 	}
 	ks := w.keys[key]
 	if ks == nil {
-		ks = &waiting{watchers: make(map[*watch]struct{}), since: time.Now()}
+		ks = &waiting{watchers: make(map[*registration]struct{}), since: time.Now()}
 		w.keys[key] = ks
 	}
-	entry := &watch{deliver: deliver, fail: fail}
+	entry := &registration{deliver: deliver, fail: fail}
 	ks.watchers[entry] = struct{}{}
 	if !w.running {
 		w.running = true
-		if w.Settlements == nil && w.Recover == nil {
-			ports := PortsOf(w.Port)
-			w.Settlements, w.Recover = ports.Settlements, ports.Recover
-		}
 		w.wake = make(chan struct{}, 1)
 		w.ctx, w.stop = context.WithCancel(context.WithoutCancel(ctx))
 		w.done = make(chan struct{})
@@ -141,31 +140,31 @@ func (w *Watcher) Watch(ctx context.Context, key AssignmentKey, deliver func(Out
 	}
 }
 
-// Close stops the stream and the polling and drops every registration.
-// The Watcher can be used again afterwards.
 // Await is the synchronous form of Watch for a caller that dispatched one
 // effect and has nothing else to do until it answers: it registers key and
 // returns its Outcome, the definitive read error of a key the executor will
 // never answer for, or ctx's error. It shares the Watcher's one subscription
 // with every other waiter instead of opening its own.
-func (w *Watcher) Await(ctx context.Context, key AssignmentKey) (Outcome, error) {
+func (w *Watcher) Await(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	type answer struct {
-		out Outcome
+		out effect.Outcome
 		err error
 	}
 	done := make(chan answer, 1)
 	cancel := w.Watch(ctx, key,
-		func(out Outcome) { done <- answer{out: out} },
+		func(out effect.Outcome) { done <- answer{out: out} },
 		func(err error) { done <- answer{err: err} })
 	defer cancel()
 	select {
 	case a := <-done:
 		return a.out, a.err
 	case <-ctx.Done():
-		return Outcome{}, ctx.Err()
+		return effect.Outcome{}, ctx.Err()
 	}
 }
 
+// Close stops the stream and the polling and drops every registration.
+// The Watcher can be used again afterwards.
 func (w *Watcher) Close() {
 	w.mu.Lock()
 	if !w.running {
@@ -186,13 +185,13 @@ func (w *Watcher) run() {
 	defer close(w.done)
 	poll := w.Poll
 	if poll <= 0 {
-		poll = DefaultWatchPoll
+		poll = DefaultPoll
 	}
 	reconnect := w.Reconnect
 	if reconnect <= 0 {
-		reconnect = DefaultWatchReconnect
+		reconnect = DefaultReconnect
 	}
-	notices := make(chan AssignmentKey, 64)
+	notices := make(chan effect.AssignmentKey, 64)
 	if w.Settlements != nil {
 		go w.stream(w.Settlements, notices, reconnect)
 	}
@@ -200,7 +199,7 @@ func (w *Watcher) run() {
 	defer ticker.Stop()
 	probe := w.Probe
 	if probe == 0 {
-		probe = DefaultWatchProbe
+		probe = DefaultProbe
 	}
 	var probes <-chan time.Time
 	if probe > 0 {
@@ -232,7 +231,7 @@ func (w *Watcher) run() {
 func (w *Watcher) probeStale(probe time.Duration) {
 	now := time.Now()
 	w.mu.Lock()
-	var due []AssignmentKey
+	var due []effect.AssignmentKey
 	for key, ks := range w.keys {
 		last := ks.probed
 		if last.IsZero() {
@@ -257,9 +256,9 @@ func (w *Watcher) probeStale(probe time.Duration) {
 		ask := false
 		if ok {
 			switch att.State {
-			case AttachmentOrphaned:
+			case effect.AttachmentOrphaned:
 				ask, ks.asked = !ks.asked, true
-			case AttachmentActive:
+			case effect.AttachmentActive:
 				ks.asked = false
 			}
 		}
@@ -273,18 +272,18 @@ func (w *Watcher) probeStale(probe time.Duration) {
 // stream keeps one Settlements subscription open, forwarding notices for
 // registered keys and asking for a full read whenever it (re)connects, so
 // what settled while it was down is not waited for.
-func (w *Watcher) stream(port SettlementPort, notices chan<- AssignmentKey, reconnect time.Duration) {
+func (w *Watcher) stream(port effect.SettlementPort, notices chan<- effect.AssignmentKey, reconnect time.Duration) {
 	for {
 		w.mu.Lock()
 		epoch, after := w.epoch, w.after
 		w.mu.Unlock()
-		err := port.Settlements(w.ctx, epoch, after, func(s Settlement) bool {
+		err := port.Settlements(w.ctx, epoch, after, func(s effect.Settlement) bool {
 			w.mu.Lock()
 			changed := w.epoch != "" && s.Epoch != w.epoch
 			w.epoch, w.after = s.Epoch, s.Sequence
 			_, registered := w.keys[s.Key]
 			w.mu.Unlock()
-			if s.Key == (AssignmentKey{}) {
+			if s.Key == (effect.AssignmentKey{}) {
 				// The stream's announcement: connected to another
 				// incarnation than the one the position came from, so what
 				// settled in between is read now rather than at the poll.
@@ -308,7 +307,7 @@ func (w *Watcher) stream(port SettlementPort, notices chan<- AssignmentKey, reco
 		if w.ctx.Err() != nil {
 			return
 		}
-		if errors.Is(err, ErrSettlementsEvicted) {
+		if errors.Is(err, effect.ErrSettlementsEvicted) {
 			// The ring moved past us: forget the position and re-read.
 			w.mu.Lock()
 			w.epoch, w.after = "", 0
@@ -331,7 +330,7 @@ func (w *Watcher) stream(port SettlementPort, notices chan<- AssignmentKey, reco
 // readAll reads every registered key once.
 func (w *Watcher) readAll() {
 	w.mu.Lock()
-	keys := make([]AssignmentKey, 0, len(w.keys))
+	keys := make([]effect.AssignmentKey, 0, len(w.keys))
 	for key := range w.keys {
 		keys = append(keys, key)
 	}
@@ -346,7 +345,7 @@ func (w *Watcher) readAll() {
 
 // read reads one key and settles its registrations when the answer is
 // final.
-func (w *Watcher) read(key AssignmentKey) {
+func (w *Watcher) read(key effect.AssignmentKey) {
 	w.mu.Lock()
 	ks, ok := w.keys[key]
 	w.mu.Unlock()
@@ -356,7 +355,7 @@ func (w *Watcher) read(key AssignmentKey) {
 	out, err := w.Port.GetOutcome(w.ctx, key)
 	switch {
 	case err == nil:
-	case errors.Is(err, ErrOutcomeNotReady):
+	case errors.Is(err, effect.ErrOutcomeNotReady):
 		return
 	case definitiveRead(err):
 	default:
@@ -370,7 +369,7 @@ func (w *Watcher) read(key AssignmentKey) {
 		return
 	}
 	delete(w.keys, key)
-	watchers := make([]*watch, 0, len(ks.watchers))
+	watchers := make([]*registration, 0, len(ks.watchers))
 	for entry := range ks.watchers {
 		watchers = append(watchers, entry)
 	}
@@ -393,5 +392,5 @@ func (w *Watcher) read(key AssignmentKey) {
 // ever: the key has no Outcome to wait for. ErrOutcomeCollected and
 // ErrExecutionAborted wrap ErrOutcomeUnavailable.
 func definitiveRead(err error) bool {
-	return errors.Is(err, ErrExecutionNotFound) || errors.Is(err, ErrOutcomeUnavailable)
+	return errors.Is(err, effect.ErrExecutionNotFound) || errors.Is(err, effect.ErrOutcomeUnavailable)
 }
