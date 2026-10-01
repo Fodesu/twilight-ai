@@ -286,7 +286,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 
 type fakeContent struct {
 	results map[jsonstable.Digest]model.ModelResult
-	outputs map[jsonstable.Digest]run.CanonicalJSON
+	outputs map[jsonstable.Digest]jsonstable.Value
 	reads   int
 }
 
@@ -299,16 +299,16 @@ func (c *fakeContent) ModelResult(_ context.Context, d jsonstable.Digest) (model
 	return r, nil
 }
 
-func (c *fakeContent) ToolOutput(_ context.Context, d jsonstable.Digest) (run.CanonicalJSON, error) {
+func (c *fakeContent) ToolOutput(_ context.Context, d jsonstable.Digest) (jsonstable.Value, error) {
 	c.reads++
 	o, ok := c.outputs[d]
 	if !ok {
-		return run.CanonicalJSON{}, frozen.ErrMissing
+		return jsonstable.Value{}, frozen.ErrMissing
 	}
 	return o, nil
 }
 
-func (c *fakeContent) ToolResponse(ctx context.Context, d jsonstable.Digest) (run.CanonicalJSON, error) {
+func (c *fakeContent) ToolResponse(ctx context.Context, d jsonstable.Digest) (jsonstable.Value, error) {
 	return c.ToolOutput(ctx, d)
 }
 
@@ -332,7 +332,7 @@ func TestMaterialize(t *testing.T) {
 			{ToolCallID: "p1", ToolName: "echo", Input: model.ToolArguments{JSON: jsonstable.MustParse(`{"a":1}`)}},
 			{ToolCallID: "p2", ToolName: "ask", Input: model.ToolArguments{JSON: jsonstable.MustParse(`{}`)}},
 		}}},
-		outputs: map[jsonstable.Digest]run.CanonicalJSON{"sha256:out": jsonstable.MustParse(`{"ok":true}`), "sha256:ans": jsonstable.MustParse(`"yes"`)},
+		outputs: map[jsonstable.Digest]jsonstable.Value{"sha256:out": jsonstable.MustParse(`{"ok":true}`), "sha256:ans": jsonstable.MustParse(`"yes"`)},
 	}
 	entries, err := NewMaterializer(content).Entries(context.Background(), ctxState.Entries)
 	if err != nil {

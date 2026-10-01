@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -45,7 +46,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 
 	submit := func(id chatlog.InputID) run.AgentInput {
 		t.Helper()
-		content := run.MustParseCanonicalJSON(`{"text":"hi"}`)
+		content := jsonstable.MustParse(`{"text":"hi"}`)
 		w, err := writers.Writer(ctx, sid)
 		if err != nil {
 			t.Fatal(err)

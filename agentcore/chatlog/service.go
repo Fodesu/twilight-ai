@@ -37,7 +37,7 @@ var ErrNotSubmitted = errors.New("chatlog: input is not submitted")
 // input's body, opaque to this module and digested as given (the agent
 // decides its shape, DEC-INP-1). Idempotency rides on the CommitID, so a
 // retried submission replays.
-func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, content run.CanonicalJSON) (run.AgentInput, error) {
+func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, content jsonstable.Value) (run.AgentInput, error) {
 	if content.IsZero() {
 		return run.AgentInput{}, errors.New("chatlog: submit requires input content")
 	}

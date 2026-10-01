@@ -10,6 +10,7 @@ import (
 
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/sdk"
@@ -51,7 +52,7 @@ func (Shell) Definition() sdk.ToolDefinition {
 }
 func (Shell) ResponsePolicy() run.ResponsePolicy { return run.DirectExecution }
 func (Shell) Replay() run.ReplayPolicy           { return run.ReplayForbidden }
-func (Shell) ValidateArguments(args run.CanonicalJSON) error {
+func (Shell) ValidateArguments(args jsonstable.Value) error {
 	var a shellArgs
 	if err := decode(args, &a); err != nil {
 		return err

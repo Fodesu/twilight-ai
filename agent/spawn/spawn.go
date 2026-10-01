@@ -101,7 +101,7 @@ func ChildID(parent session.SessionID, runID run.RunID, callID run.CallID) sessi
 }
 
 // DecodeArguments decodes and validates the tool arguments.
-func DecodeArguments(args run.CanonicalJSON) (Arguments, error) {
+func DecodeArguments(args jsonstable.Value) (Arguments, error) {
 	var a Arguments
 	if err := args.Decode(&a); err != nil {
 		return a, err
@@ -190,7 +190,7 @@ func (tool) Replay() run.ReplayPolicy { return run.ReplayAllowed }
 // no workspace.
 func (tool) Placement() run.ToolPlacement { return run.PlacementProcess }
 
-func (tool) ValidateArguments(args run.CanonicalJSON) error {
+func (tool) ValidateArguments(args jsonstable.Value) error {
 	_, err := DecodeArguments(args)
 	return err
 }

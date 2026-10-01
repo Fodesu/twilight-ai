@@ -32,7 +32,7 @@ const (
 	testScope   Scope             = Scope(testSession)
 )
 
-func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
+func cj(raw string) jsonstable.Value { return jsonstable.MustParse(raw) }
 
 // inputDigest names an input body: the Run stores only the digest.
 func inputDigest(raw string) Digest { return jsonstable.DigestBytes([]byte(raw)) }

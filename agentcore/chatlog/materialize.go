@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
 )
@@ -15,8 +14,8 @@ import (
 // implementation; the projections never call it (CHT-MAT-1).
 type ContentResolver interface {
 	ModelResult(context.Context, jsonstable.Digest) (model.ModelResult, error)
-	ToolOutput(context.Context, jsonstable.Digest) (run.CanonicalJSON, error)
-	ToolResponse(context.Context, jsonstable.Digest) (run.CanonicalJSON, error)
+	ToolOutput(context.Context, jsonstable.Digest) (jsonstable.Value, error)
+	ToolResponse(context.Context, jsonstable.Digest) (jsonstable.Value, error)
 }
 
 // Call is one tool call of a materialized assistant: the Run's CallID paired
@@ -25,7 +24,7 @@ type Call struct {
 	CallID         CallID
 	ProviderCallID string
 	Name           string
-	Input          run.CanonicalJSON
+	Input          jsonstable.Value
 }
 
 // Materialized is one entry with its frozen body resolved: Result and Calls
@@ -35,7 +34,7 @@ type Materialized struct {
 	Entry  *Entry
 	Result *model.ModelResult
 	Calls  []Call
-	Output *run.CanonicalJSON
+	Output *jsonstable.Value
 }
 
 // Text is the rendering of the entry's main content: the assistant text, the
@@ -63,11 +62,11 @@ func (m *Materialized) Text() string {
 type Materializer struct {
 	content ContentResolver
 	results map[jsonstable.Digest]*model.ModelResult
-	outputs map[jsonstable.Digest]*run.CanonicalJSON
+	outputs map[jsonstable.Digest]*jsonstable.Value
 }
 
 func NewMaterializer(content ContentResolver) *Materializer {
-	return &Materializer{content: content, results: map[jsonstable.Digest]*model.ModelResult{}, outputs: map[jsonstable.Digest]*run.CanonicalJSON{}}
+	return &Materializer{content: content, results: map[jsonstable.Digest]*model.ModelResult{}, outputs: map[jsonstable.Digest]*jsonstable.Value{}}
 }
 
 // Entries materializes every entry in order.
@@ -132,7 +131,7 @@ func (m *Materializer) result(ctx context.Context, digest jsonstable.Digest) (*m
 	return &r, nil
 }
 
-func (m *Materializer) output(ctx context.Context, r *ToolResult) (*run.CanonicalJSON, error) {
+func (m *Materializer) output(ctx context.Context, r *ToolResult) (*jsonstable.Value, error) {
 	if o, ok := m.outputs[r.OutputDigest]; ok {
 		return o, nil
 	}
@@ -140,7 +139,7 @@ func (m *Materializer) output(ctx context.Context, r *ToolResult) (*run.Canonica
 		return nil, fmt.Errorf("chatlog: no content resolver for tool result %s", r.ID)
 	}
 	var (
-		o   run.CanonicalJSON
+		o   jsonstable.Value
 		err error
 	)
 	switch r.Source {

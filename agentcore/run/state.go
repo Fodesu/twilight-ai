@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run/model"
 )
 
@@ -199,12 +200,12 @@ const (
 // arguments shown to whoever answers. A Wait is not an effect: nothing is
 // dispatched for a Waiting call and no attempt exists for it.
 type ResponseRequest struct {
-	RunID   RunID         `json:"runId"`
-	StepID  StepID        `json:"stepId"`
-	CallID  CallID        `json:"callId"`
-	ID      ResponseID    `json:"id"`
-	Kind    ResponseKind  `json:"kind"`
-	Payload CanonicalJSON `json:"payload,omitzero"`
+	RunID   RunID            `json:"runId"`
+	StepID  StepID           `json:"stepId"`
+	CallID  CallID           `json:"callId"`
+	ID      ResponseID       `json:"id"`
+	Kind    ResponseKind     `json:"kind"`
+	Payload jsonstable.Value `json:"payload,omitzero"`
 }
 
 // ToolSpec is the agent-side sidecar for a provider-neutral ToolDefinition.
@@ -226,13 +227,13 @@ type ToolCallBinding struct {
 	CallID CallID `json:"callId"`
 	// ProviderCallID is the tool_call_id the model emitted. PromptBuilders echo it
 	// back when they replay the call and its result; the Run never keys on it.
-	ProviderCallID   string         `json:"providerCallId,omitempty"`
-	ToolRef          ToolRef        `json:"toolRef"`
-	DefinitionDigest Digest         `json:"definitionDigest"`
-	Arguments        CanonicalJSON  `json:"arguments"`
-	Policy           ResponsePolicy `json:"policy"` // unresolved ToolRef uses DirectExecution
-	Replay           ReplayPolicy   `json:"replay,omitempty"`
-	Placement        ToolPlacement  `json:"placement,omitempty"`
+	ProviderCallID   string           `json:"providerCallId,omitempty"`
+	ToolRef          ToolRef          `json:"toolRef"`
+	DefinitionDigest Digest           `json:"definitionDigest"`
+	Arguments        jsonstable.Value `json:"arguments"`
+	Policy           ResponsePolicy   `json:"policy"` // unresolved ToolRef uses DirectExecution
+	Replay           ReplayPolicy     `json:"replay,omitempty"`
+	Placement        ToolPlacement    `json:"placement,omitempty"`
 	// Response is derived and filled by Decide inside ToolStepOpened; callers
 	// leave it empty when submitting.
 	Response *ResponseRequest `json:"response,omitempty"`
@@ -342,7 +343,7 @@ func (s ToolCallStatus) Terminal() bool { return s == ToolCompleted || s == Tool
 // state and the fact keep only its digest; the body is frozen under that
 // digest before the fact is committed (RUN-WIR-4).
 type ToolExecutionResult struct {
-	Output CanonicalJSON `json:"output"`
+	Output jsonstable.Value `json:"output"`
 }
 
 // ToolCallResult is the persisted record of a completed call.
@@ -368,15 +369,15 @@ type ToolCallFailure struct {
 }
 
 type ToolCallState struct {
-	CallID           CallID         `json:"callId"`
-	ProviderCallID   string         `json:"providerCallId,omitempty"`
-	ToolRef          ToolRef        `json:"toolRef"`
-	DefinitionDigest Digest         `json:"definitionDigest"`
-	Arguments        CanonicalJSON  `json:"arguments"`
-	Policy           ResponsePolicy `json:"policy"`
-	Replay           ReplayPolicy   `json:"replay,omitempty"`
-	Placement        ToolPlacement  `json:"placement,omitempty"`
-	Status           ToolCallStatus `json:"status"`
+	CallID           CallID           `json:"callId"`
+	ProviderCallID   string           `json:"providerCallId,omitempty"`
+	ToolRef          ToolRef          `json:"toolRef"`
+	DefinitionDigest Digest           `json:"definitionDigest"`
+	Arguments        jsonstable.Value `json:"arguments"`
+	Policy           ResponsePolicy   `json:"policy"`
+	Replay           ReplayPolicy     `json:"replay,omitempty"`
+	Placement        ToolPlacement    `json:"placement,omitempty"`
+	Status           ToolCallStatus   `json:"status"`
 	// Effect is the tool effect the call requested (from ToolCallStarted);
 	// empty before the start and for a call an external response settles
 	// without one. The call fixes the effect's kind (a tool call) and binding

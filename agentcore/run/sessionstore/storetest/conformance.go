@@ -341,7 +341,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 	}
 	// Attach follows the facts; twilight/run/ events are refused.
 	toolEff := h.startTool("r1", ts.RefValue.ID, call)
-	output := run.MustParseCanonicalJSON(`{"ok":true}`)
+	output := jsonstable.MustParse(`{"ok":true}`)
 	if _, err := h.commit("r1", schema.Identity().DeriveSettlementCommandID(toolEff), 0,
 		run.SubmitToolResult{StepID: ts.RefValue.ID, CallID: call, Effect: toolEff, Result: run.ToolExecutionResult{Output: output}},
 		moduleEvent{Type: sessionstore.Prefix + "input_accepted", Value: sessionstore.Event{RunID: "r1", Fact: run.InputAccepted{Input: input("x")}}}); err == nil {
@@ -552,7 +552,7 @@ func testProjection(t *testing.T, factory Factory) {
 	callID := bindings[0].CallID
 	toolEff := h.startTool("r1", toolStep, callID)
 	res := h.mustCommit("r1", schema.Identity().DeriveSettlementCommandID(toolEff), 0,
-		run.SubmitToolResult{StepID: toolStep, CallID: callID, Effect: toolEff, Result: run.ToolExecutionResult{Output: run.MustParseCanonicalJSON(`1`)}})
+		run.SubmitToolResult{StepID: toolStep, CallID: callID, Effect: toolEff, Result: run.ToolExecutionResult{Output: jsonstable.MustParse(`1`)}})
 	if _, open := res.Snapshot.State.Current.(run.Open); !open {
 		t.Fatalf("after tool settlement current = %T", res.Snapshot.State.Current)
 	}

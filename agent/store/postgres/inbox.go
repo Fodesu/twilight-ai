@@ -6,7 +6,7 @@ import (
 
 	"github.com/felinics/twilight/agent/store/postgres/internal/db"
 	"github.com/felinics/twilight/agentcore/inbox"
-	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
 )
 
@@ -21,7 +21,7 @@ func (d *DB) Inbox() *InboxStore { return &InboxStore{d: d} }
 func inboxEntry(seq int64, commandID, kind, payload string, enqueuedAt int64, status, reason string, resolvedAt int64) (inbox.Entry, error) {
 	e := inbox.Entry{Seq: uint64(seq), Command: inbox.Command{ID: inbox.CommandID(commandID), Kind: inbox.Kind(kind)}, EnqueuedAtUnixMilli: enqueuedAt} //nolint:gosec // G115: seq counts from 0
 	if payload != "" {
-		v, err := run.ParseCanonicalJSON([]byte(payload))
+		v, err := jsonstable.Parse([]byte(payload))
 		if err != nil {
 			return inbox.Entry{}, err
 		}

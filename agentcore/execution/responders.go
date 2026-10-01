@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -26,7 +27,7 @@ import (
 // call as a success (SubmitToolResponse); an error rejects it
 // (RejectToolCall, response_rejected) with the error as reason.
 type Responder interface {
-	Respond(ctx context.Context, w writer.Writer, call *WaitingCall) (run.CanonicalJSON, error)
+	Respond(ctx context.Context, w writer.Writer, call *WaitingCall) (jsonstable.Value, error)
 }
 
 // WaitingCall is what a Responder answers: the Run's ResponseRequest and
@@ -34,7 +35,7 @@ type Responder interface {
 type WaitingCall struct {
 	Request   run.ResponseRequest
 	ToolRef   run.ToolRef
-	Arguments run.CanonicalJSON
+	Arguments jsonstable.Value
 }
 
 // Responders answers the ExternalResponse waits of the Runs this process
@@ -212,7 +213,7 @@ func (rs *responders) respond(ctx context.Context, w writer.Writer, a *answer) (
 
 // settleResponse commits the answer as SubmitToolResponse, or the error as
 // RejectToolCall; a Run already terminal is settled by another actor.
-func (rs *responders) settleResponse(ctx context.Context, w writer.Writer, a *answer, payload run.CanonicalJSON, rerr error) error {
+func (rs *responders) settleResponse(ctx context.Context, w writer.Writer, a *answer, payload jsonstable.Value, rerr error) error {
 	req := a.call.Request
 	var cmd run.AgentCommand
 	if rerr != nil {

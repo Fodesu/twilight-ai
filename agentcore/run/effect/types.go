@@ -54,7 +54,7 @@ func (ModelAssignment) assignmentBody()      {}
 type ToolAssignment struct {
 	ToolRef          run.ToolRef
 	DefinitionDigest run.Digest
-	Arguments        run.CanonicalJSON
+	Arguments        jsonstable.Value
 	Policy           run.ResponsePolicy
 	// Replay is the tool's declared replay policy, copied from the frozen
 	// call: the Worker that adopts a lost execution decides from it alone

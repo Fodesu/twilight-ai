@@ -153,8 +153,8 @@ func flattenCommit(c ledger.Commit) []ledger.Event {
 
 // inputContent is the body the harness submits for id; the AgentInput the
 // Run sees carries only its digest.
-func inputContent(id string) run.CanonicalJSON {
-	return run.MustParseCanonicalJSON(fmt.Sprintf(`{"text":%q}`, id))
+func inputContent(id string) jsonstable.Value {
+	return jsonstable.MustParse(fmt.Sprintf(`{"text":%q}`, id))
 }
 
 func input(id string) run.AgentInput {
@@ -442,7 +442,7 @@ func (h *harness) waitingTool(runID run.RunID) {
 	if res := h.mustRunCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff}); res.Status != store.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
-	args := run.MustParseCanonicalJSON(`{"q":1}`)
+	args := jsonstable.MustParse(`{"q":1}`)
 	callID := schema.Identity().DeriveCallID(step, 0)
 	result := model.ModelResult{FinishReason: model.FinishReasonToolCalls, Usage: model.Usage{TotalTokens: 2},
 		ToolCalls: []model.ModelToolCall{{ToolCallID: "c0", ToolName: "ask", Input: model.ToolArguments{JSON: args}}}}

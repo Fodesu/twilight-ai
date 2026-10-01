@@ -13,7 +13,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
 )
 
@@ -27,9 +27,9 @@ type Kind string
 
 // Command is what a caller enqueues.
 type Command struct {
-	ID      CommandID         `json:"id"`
-	Kind    Kind              `json:"kind"`
-	Payload run.CanonicalJSON `json:"payload,omitempty"`
+	ID      CommandID        `json:"id"`
+	Kind    Kind             `json:"kind"`
+	Payload jsonstable.Value `json:"payload,omitempty"`
 }
 
 // Status is a resolved command's disposition.

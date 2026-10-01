@@ -2,6 +2,7 @@ package loop_test
 
 import (
 	"github.com/felinics/twilight/agent/sdkconv"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -182,7 +183,7 @@ func (f *Feature) RequireBuilderSawTool(callID run.CallID, output string) {
 	if s.LastToolStep == nil || s.LastToolStep.RefValue.ID != f.builder.lastHint.SourceStep {
 		f.t.Fatalf("hint SourceStep = %s, LastToolStep = %+v", f.builder.lastHint.SourceStep, s.LastToolStep)
 	}
-	want, err := schema.Canonical().DigestToolOutput(run.MustParseCanonicalJSON(output))
+	want, err := schema.Canonical().DigestToolOutput(jsonstable.MustParse(output))
 	if err != nil {
 		f.t.Fatal(err)
 	}

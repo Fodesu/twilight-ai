@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/sdk"
@@ -96,7 +97,7 @@ func (s *scriptTool) Definition() sdk.ToolDefinition     { return s.def }
 func (s *scriptTool) ResponsePolicy() run.ResponsePolicy { return s.policy }
 func (s *scriptTool) Replay() run.ReplayPolicy           { return run.ReplayUnknown }
 func (s *scriptTool) Placement() run.ToolPlacement       { return run.PlacementProcess }
-func (s *scriptTool) ValidateArguments(run.CanonicalJSON) error {
+func (s *scriptTool) ValidateArguments(jsonstable.Value) error {
 	return nil
 }
 

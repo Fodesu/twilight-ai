@@ -169,8 +169,8 @@ func flattenCommit(c ledger.Commit) []ledger.Event {
 
 // inputContent is the body the harness submits for id; the AgentInput the
 // Run sees carries only its digest.
-func inputContent(id run.InputID) run.CanonicalJSON {
-	return run.MustParseCanonicalJSON(fmt.Sprintf(`{"text":%q}`, id))
+func inputContent(id run.InputID) jsonstable.Value {
+	return jsonstable.MustParse(fmt.Sprintf(`{"text":%q}`, id))
 }
 
 func input(id string) run.AgentInput {
@@ -448,7 +448,7 @@ func (h *harness) toolCallResult(step run.StepID, n int) (model.ModelResult, []r
 	calls := make([]model.ModelToolCall, n)
 	bindings := make([]run.ToolCallBinding, n)
 	for i := range calls {
-		args := run.MustParseCanonicalJSON(fmt.Sprintf(`{"i":%d}`, i))
+		args := jsonstable.MustParse(fmt.Sprintf(`{"i":%d}`, i))
 		calls[i] = model.ModelToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: model.ToolArguments{JSON: args}}
 		callID := schema.Identity().DeriveCallID(step, i)
 		bindings[i] = run.ToolCallBinding{CallID: callID, ProviderCallID: calls[i].ToolCallID, ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,

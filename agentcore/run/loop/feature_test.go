@@ -17,6 +17,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -324,7 +325,7 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 	f.ExecutingModel()
 	providerID := string(callID)
 	callID = schema.Identity().DeriveCallID(f.modelStepID, 0)
-	args := run.MustParseCanonicalJSON(`{"x":1}`)
+	args := jsonstable.MustParse(`{"x":1}`)
 	frozen, err := sdkconv.FreezeModelResult(sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{TotalTokens: 2},

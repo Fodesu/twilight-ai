@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/execution"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -32,10 +33,10 @@ func (t *targetTool) Ref() run.ToolRef { return "lookup" }
 func (t *targetTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: "lookup", Parameters: &jsonschema.Schema{Type: "object"}}
 }
-func (t *targetTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
-func (t *targetTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
-func (t *targetTool) Placement() run.ToolPlacement              { return run.PlacementWorkspace }
-func (t *targetTool) ValidateArguments(run.CanonicalJSON) error { return nil }
+func (t *targetTool) ResponsePolicy() run.ResponsePolicy       { return run.DirectExecution }
+func (t *targetTool) Replay() run.ReplayPolicy                 { return run.ReplayUnknown }
+func (t *targetTool) Placement() run.ToolPlacement             { return run.PlacementWorkspace }
+func (t *targetTool) ValidateArguments(jsonstable.Value) error { return nil }
 func (t *targetTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	t.seen <- req.Target
 	return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}

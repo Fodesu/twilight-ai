@@ -38,7 +38,7 @@ func (s fixedSource) Load(_ context.Context, _ session.SessionID, id module.Proj
 // digest.
 type fixedContent struct {
 	results map[jsonstable.Digest]model.ModelResult
-	outputs map[jsonstable.Digest]run.CanonicalJSON
+	outputs map[jsonstable.Digest]jsonstable.Value
 }
 
 func (c fixedContent) ModelResult(_ context.Context, d jsonstable.Digest) (model.ModelResult, error) {
@@ -49,15 +49,15 @@ func (c fixedContent) ModelResult(_ context.Context, d jsonstable.Digest) (model
 	return r, nil
 }
 
-func (c fixedContent) ToolOutput(_ context.Context, d jsonstable.Digest) (run.CanonicalJSON, error) {
+func (c fixedContent) ToolOutput(_ context.Context, d jsonstable.Digest) (jsonstable.Value, error) {
 	o, ok := c.outputs[d]
 	if !ok {
-		return run.CanonicalJSON{}, fmt.Errorf("%w: %s", frozen.ErrMissing, d)
+		return jsonstable.Value{}, fmt.Errorf("%w: %s", frozen.ErrMissing, d)
 	}
 	return o, nil
 }
 
-func (c fixedContent) ToolResponse(ctx context.Context, d jsonstable.Digest) (run.CanonicalJSON, error) {
+func (c fixedContent) ToolResponse(ctx context.Context, d jsonstable.Digest) (jsonstable.Value, error) {
 	return c.ToolOutput(ctx, d)
 }
 
@@ -154,7 +154,7 @@ func TestInputContentRoundTrip(t *testing.T) {
 
 func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
 	content := fixedContent{results: map[jsonstable.Digest]model.ModelResult{
-		"sha256:call": {FinishReason: model.FinishReasonToolCalls, ToolCalls: []model.ModelToolCall{{ToolCallID: "provider-call", ToolName: "tool", Input: model.ToolArguments{JSON: run.MustParseCanonicalJSON(`{}`)}}}},
+		"sha256:call": {FinishReason: model.FinishReasonToolCalls, ToolCalls: []model.ModelToolCall{{ToolCallID: "provider-call", ToolName: "tool", Input: model.ToolArguments{JSON: jsonstable.MustParse(`{}`)}}}},
 		"sha256:none": {Text: "plain", FinishReason: model.FinishReasonStop},
 	}}
 	call := chatlog.Entry{Kind: chatlog.EntryAssistant, ID: "s1", Assistant: &chatlog.Assistant{ID: "s1", StepID: "s1", ResultDigest: "sha256:call", CallIDs: []chatlog.CallID{"call"}}}

@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -36,7 +37,7 @@ type ContextPromptBuilder struct {
 	Preset  preset.AgentPreset
 	// InputText extracts the user text of one input payload; nil selects the
 	// v1 shape {"text": ...} (DEC-INP-1).
-	InputText func(run.CanonicalJSON) (string, error)
+	InputText func(jsonstable.Value) (string, error)
 	// Preface, when set, contributes text the builder appends to the system
 	// prompt of every request, read from the Session's projections: the
 	// application's standing facts the model must know, such as the

@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/inbox"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -73,7 +74,7 @@ const DefaultInboxPoll = time.Second
 
 // NewCommand builds an inbox.Command with payload canonicalized.
 func NewCommand(id inbox.CommandID, kind inbox.Kind, payload any) (inbox.Command, error) {
-	raw, err := run.CanonicalJSONFromValue(payload)
+	raw, err := jsonstable.FromValue(payload)
 	if err != nil {
 		return inbox.Command{}, err
 	}

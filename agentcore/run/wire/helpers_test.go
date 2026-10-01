@@ -38,7 +38,7 @@ func cid(step run.StepID, index int) run.CallID {
 	return schema.Identity().DeriveCallID(step, index)
 }
 
-func cj(raw string) run.CanonicalJSON { return run.MustParseCanonicalJSON(raw) }
+func cj(raw string) jsonstable.Value { return jsonstable.MustParse(raw) }
 
 func fold(t *testing.T, s run.MachineState, facts []run.Fact) run.MachineState {
 	t.Helper()

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run/model"
 )
 
@@ -508,7 +509,7 @@ func responseKindForPolicy(p ResponsePolicy) (ResponseKind, bool) {
 	}
 }
 
-func (m StateMachine) validateResponseRequest(req *ResponseRequest, runID RunID, stepID StepID, callID CallID, kind ResponseKind, payload CanonicalJSON) error {
+func (m StateMachine) validateResponseRequest(req *ResponseRequest, runID RunID, stepID StepID, callID CallID, kind ResponseKind, payload jsonstable.Value) error {
 	if req.RunID != runID || req.StepID != stepID || req.CallID != callID || req.Kind != kind {
 		return fmt.Errorf("agent: evolve: response request identity mismatch for call %q", callID)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
@@ -38,7 +39,7 @@ func submitted(id chatlog.InputID) unit.Part {
 	return unit.PartFunc(func(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
 		return []writer.TypedBatch{{Domain: chatlog.Stream, Events: []writer.TypedEvent{{
 			Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: now,
-			Value: chatlog.InputSubmittedPayload{InputID: id, Content: run.MustParseCanonicalJSON(`{"text":"x"}`), SubmittedAtUnixMilli: now}}}}}, nil
+			Value: chatlog.InputSubmittedPayload{InputID: id, Content: jsonstable.MustParse(`{"text":"x"}`), SubmittedAtUnixMilli: now}}}}}, nil
 	})
 }
 
@@ -116,7 +117,7 @@ func TestCommitReplaysByCommitID(t *testing.T) {
 	// A CommitID written by a plain writer.Commit is a replay for a unit too.
 	if _, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 		return &writer.SemanticGroup{CommitID: "plain", Batches: []writer.TypedBatch{{Domain: chatlog.Stream, Events: []writer.TypedEvent{{
-			Type: chatlog.TypeInputSubmitted, Value: chatlog.InputSubmittedPayload{InputID: "p", Content: run.MustParseCanonicalJSON(`{"text":"x"}`)}}}}}}, nil
+			Type: chatlog.TypeInputSubmitted, Value: chatlog.InputSubmittedPayload{InputID: "p", Content: jsonstable.MustParse(`{"text":"x"}`)}}}}}}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}

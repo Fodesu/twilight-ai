@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -199,19 +200,19 @@ func (c *Content) ModelResult(ctx context.Context, digest run.Digest) (model.Mod
 }
 
 // ToolOutput returns the body ToolCallCompleted.OutputDigest names.
-func (c *Content) ToolOutput(ctx context.Context, digest run.Digest) (run.CanonicalJSON, error) {
+func (c *Content) ToolOutput(ctx context.Context, digest run.Digest) (jsonstable.Value, error) {
 	raw, err := c.raw(ctx, "tool output", digest)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	return frozen.DecodeToolOutput(raw, digest)
 }
 
 // ToolResponse returns the body ToolCallAnswered.ResponseDigest names.
-func (c *Content) ToolResponse(ctx context.Context, digest run.Digest) (run.CanonicalJSON, error) {
+func (c *Content) ToolResponse(ctx context.Context, digest run.Digest) (jsonstable.Value, error) {
 	raw, err := c.raw(ctx, "tool response", digest)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	return frozen.DecodeToolResponse(raw, digest)
 }

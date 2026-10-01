@@ -8,20 +8,20 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
 // Text builds the v1 user input body: {"text": "<user string>"}.
-func Text(text string) run.CanonicalJSON {
+func Text(text string) jsonstable.Value {
 	raw, err := json.Marshal(text)
 	if err != nil {
 		panic(err) // a string always marshals
 	}
-	return run.MustParseCanonicalJSON(`{"text":` + string(raw) + `}`)
+	return jsonstable.MustParse(`{"text":` + string(raw) + `}`)
 }
 
 // TextOf is the inverse of Text: the user text of a v1 input body.
-func TextOf(content run.CanonicalJSON) (string, error) {
+func TextOf(content jsonstable.Value) (string, error) {
 	var body struct {
 		Text string `json:"text"`
 	}

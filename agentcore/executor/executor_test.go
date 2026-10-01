@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -603,7 +604,7 @@ func TestRecordStoreSurvivesWorkerRecreation(t *testing.T) {
 
 func testToolAssignment() effect.Assignment {
 	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "call-1", Effect: "effect",
-		Body: effect.ToolAssignment{ToolRef: "gate", DefinitionDigest: "d", Arguments: run.MustParseCanonicalJSON(`{}`), Policy: run.DirectExecution}}
+		Body: effect.ToolAssignment{ToolRef: "gate", DefinitionDigest: "d", Arguments: jsonstable.MustParse(`{}`), Policy: run.DirectExecution}}
 }
 
 // Dispose is the control plane's give-up path: the record settles Unknown

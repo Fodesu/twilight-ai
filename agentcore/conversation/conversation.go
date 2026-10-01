@@ -17,6 +17,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/execution"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
@@ -187,7 +188,7 @@ type Submitted struct {
 // opaque to the Controller; the idempotency key is the id, so a retried
 // submission replays. Nothing is driven: the caller advances the Turn,
 // here or on another goroutine, with Advance.
-func (r *Controller) Submit(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Submitted, error) {
+func (r *Controller) Submit(ctx context.Context, id run.InputID, content jsonstable.Value) (Submitted, error) {
 	in, err := r.chat.Submit(ctx, r.w, id, content)
 	if err != nil {
 		return Submitted{}, err
@@ -214,7 +215,7 @@ func (r *Controller) Submit(ctx context.Context, id run.InputID, content run.Can
 // remaining inputs started once it ended. An input a concurrent route
 // delivered first is reported as the single Turn it landed in, Carried by
 // that route's step.
-func (r *Controller) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Settlement, error) {
+func (r *Controller) Send(ctx context.Context, id run.InputID, content jsonstable.Value) (Settlement, error) {
 	sub, err := r.Submit(ctx, id, content)
 	if err != nil {
 		return Settlement{}, err

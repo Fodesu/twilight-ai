@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/session"
@@ -187,10 +188,10 @@ func (t *lookupTool) Ref() run.ToolRef { return "lookup" }
 func (t *lookupTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: "lookup", Parameters: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"q": {Type: "string"}}}}
 }
-func (t *lookupTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
-func (t *lookupTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
-func (t *lookupTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
-func (t *lookupTool) ValidateArguments(run.CanonicalJSON) error { return nil }
+func (t *lookupTool) ResponsePolicy() run.ResponsePolicy       { return run.DirectExecution }
+func (t *lookupTool) Replay() run.ReplayPolicy                 { return run.ReplayUnknown }
+func (t *lookupTool) Placement() run.ToolPlacement             { return run.PlacementProcess }
+func (t *lookupTool) ValidateArguments(jsonstable.Value) error { return nil }
 func (t *lookupTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	if t.ran.CompareAndSwap(false, true) {
 		<-t.block

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/inbox"
-	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
 )
 
@@ -20,7 +20,7 @@ func Run(t *testing.T, factory Factory) {
 }
 
 func command(id, kind, payload string) inbox.Command {
-	return inbox.Command{ID: inbox.CommandID(id), Kind: inbox.Kind(kind), Payload: run.MustParseCanonicalJSON(payload)}
+	return inbox.Command{ID: inbox.CommandID(id), Kind: inbox.Kind(kind), Payload: jsonstable.MustParse(payload)}
 }
 
 // Enqueue is idempotent by CommandID and refuses a reused ID; Seq counts

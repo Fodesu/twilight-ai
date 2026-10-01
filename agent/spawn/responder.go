@@ -9,6 +9,7 @@ import (
 
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/execution"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
@@ -137,66 +138,66 @@ func (r *Responder) Close() {
 // returned before any child exists, so the call is rejected and no Session
 // is created (SPN-3); a child on record for different arguments is a
 // conflict.
-func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *execution.WaitingCall) (run.CanonicalJSON, error) {
+func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *execution.WaitingCall) (jsonstable.Value, error) {
 	if r.children == nil {
-		return run.CanonicalJSON{}, errors.New("spawn: responder is not bound to a host")
+		return jsonstable.Value{}, errors.New("spawn: responder is not bound to a host")
 	}
 	parent := w.SessionID()
 	args, err := DecodeArguments(call.Arguments)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	depth, err := r.depthOf(ctx, parent)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	if DepthExceeded(depth, r.opts.depth()) {
-		return run.CanonicalJSON{}, fmt.Errorf("spawn: session %s is at depth %d, the limit", parent, depth)
+		return jsonstable.Value{}, fmt.Errorf("spawn: session %s is at depth %d, the limit", parent, depth)
 	}
 	pref, err := r.childPreset(ctx, parent, call.Request.RunID, args)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	child := ChildID(parent, call.Request.RunID, call.Request.CallID)
 	ctx, done, err := r.track(ctx, child)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	defer done()
 	prov, exists, err := r.provenance(ctx, child)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	if !exists {
 		if prov, err = r.create(ctx, parent, call.Request.RunID, call.Request.CallID, child, args, depth+1); err != nil {
-			return run.CanonicalJSON{}, fmt.Errorf("create subagent: %w", err)
+			return jsonstable.Value{}, fmt.Errorf("create subagent: %w", err)
 		}
 	} else if ArgumentsConflict(prov, args) {
-		return run.CanonicalJSON{}, fmt.Errorf("call %s already spawned %s with different arguments", call.Request.CallID, child)
+		return jsonstable.Value{}, fmt.Errorf("call %s already spawned %s with different arguments", call.Request.CallID, child)
 	}
 	c, err := r.children.Open(ctx, child, pref)
 	if err != nil {
-		return run.CanonicalJSON{}, fmt.Errorf("open subagent: %w", err)
+		return jsonstable.Value{}, fmt.Errorf("open subagent: %w", err)
 	}
 	defer func() { _ = c.Close(context.WithoutCancel(ctx)) }()
 	turnID, err := r.settle(ctx, c, child, prov.Arguments.Task)
 	if err != nil {
-		return run.CanonicalJSON{}, fmt.Errorf("drive subagent: %w", err)
+		return jsonstable.Value{}, fmt.Errorf("drive subagent: %w", err)
 	}
 	ref := turn.TurnRef{SessionID: child, TurnID: turnID}
 	surface, err := r.children.TurnSurface(ctx, child)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	status := surface.Turns[turnID].Status
 	if status != turn.TurnCompleted {
-		return run.CanonicalJSON{}, fmt.Errorf("subagent %s turn %s ended %s", child, turnID, status)
+		return jsonstable.Value{}, fmt.Errorf("subagent %s turn %s ended %s", child, turnID, status)
 	}
 	reply, err := r.children.Reply(ctx, ref)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
-	return run.CanonicalJSONFromValue(Result{ChildSession: child, TurnID: turnID, Status: status, Reply: reply})
+	return jsonstable.FromValue(Result{ChildSession: child, TurnID: turnID, Status: status, Reply: reply})
 }
 
 // track registers an in-flight answer for child so Close can cancel it; a

@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/session"
@@ -53,10 +54,10 @@ func (echoTool) Ref() run.ToolRef { return "lookup" }
 func (echoTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: "lookup", Parameters: &jsonschema.Schema{Type: "object"}}
 }
-func (echoTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
-func (echoTool) Replay() run.ReplayPolicy                  { return run.ReplayAllowed }
-func (echoTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
-func (echoTool) ValidateArguments(run.CanonicalJSON) error { return nil }
+func (echoTool) ResponsePolicy() run.ResponsePolicy       { return run.DirectExecution }
+func (echoTool) Replay() run.ReplayPolicy                 { return run.ReplayAllowed }
+func (echoTool) Placement() run.ToolPlacement             { return run.PlacementProcess }
+func (echoTool) ValidateArguments(jsonstable.Value) error { return nil }
 func (echoTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }

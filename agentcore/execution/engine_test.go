@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
@@ -213,7 +214,7 @@ func (s *sessionSide) startTurn(t *testing.T, x *engine, sid session.SessionID) 
 		t.Fatal(err)
 	}
 	w := s.writer(t, sid)
-	in, err := s.chat.Submit(ctx, w, "in-1", run.MustParseCanonicalJSON(`{"text":"hi"}`))
+	in, err := s.chat.Submit(ctx, w, "in-1", jsonstable.MustParse(`{"text":"hi"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/sdk"
@@ -50,7 +51,7 @@ func (ReadFile) Definition() sdk.ToolDefinition {
 }
 func (ReadFile) ResponsePolicy() run.ResponsePolicy { return run.DirectExecution }
 func (ReadFile) Replay() run.ReplayPolicy           { return run.ReplayAllowed }
-func (ReadFile) ValidateArguments(args run.CanonicalJSON) error {
+func (ReadFile) ValidateArguments(args jsonstable.Value) error {
 	var a pathArgs
 	if err := decode(args, &a); err != nil {
 		return err
@@ -100,7 +101,7 @@ func (WriteFile) Definition() sdk.ToolDefinition {
 }
 func (WriteFile) ResponsePolicy() run.ResponsePolicy { return run.DirectExecution }
 func (WriteFile) Replay() run.ReplayPolicy           { return run.ReplayForbidden }
-func (WriteFile) ValidateArguments(args run.CanonicalJSON) error {
+func (WriteFile) ValidateArguments(args jsonstable.Value) error {
 	var a writeArgs
 	if err := decode(args, &a); err != nil {
 		return err
@@ -138,7 +139,7 @@ func (ListDir) Definition() sdk.ToolDefinition {
 }
 func (ListDir) ResponsePolicy() run.ResponsePolicy { return run.DirectExecution }
 func (ListDir) Replay() run.ReplayPolicy           { return run.ReplayAllowed }
-func (ListDir) ValidateArguments(args run.CanonicalJSON) error {
+func (ListDir) ValidateArguments(args jsonstable.Value) error {
 	var a pathArgs
 	if args.IsZero() {
 		return nil

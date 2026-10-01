@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run/effect"
 
 	"github.com/felinics/twilight/agent/environment"
@@ -27,7 +28,7 @@ type Tool interface {
 	Replay() run.ReplayPolicy
 	// ValidateArguments runs before the start barrier and touches no
 	// environment.
-	ValidateArguments(run.CanonicalJSON) error
+	ValidateArguments(jsonstable.Value) error
 	// Run executes the call inside env.
 	Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) effect.ToolExecutionOutcome
 }
@@ -35,7 +36,7 @@ type Tool interface {
 // Default is the reference agent's workspace tool set.
 func Default() []Tool { return []Tool{Shell{}, ReadFile{}, WriteFile{}, ListDir{}} }
 
-func decode[T any](args run.CanonicalJSON, into *T) error {
+func decode[T any](args jsonstable.Value, into *T) error {
 	if args.IsZero() {
 		return errors.New("arguments are required")
 	}
@@ -43,7 +44,7 @@ func decode[T any](args run.CanonicalJSON, into *T) error {
 }
 
 func succeed(v any) effect.ToolExecutionOutcome {
-	out, err := run.CanonicalJSONFromValue(v)
+	out, err := jsonstable.FromValue(v)
 	if err != nil {
 		return fail(run.FailureInternal, err.Error(), run.RetryNever)
 	}

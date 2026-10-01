@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/sdkconv"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/plan"
@@ -21,7 +22,7 @@ const testModel run.ModelRef = "m-1"
 // isOpen reports whether the Run is at Open, the position between steps.
 func isOpen(c run.Current) bool { _, ok := c.(run.Open); return ok }
 
-func cj(raw string) run.CanonicalJSON { return run.MustParseCanonicalJSON(raw) }
+func cj(raw string) jsonstable.Value { return jsonstable.MustParse(raw) }
 
 func newRun(t *testing.T) run.MachineState {
 	t.Helper()
@@ -114,7 +115,7 @@ func responseDecisionDigest(t *testing.T, kind run.ResponseKind, decision run.Re
 	return d
 }
 
-func responsePayloadDigest(t *testing.T, payload run.CanonicalJSON) run.Digest {
+func responsePayloadDigest(t *testing.T, payload jsonstable.Value) run.Digest {
 	t.Helper()
 	d, err := schema.Canonical().DigestToolResponsePayload(payload)
 	if err != nil {

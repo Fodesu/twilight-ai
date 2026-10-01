@@ -6,6 +6,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -214,10 +215,10 @@ func (t *stagedTool) Ref() run.ToolRef { return "lookup" }
 func (t *stagedTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: "lookup", Parameters: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"q": {Type: "string"}}}}
 }
-func (t *stagedTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
-func (t *stagedTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
-func (t *stagedTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
-func (t *stagedTool) ValidateArguments(run.CanonicalJSON) error { return nil }
+func (t *stagedTool) ResponsePolicy() run.ResponsePolicy       { return run.DirectExecution }
+func (t *stagedTool) Replay() run.ReplayPolicy                 { return run.ReplayUnknown }
+func (t *stagedTool) Placement() run.ToolPlacement             { return run.PlacementProcess }
+func (t *stagedTool) ValidateArguments(jsonstable.Value) error { return nil }
 func (t *stagedTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	t.mu.Lock()
 	var st *toolStage

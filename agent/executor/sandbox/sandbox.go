@@ -21,6 +21,7 @@ import (
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/notice"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -195,12 +196,12 @@ type adapter struct {
 
 var _ local.ExecutableTool = (*adapter)(nil)
 
-func (a *adapter) Ref() run.ToolRef                            { return a.tool.Ref() }
-func (a *adapter) Definition() sdk.ToolDefinition              { return a.tool.Definition() }
-func (a *adapter) ResponsePolicy() run.ResponsePolicy          { return a.tool.ResponsePolicy() }
-func (a *adapter) Replay() run.ReplayPolicy                    { return a.tool.Replay() }
-func (a *adapter) Placement() run.ToolPlacement                { return run.PlacementWorkspace }
-func (a *adapter) ValidateArguments(v run.CanonicalJSON) error { return a.tool.ValidateArguments(v) }
+func (a *adapter) Ref() run.ToolRef                           { return a.tool.Ref() }
+func (a *adapter) Definition() sdk.ToolDefinition             { return a.tool.Definition() }
+func (a *adapter) ResponsePolicy() run.ResponsePolicy         { return a.tool.ResponsePolicy() }
+func (a *adapter) Replay() run.ReplayPolicy                   { return a.tool.Replay() }
+func (a *adapter) Placement() run.ToolPlacement               { return run.PlacementWorkspace }
+func (a *adapter) ValidateArguments(v jsonstable.Value) error { return a.tool.ValidateArguments(v) }
 
 func (a *adapter) Execute(ctx context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome { //nolint:gocritic // hugeParam: local.ExecutableTool.Execute takes the request by value
 	if req.Target == nil || req.Target.Kind != workspace.TargetKind || req.Target.ID == "" {
@@ -254,7 +255,7 @@ func markRematerialized(out effect.ToolExecutionOutcome) effect.ToolExecutionOut
 		return out
 	}
 	fields["workspaceRematerialized"] = true
-	marked, err := run.CanonicalJSONFromValue(fields)
+	marked, err := jsonstable.FromValue(fields)
 	if err != nil {
 		return out
 	}

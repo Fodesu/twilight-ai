@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run/model"
 )
 
@@ -21,11 +22,11 @@ type Canonical interface {
 	DigestRequest(model.ModelRequest) (Digest, error)
 	DigestToolDefinition(model.ToolDefinition) (Digest, error)
 	DigestToolResponseDecision(ResponseKind, ResponseDecision, string) (Digest, error)
-	DigestToolResponsePayload(CanonicalJSON) (Digest, error)
+	DigestToolResponsePayload(jsonstable.Value) (Digest, error)
 	// DigestModelResult names a frozen model result (ModelStepCompleted.ResultDigest).
 	DigestModelResult(model.ModelResult) (Digest, error)
 	// DigestToolOutput names one tool output (ToolCallCompleted.OutputDigest).
-	DigestToolOutput(CanonicalJSON) (Digest, error)
+	DigestToolOutput(jsonstable.Value) (Digest, error)
 }
 
 // Identity is the identity derivation. Everything a Run persists that names

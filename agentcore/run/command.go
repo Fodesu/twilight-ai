@@ -1,6 +1,7 @@
 package run
 
 import (
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run/model"
 )
 
@@ -213,11 +214,11 @@ func (RejectToolCall) agentCommand() {}
 // SubmitToolResponse completes a Waiting(ExternalResponse) call with the
 // external answer. ResponseDigest must be DigestToolResponsePayload(Payload).
 type SubmitToolResponse struct {
-	StepID         StepID        `json:"stepId"`
-	CallID         CallID        `json:"callId"`
-	ResponseID     ResponseID    `json:"responseId"`
-	ResponseDigest Digest        `json:"responseDigest"`
-	Payload        CanonicalJSON `json:"payload"`
+	StepID         StepID           `json:"stepId"`
+	CallID         CallID           `json:"callId"`
+	ResponseID     ResponseID       `json:"responseId"`
+	ResponseDigest Digest           `json:"responseDigest"`
+	Payload        jsonstable.Value `json:"payload"`
 }
 
 func (SubmitToolResponse) agentCommand() {}

@@ -55,14 +55,14 @@ func (Bodies) EncodeModelResult(result *model.ModelResult, want run.Digest) ([]b
 	return encodeFrozen(envelopeVersion, canonical.ModelResultType, *result, want)
 }
 
-func (Bodies) EncodeToolOutput(output run.CanonicalJSON, want run.Digest) ([]byte, error) {
+func (Bodies) EncodeToolOutput(output jsonstable.Value, want run.Digest) ([]byte, error) {
 	if output.IsZero() {
 		return nil, errors.New("agent: frozen tool output: empty output")
 	}
 	return encodeFrozen(envelopeVersion, canonical.ToolOutputType, canonical.ToolOutputBody{Output: output}, want)
 }
 
-func (Bodies) EncodeToolResponse(payload run.CanonicalJSON, want run.Digest) ([]byte, error) {
+func (Bodies) EncodeToolResponse(payload jsonstable.Value, want run.Digest) ([]byte, error) {
 	return encodeFrozen(envelopeVersion, canonical.ToolResponseType, canonical.ToolResponsePayloadBody{Payload: payload}, want)
 }
 
@@ -74,18 +74,18 @@ func (Bodies) DecodeModelResult(raw []byte, want run.Digest) (model.ModelResult,
 	return decodeFrozen[model.ModelResult](raw, envelopeVersion, canonical.ModelResultType, want)
 }
 
-func (Bodies) DecodeToolOutput(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
+func (Bodies) DecodeToolOutput(raw []byte, want run.Digest) (jsonstable.Value, error) {
 	body, err := decodeFrozen[canonical.ToolOutputBody](raw, envelopeVersion, canonical.ToolOutputType, want)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	return body.Output, nil
 }
 
-func (Bodies) DecodeToolResponse(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
+func (Bodies) DecodeToolResponse(raw []byte, want run.Digest) (jsonstable.Value, error) {
 	body, err := decodeFrozen[canonical.ToolResponsePayloadBody](raw, envelopeVersion, canonical.ToolResponseType, want)
 	if err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	return body.Payload, nil
 }
@@ -123,9 +123,9 @@ func DecodeModelResult(raw []byte, want run.Digest) (model.ModelResult, error) {
 }
 
 // DecodeToolOutput restores a tool output named by OutputDigest.
-func DecodeToolOutput(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
+func DecodeToolOutput(raw []byte, want run.Digest) (jsonstable.Value, error) {
 	if err := checkEnvelope(raw); err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	codec := Bodies{}
 	return codec.DecodeToolOutput(raw, want)
@@ -133,9 +133,9 @@ func DecodeToolOutput(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
 
 // DecodeToolResponse restores an external tool response named by
 // ResponseDigest.
-func DecodeToolResponse(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
+func DecodeToolResponse(raw []byte, want run.Digest) (jsonstable.Value, error) {
 	if err := checkEnvelope(raw); err != nil {
-		return run.CanonicalJSON{}, err
+		return jsonstable.Value{}, err
 	}
 	codec := Bodies{}
 	return codec.DecodeToolResponse(raw, want)

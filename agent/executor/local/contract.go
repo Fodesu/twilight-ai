@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	run "github.com/felinics/twilight/agentcore/run"
 	effect "github.com/felinics/twilight/agentcore/run/effect"
 
@@ -44,7 +45,7 @@ type ToolExecutionRequest struct {
 	Effect           run.EffectID
 	ToolRef          run.ToolRef
 	DefinitionDigest run.Digest
-	Arguments        run.CanonicalJSON
+	Arguments        jsonstable.Value
 	// Target is an opaque resource reference supplied by the application; the
 	// executor does not interpret it.
 	Target   *run.TargetRef
@@ -59,7 +60,7 @@ type ExecutableTool interface {
 	ResponsePolicy() run.ResponsePolicy
 	// ValidateArguments runs before the start barrier and must not produce
 	// external effects.
-	ValidateArguments(run.CanonicalJSON) error
+	ValidateArguments(jsonstable.Value) error
 	Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
 	// Replay declares whether Execute may run again for the same call after
 	// an earlier execution was lost. Every tool answers; the zero value

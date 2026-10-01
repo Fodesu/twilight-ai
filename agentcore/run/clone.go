@@ -12,9 +12,9 @@ import (
 //
 // The agent Runtime is an Owner boundary. All persisted request/result
 // shapes are agent-owned JSON-stable values, so cloning is mechanical: copy
-// structs and copy slice/map containers. CanonicalJSON values are immutable.
+// structs and copy slice/map containers. jsonstable.Value values are immutable.
 
-func cloneRaw(v CanonicalJSON) CanonicalJSON { return v }
+func cloneRaw(v jsonstable.Value) jsonstable.Value { return v }
 
 func cloneAgentInput(in AgentInput) AgentInput { return in }
 

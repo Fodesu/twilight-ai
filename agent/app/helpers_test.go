@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
@@ -193,10 +194,10 @@ func (t *gateTool) Ref() run.ToolRef { return "lookup" }
 func (t *gateTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: "lookup", Parameters: &jsonschema.Schema{Type: "object"}}
 }
-func (t *gateTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
-func (t *gateTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
-func (t *gateTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
-func (t *gateTool) ValidateArguments(run.CanonicalJSON) error { return nil }
+func (t *gateTool) ResponsePolicy() run.ResponsePolicy       { return run.DirectExecution }
+func (t *gateTool) Replay() run.ReplayPolicy                 { return run.ReplayUnknown }
+func (t *gateTool) Placement() run.ToolPlacement             { return run.PlacementProcess }
+func (t *gateTool) ValidateArguments(jsonstable.Value) error { return nil }
 func (t *gateTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	t.started <- struct{}{}
 	<-t.release

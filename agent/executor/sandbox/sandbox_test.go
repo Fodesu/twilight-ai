@@ -18,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agent/workspace/workspacetest"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/effect/watch"
@@ -72,7 +73,7 @@ func (f *fixture) assignment(tool tools.Tool, effectID run.EffectID, args string
 		f.t.Fatal(err)
 	}
 	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: run.CallID("call-" + string(effectID)), Effect: effectID, Target: target,
-		Body: effect.ToolAssignment{ToolRef: tool.Ref(), DefinitionDigest: digest, Arguments: run.MustParseCanonicalJSON(args),
+		Body: effect.ToolAssignment{ToolRef: tool.Ref(), DefinitionDigest: digest, Arguments: jsonstable.MustParse(args),
 			Policy: tool.ResponsePolicy(), Replay: tool.Replay(), Placement: run.PlacementWorkspace}}
 }
 

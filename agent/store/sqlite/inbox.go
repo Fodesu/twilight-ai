@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/inbox"
-	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
 )
 
@@ -39,7 +39,7 @@ func scanEntry(row interface{ Scan(...any) error }) (inbox.Entry, error) {
 	}
 	e.Command = inbox.Command{ID: inbox.CommandID(id), Kind: inbox.Kind(kind)}
 	if payload.Valid && payload.String != "" {
-		v, err := run.ParseCanonicalJSON([]byte(payload.String))
+		v, err := jsonstable.Parse([]byte(payload.String))
 		if err != nil {
 			return inbox.Entry{}, err
 		}

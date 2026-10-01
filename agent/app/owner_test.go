@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/sdkconv"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -208,7 +209,7 @@ func TestPresetVersionsRemainAvailable(t *testing.T) {
 	presets := preset.NewMemory()
 	ap := mustPreset("m-1", nil, app.WithSystemPrompt("original"))
 	ap.Tools = []preset.ToolContract{{Ref: "tool", Definition: model.ToolDefinition{
-		Name: "tool", Parameters: run.MustParseCanonicalJSON(`{}`), CacheControl: &model.CacheControl{Type: "ephemeral"},
+		Name: "tool", Parameters: jsonstable.MustParse(`{}`), CacheControl: &model.CacheControl{Type: "ephemeral"},
 	}}}
 	ref, err := presets.Register("p", ap)
 	if err != nil {

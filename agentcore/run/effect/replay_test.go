@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
@@ -26,7 +27,7 @@ func TestToolAssignmentCarriesReplayPolicy(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "c1", Effect: "e",
-				Body: effect.ToolAssignment{ToolRef: "lookup", Arguments: run.MustParseCanonicalJSON(`{}`), Policy: run.DirectExecution, Replay: tc.policy}}
+				Body: effect.ToolAssignment{ToolRef: "lookup", Arguments: jsonstable.MustParse(`{}`), Policy: run.DirectExecution, Replay: tc.policy}}
 			raw, err := json.Marshal(a)
 			if err != nil {
 				t.Fatal(err)

@@ -50,11 +50,11 @@ type toolResponseDecisionDigestBody struct {
 }
 
 type ToolResponsePayloadBody struct {
-	Payload run.CanonicalJSON `json:"payload"`
+	Payload jsonstable.Value `json:"payload"`
 }
 
 type ToolOutputBody struct {
-	Output run.CanonicalJSON `json:"output"`
+	Output jsonstable.Value `json:"output"`
 }
 
 func (Digests) DigestToolResponseDecision(kind run.ResponseKind, decision run.ResponseDecision, reason string) (run.Digest, error) {
@@ -73,7 +73,7 @@ func (Digests) DigestToolResponseDecision(kind run.ResponseKind, decision run.Re
 	return jsonstable.DigestBytes(body), nil
 }
 
-func (Digests) DigestToolResponsePayload(payload run.CanonicalJSON) (run.Digest, error) {
+func (Digests) DigestToolResponsePayload(payload jsonstable.Value) (run.Digest, error) {
 	body, err := jsonstable.EncodeTypedPayload(preimageVersion, ToolResponseType, ToolResponsePayloadBody{Payload: payload})
 	if err != nil {
 		return "", err
@@ -92,7 +92,7 @@ func (Digests) DigestModelResult(result model.ModelResult) (run.Digest, error) {
 }
 
 // DigestToolOutput names one tool output; ToolCallCompleted carries it.
-func (Digests) DigestToolOutput(output run.CanonicalJSON) (run.Digest, error) {
+func (Digests) DigestToolOutput(output jsonstable.Value) (run.Digest, error) {
 	if output.IsZero() {
 		return "", errors.New("agent: tool output: empty output")
 	}

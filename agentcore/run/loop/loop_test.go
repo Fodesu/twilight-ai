@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -70,12 +71,12 @@ type fakeTool struct {
 	placement ToolPlacement
 }
 
-func (f *fakeTool) Ref() ToolRef                          { return f.ref }
-func (f *fakeTool) Definition() sdk.ToolDefinition        { return f.def }
-func (f *fakeTool) ResponsePolicy() ResponsePolicy        { return f.policy }
-func (f *fakeTool) Replay() ReplayPolicy                  { return f.replay }
-func (f *fakeTool) Placement() ToolPlacement              { return f.placement }
-func (f *fakeTool) ValidateArguments(CanonicalJSON) error { return f.valErr }
+func (f *fakeTool) Ref() ToolRef                             { return f.ref }
+func (f *fakeTool) Definition() sdk.ToolDefinition           { return f.def }
+func (f *fakeTool) ResponsePolicy() ResponsePolicy           { return f.policy }
+func (f *fakeTool) Replay() ReplayPolicy                     { return f.replay }
+func (f *fakeTool) Placement() ToolPlacement                 { return f.placement }
+func (f *fakeTool) ValidateArguments(jsonstable.Value) error { return f.valErr }
 func (f *fakeTool) Execute(ctx context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	return f.execute(ctx, req)
 }
