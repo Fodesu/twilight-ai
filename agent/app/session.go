@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
 )
@@ -73,14 +74,19 @@ var ErrTurnBudget = conversation.ErrTurnBudget
 // the turn.ErrConflict of a Turn that admits no route.
 var ErrRouteContended = conversation.ErrRouteContended
 
-// Result is the conversation-level outcome of one settled (or steered) Turn.
+// Result is the conversation-level outcome of one Turn as a call left it.
 type Result struct {
 	TurnID      turn.TurnID
 	Status      turn.TurnStatus
 	Disposition turn.ResumeDisposition
-	// AlreadyDriving reports that another driver in this process carries the
-	// Turn: the input is committed, its settlement and reply are reported by
-	// that driver. It is a fact about this process, not a Turn disposition.
+	// InFlight is the number of effects of the Turn this process still
+	// awaits; their Outcomes settle in the background and the Turn moves on
+	// from them. An active Turn with none in flight waits on something this
+	// process does not carry.
+	InFlight int
+	// AlreadyDriving reports that another step of the Turn was in progress
+	// in this process when this call met it; that step settles and reports.
+	// It is a fact about this process, not a Turn disposition.
 	AlreadyDriving bool
 	// Reply is the settled Turn's last assistant text; empty while the Turn
 	// still runs or when the attempt produced no text.
@@ -116,6 +122,8 @@ type Session struct {
 	inboxMu   sync.Mutex
 	// snapshotMu serializes the background snapshots of this Session.
 	snapshotMu sync.Mutex
+	// policyMu serializes the quiescence policies of this Session.
+	policyMu sync.Mutex
 }
 
 // OpenSession ensures the stream exists, takes ownership per the
@@ -188,10 +196,33 @@ func (s *Session) ref(turnID turn.TurnID) turn.TurnRef {
 	return turn.TurnRef{SessionID: s.sid, TurnID: turnID}
 }
 
-// Wait blocks until every background task started so far -- the drives
-// Submit started, the snapshots a settlement started -- has finished, or
-// ctx ends. It does not cancel anything; Close does.
-func (s *Session) Wait(ctx context.Context) error { return s.host.wait(ctx) }
+// Wait blocks until the Session has nothing more to do here: every
+// background task started so far -- the steps Submit started, the snapshots
+// a settlement started -- has finished and the active Turn, if any, has
+// ended or waits on something this process does not carry. It does not
+// cancel anything; Close does.
+func (s *Session) Wait(ctx context.Context) error {
+	for {
+		if err := s.host.wait(ctx); err != nil {
+			return err
+		}
+		surface, err := turn.ReadSurface(ctx, s.app.Projections, s.sid)
+		if err != nil {
+			return err
+		}
+		active, ok := surface.Active()
+		if !ok {
+			return nil
+		}
+		results, err := s.Settle(ctx, active.TurnID)
+		if err != nil {
+			return err
+		}
+		if last := results[len(results)-1]; last.Status == turn.TurnActive && !last.AlreadyDriving {
+			return nil
+		}
+	}
+}
 
 // Status reports the active Turn and the Turns awaiting Retry or Settle.
 func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
@@ -209,17 +240,111 @@ func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
 // Events is this Session's event stream from now on.
 func (s *Session) Events(ctx context.Context) <-chan Event { return s.app.Events(ctx, s.sid) }
 
-// Send submits text and blocks until it is settled or absorbed: the first
-// Result is the Turn the input landed in, further Results are the Turns
-// this call started from inputs still submitted after settlement. A
-// settlement that stopped at the TurnBudget returns the Results so far with
-// ErrTurnBudget.
+// Send submits text and returns once the Turn it landed in has ended or
+// waits on something this process does not carry: the first Result is that
+// Turn, further Results are the Turns this call started from inputs still
+// submitted when it ended. An input absorbed into a step in progress reports
+// AlreadyDriving at once; that step carries it. A settlement that stopped at
+// the TurnBudget returns the Results so far with ErrTurnBudget.
 func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
-	st, err := s.ctrl.Send(ctx, chatlog.NewInputID(), input.Text(text))
+	// The subscription precedes the submission, so no commit of the Turn is
+	// missed between the two.
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events := s.app.Events(subCtx, s.sid)
+	sub, err := s.ctrl.Submit(ctx, chatlog.NewInputID(), input.Text(text))
+	if err != nil {
+		return nil, err
+	}
+	if sub.AlreadyDriving {
+		res, _ := s.app.Turns.Status(ctx, sub.Ref)
+		return []Result{{TurnID: sub.Ref.TurnID, Status: res.Status, Disposition: res.Disposition, AlreadyDriving: true}}, nil
+	}
+	return s.settleTurn(ctx, events, sub.Ref.TurnID)
+}
+
+// Settle steps the Turn on, waiting between steps for the Outcomes this
+// process awaits, until it ends or waits on something this process does not
+// carry; the Results are as for Send.
+func (s *Session) Settle(ctx context.Context, turnID turn.TurnID) ([]Result, error) {
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	return s.settleTurn(ctx, s.app.Events(subCtx, s.sid), turnID)
+}
+
+// settleTurn advances the Turn and settles from there.
+func (s *Session) settleTurn(ctx context.Context, events <-chan Event, turnID turn.TurnID) ([]Result, error) {
+	st, err := s.ctrl.Advance(ctx, turnID)
+	return s.settleFrom(ctx, events, st, err)
+}
+
+// settleFrom continues a Settlement: while the last Turn stepped is active
+// with effects in flight here or a step in progress, it waits for the
+// stream to report a commit of its Run and advances again.
+func (s *Session) settleFrom(ctx context.Context, events <-chan Event, st conversation.Settlement, err error) ([]Result, error) {
+	for err == nil && len(st.Turns) > 0 {
+		last := st.Turns[len(st.Turns)-1]
+		if last.Status != turn.TurnActive || (last.InFlight == 0 && !last.AlreadyDriving) {
+			break
+		}
+		if err = awaitProgress(ctx, events, last.RunID, last.Ref.TurnID, last.AlreadyDriving); err != nil {
+			break
+		}
+		var next conversation.Settlement
+		if next, err = s.ctrl.Advance(ctx, last.Ref.TurnID); len(next.Turns) > 0 {
+			st.Turns = append(st.Turns[:len(st.Turns)-1], next.Turns...)
+			st.Quiescent = next.Quiescent
+		}
+	}
 	if st.Turns == nil {
 		return nil, err
 	}
 	return s.settled(ctx, st), err
+}
+
+// stepPoll bounds how long a caller waits on a step another goroutine of
+// this process is in the middle of before it looks again.
+const stepPoll = 20 * time.Millisecond
+
+// awaitProgress blocks until the stream reports a commit of the Run or the
+// Turn, a background failure, or -- while another step is in progress --
+// stepPoll elapsed; ctx bounds the wait.
+func awaitProgress(ctx context.Context, events <-chan Event, runID run.RunID, turnID turn.TurnID, stepping bool) error {
+	var tick <-chan time.Time
+	if stepping {
+		timer := time.NewTimer(stepPoll)
+		defer timer.Stop()
+		tick = timer.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick:
+			return nil
+		case e, ok := <-events:
+			if !ok {
+				return errors.New("app: the session's event stream ended")
+			}
+			if e.Err != nil {
+				return nil
+			}
+			switch v := e.Value.(type) {
+			case sessionstore.Event:
+				if v.RunID == runID {
+					return nil
+				}
+			case turn.FailedPayload:
+				if v.TurnID == turnID {
+					return nil
+				}
+			case turn.SupersededPayload:
+				if v.TurnID == turnID {
+					return nil
+				}
+			}
+		}
+	}
 }
 
 // Submit submits text under a fresh InputID; see SubmitInput.
@@ -260,27 +385,28 @@ func (s *Session) Stop(ctx context.Context, reason string) (turn.TurnResult, boo
 	return s.ctrl.Stop(ctx, reason)
 }
 
-// Advance drives the Turn to settlement and on through every Turn the
-// inputs still submitted start, blocking until the Session is quiescent
-// or another driver carries it.
+// Advance is Settle: it steps the Turn on until it ends or waits on
+// something this process does not carry, and on through the Turns the
+// inputs still submitted start.
 func (s *Session) Advance(ctx context.Context, turnID turn.TurnID) ([]Result, error) {
-	st, err := s.ctrl.Advance(ctx, turnID)
-	if st.Turns == nil {
-		return nil, err
-	}
-	return s.settled(ctx, st), err
+	return s.Settle(ctx, turnID)
 }
 
 // Resume advances a Session as found after a restart: the still-active
 // Turn when there is one, otherwise the Turn the submitted, undelivered
-// inputs start. ok is false when there is neither. A settlement that
-// stopped at the TurnBudget returns the Results so far with ErrTurnBudget.
+// inputs start, each settled as by Settle. ok is false when there is
+// neither. A settlement that stopped at the TurnBudget returns the Results
+// so far with ErrTurnBudget.
 func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events := s.app.Events(subCtx, s.sid)
 	st, ok, err := s.ctrl.Resume(ctx)
 	if !ok {
 		return nil, false, err
 	}
-	return s.settled(ctx, st), true, err
+	results, err := s.settleFrom(ctx, events, st, err)
+	return results, true, err
 }
 
 // settled runs the quiescence policies when the Settlement is quiescent and
@@ -300,7 +426,7 @@ func (s *Session) settled(ctx context.Context, st conversation.Settlement) []Res
 // result wraps one drive result with the settled Turn's reply;
 // materialization failures are reported to Warn and leave Reply empty.
 func (s *Session) result(ctx context.Context, resp *conversation.DriveResult) Result {
-	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, AlreadyDriving: resp.AlreadyDriving}
+	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, InFlight: resp.InFlight, AlreadyDriving: resp.AlreadyDriving}
 	if !resp.AlreadyDriving && resp.Disposition == turn.ResumeFinished {
 		text, err := s.app.Reply(ctx, resp.Ref)
 		if err != nil {
@@ -313,8 +439,12 @@ func (s *Session) result(ctx context.Context, resp *conversation.DriveResult) Re
 
 // quiescentPolicies runs at a quiescent Settlement: a settlement that left
 // no input undelivered snapshots the bound Workspace and runs the
-// automatic compaction policy.
+// automatic compaction policy. One run at a time: a caller's settlement and
+// the background step that reached the same quiescence both arrive here,
+// and the second finds the policies' conditions already met.
 func (s *Session) quiescentPolicies(ctx context.Context) {
+	s.policyMu.Lock()
+	defer s.policyMu.Unlock()
 	s.maybeSnapshot(ctx)
 	s.maybeCompact(ctx)
 }
@@ -325,16 +455,17 @@ func (s *Session) backgroundFailed(ref turn.TurnRef, err error) {
 	s.app.fail(ref.SessionID, fmt.Errorf("app: %w", err))
 }
 
-// wakeAdvance advances the Session from a settlement made outside its own
-// drives -- a reattached Outcome, an answered wait -- in the background, the
-// way SubmitInput advances the Turn an input landed in.
+// wakeAdvance steps the Session once from a settlement the engine made --
+// an Outcome delivered, a wait answered -- in the background, the way
+// SubmitInput steps the Turn an input landed in. A settlement that left the
+// Session quiescent runs the quiescence policies here.
 func (s *Session) wakeAdvance() {
 	s.host.run(func(ctx context.Context) {
-		st, ok, err := s.ctrl.Resume(ctx)
+		st, _, err := s.ctrl.Resume(ctx)
 		if err != nil {
 			s.backgroundFailed(turn.TurnRef{SessionID: s.sid}, fmt.Errorf("advancing after a settlement: %w", err))
 		}
-		if ok && st.Quiescent {
+		if st.Quiescent {
 			s.quiescentPolicies(ctx)
 		}
 	})

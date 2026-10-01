@@ -100,6 +100,11 @@ func (c child) Resume(ctx context.Context) ([]turn.TurnID, bool, error) {
 	return ids, true, err
 }
 
+func (c child) Settle(ctx context.Context, turnID turn.TurnID) error {
+	_, err := c.s.Settle(ctx, turnID)
+	return err
+}
+
 func (c child) Send(ctx context.Context, text string) (turn.TurnID, error) {
 	results, err := c.s.Send(ctx, text)
 	if len(results) == 0 {

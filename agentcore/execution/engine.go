@@ -22,15 +22,17 @@ import (
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
-// Engine is what a host advances Sessions with. Every method runs on the
-// caller's goroutine; work the Engine finishes on its own -- a reattached
-// Outcome settled, a wait answered -- is reported through Config.Notify and
-// never drives a Turn.
+// Engine is what a host advances Sessions with. Every method returns once
+// the step it was asked for is committed; nothing in it waits on an effect.
+// The Outcomes of the effects a step dispatched, the Outcomes of attempts a
+// takeover kept and the answers a Responder gives are settled by the Engine
+// on its own and reported through Config.Notify, and the host advances the
+// Session again from there.
 type Engine interface {
-	// Drive drives the Turn to its next quiescent point through the caller's
-	// Writer. alreadyDriving reports a concurrent local drive of the same
-	// Run carried it, in which case this call drove nothing.
-	Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (alreadyDriving bool, err error)
+	// Drive advances the Turn by one step through the caller's Writer: the
+	// Run's next transitions are committed and the effects they request are
+	// dispatched and awaited. The result says what the step left behind.
+	Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (DriveResult, error)
 	// Takeover runs the takeover disposition for a Session whose Writer was
 	// just acquired and returns the recovery commands it issued.
 	Takeover(ctx context.Context, w writer.Writer) (recovered int, err error)
@@ -52,6 +54,27 @@ type Engine interface {
 	// Close ends the listeners of every Session and the settlement
 	// subscription; every Session was detached before this.
 	Close()
+}
+
+// DriveResult is what one Drive reports. Exactly one of Dispatched > 0,
+// Waiting, Finished and AlreadyDriving describes the step; InFlight says
+// whether this process carries the Turn on from here.
+type DriveResult struct {
+	// Dispatched is the number of effects the step handed to the executor.
+	Dispatched int
+	// InFlight is the number of effects of the Run whose Outcomes this
+	// process awaits after the step, the dispatched ones included; each
+	// settles in the background and reaches the host as Notify. A Turn
+	// still active with none in flight waits on something this process does
+	// not carry: a response, or an execution left to the control plane.
+	InFlight int
+	// Waiting reports a Run with no executable action.
+	Waiting bool
+	// Finished reports a Turn that is no longer active.
+	Finished bool
+	// AlreadyDriving reports another step of the same Run in progress in
+	// this process; this call did nothing.
+	AlreadyDriving bool
 }
 
 // Sources are the Session-side services the Engine reads; a
@@ -157,7 +180,7 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 	}
 	sink := progressSink{x.progress}
 	lps := &loops{ports: cfg.Executor, presets: presets, decisions: cfg.Decisions, targets: cfg.TargetResolver, dispatch: cfg.Dispatch,
-		sources: decision.Sources{Projections: src.Projections, Content: src.Content}, watcher: x.watcher, planner: cfg.Planner}
+		sources: decision.Sources{Projections: src.Projections, Content: src.Content}, planner: cfg.Planner}
 	x.recovery = &recovery{runs: src.Runs, ports: cfg.Executor, loops: lps, watcher: x.watcher, fail: report, notify: notify,
 		missingEffects: cfg.MissingEffects, redispatches: cfg.Redispatches, maxRedispatches: cfg.MaxRedispatches, sink: sink}
 	var rs *responders
@@ -168,7 +191,7 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 	return x, nil
 }
 
-func (x *engine) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (bool, error) {
+func (x *engine) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (DriveResult, error) {
 	return x.driver.Drive(ctx, w, turnID)
 }
 

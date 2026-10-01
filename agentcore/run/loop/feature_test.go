@@ -1,9 +1,10 @@
 // The feature tests drive the Loop end to end against the reference RunStore.
 //
 // A Feature owns one in-process Runtime (a Memory Session with the run module
-// and its SessionRunStore) and, when Run is called, one Loop. Tests name
-// protocol features and speak in Tool/Model/Run/RunError/Approve/Require*.
-// Digest, envelope, revision, and derived effects stay inside the driver.
+// and its SessionRunStore) and, when Run is called, one Loop, stepped the way
+// a host steps it (loop.DriveForTest). Tests name protocol features and
+// speak in Tool/Model/Run/RunError/Approve/Require*. Digest, envelope,
+// revision, and derived effects stay inside the driver.
 
 package loop_test
 
@@ -180,8 +181,8 @@ func (f *Feature) ModelResolveError(err error) *Feature {
 	return f
 }
 
-// Context sets the context passed to the next Loop.Run. Load and Commit
-// keep using the Feature's background context.
+// Context sets the context the next Run drives under. Load and Commit keep
+// using the Feature's background context.
 func (f *Feature) Context(ctx context.Context) *Feature {
 	f.t.Helper()
 	f.runCtx = ctx
@@ -214,7 +215,7 @@ func (f *Feature) RunError(want error) *Feature {
 func (f *Feature) drive() error {
 	f.t.Helper()
 	f.ensureLoop()
-	res, err := f.loop.Run(f.runCtx, f.rt, f.runID, nil)
+	res, err := loop.DriveForTest(f.runCtx, f.loop, f.rt, f.runID, nil)
 	f.last = res
 	return err
 }

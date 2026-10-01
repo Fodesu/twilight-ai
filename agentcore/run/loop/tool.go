@@ -25,14 +25,16 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 // frozen Scheduling allows (RUN-LOP-4). Validation happens before the start
 // barrier through the Executor and a failed call is declined without a start
 // (DeclineToolCall, RUN-EXE-5); a validated call is started under its tool
-// effect and handed to the Executor. It returns the dispatched keys; an empty
-// list with no error means nothing is executing on this Loop's behalf and the
-// reload decides.
-func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, act plan.StartToolCalls) ([]AssignmentKey, error) {
+// effect and handed to the Executor. It returns the dispatched keys. held
+// reports Pending calls left as they are because the calls already
+// Executing fill the scheduling window: they start once one of those
+// settles. An empty list that is not held means nothing is executing on
+// this Loop's behalf and the reload decides.
+func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, act plan.StartToolCalls) (dispatched []AssignmentKey, held bool, err error) {
 	runID := snapshot.State.RunID
 	ts, ok := snapshot.State.Current.(run.ToolStep)
 	if !ok || ts.RefValue.ID != act.StepID {
-		return nil, fmt.Errorf("agent: loop: tool step %q is not current", act.StepID)
+		return nil, false, fmt.Errorf("agent: loop: tool step %q is not current", act.StepID)
 	}
 	limit := len(act.CallIDs)
 	if ts.Scheduling.Mode == run.ToolScheduleSequential {
@@ -41,7 +43,12 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 	if ts.Scheduling.MaxParallel > 0 && ts.Scheduling.MaxParallel < limit {
 		limit = ts.Scheduling.MaxParallel
 	}
-	var dispatched []AssignmentKey
+	// Calls already Executing hold their place in the window: a step
+	// entered again while they run starts no more than the window allows.
+	limit -= len(run.ExecutingCalls(snapshot.State))
+	if limit <= 0 {
+		return nil, true, nil
+	}
 	for _, callID := range act.CallIDs {
 		if len(dispatched) >= limit {
 			break
@@ -69,13 +76,13 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 		target, err := l.targetFor(ctx, EffectContext{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID,
 			Effect: ref.id, Kind: AssignmentTool, Tool: call.ToolRef, Placement: call.Placement})
 		if err != nil {
-			return dispatched, err
+			return dispatched, false, err
 		}
 		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay, Placement: call.Placement}
 		probe := Assignment{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID, Target: target, Body: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {
-			return dispatched, err
+			return dispatched, false, err
 		}
 		if known != nil {
 			// The call fails before its effect is requested: no start
@@ -86,9 +93,9 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 				run.DeclineToolCall{StepID: act.StepID, CallID: callID, Failure: *known})
 			if err != nil {
 				if retriable(err) {
-					return dispatched, nil // another actor moved the call; reload decides
+					return dispatched, false, nil // another actor moved the call; reload decides
 				}
-				return dispatched, err
+				return dispatched, false, err
 			}
 			l.emitCommitted(ctx, events, rt.Scope(), runID, res.Facts)
 			continue
@@ -98,9 +105,9 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 			run.StartToolCall{StepID: act.StepID, CallID: callID, Effect: ref.id})
 		if err != nil {
 			if retriable(err) {
-				return dispatched, nil // another actor moved the call; reload decides
+				return dispatched, false, nil // another actor moved the call; reload decides
 			}
-			return dispatched, err
+			return dispatched, false, err
 		}
 		if startedCall, ok := toolCallFromSnapshot(&start.Snapshot.State, act.StepID, callID); !ok || startedCall.Status != run.ToolExecuting || startedCall.Effect != ref.id {
 			// The one-shot replay may land after the call was settled, or the
@@ -120,20 +127,20 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 				// The request may have crossed the external boundary. Keep the
 				// call Executing for explicit recovery rather than claiming a
 				// known failure or dispatching a duplicate.
-				return dispatched, fmt.Errorf("agent: loop: tool dispatch outcome: %w", err)
+				return dispatched, false, fmt.Errorf("agent: loop: tool dispatch outcome: %w", err)
 			}
 			// The effect never started: settle it as a Known execution
 			// failure so the call does not stay Executing.
 			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}
 			if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
 				run.SubmitToolFailure{StepID: act.StepID, CallID: callID, Effect: ref.id, Failure: failure, Outcome: run.ToolOutcomeKnown}); serr != nil {
-				return dispatched, serr
+				return dispatched, false, serr
 			}
 			continue
 		}
 		dispatched = append(dispatched, assignment.Key())
 	}
-	return dispatched, nil
+	return dispatched, false, nil
 }
 
 func toolCallFromSnapshot(state *run.MachineState, stepID run.StepID, callID run.CallID) (run.ToolCallState, bool) {

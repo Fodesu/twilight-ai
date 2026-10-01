@@ -68,7 +68,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		resp, err := h.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).
-			if _, err = h.Execution.Drive(ctx, s.Handle().Writer(), ref1.TurnID); err == nil {
+			if _, err = s.Settle(ctx, ref1.TurnID); err == nil {
 				resp, err = h.Turns.Status(ctx, ref1)
 			}
 		}
@@ -149,7 +149,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	go func() {
 		defer close(done)
 		if _, err := h.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref}); err == nil {
-			_, _ = h.Execution.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
+			_, _ = s.Settle(ctx, ref1.TurnID)
 		}
 	}()
 	<-tool.started
@@ -235,7 +235,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = h.Execution.Drive(ctx, s.Handle().Writer(), ref.TurnID)
+		_, _ = s.Settle(ctx, ref.TurnID)
 	}()
 	t.Cleanup(func() { close(tool.release); <-done })
 	<-tool.started

@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	run "github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
 type serializedEventSink struct {
@@ -33,36 +32,4 @@ func (l *Loop) emitCommitted(ctx context.Context, events EventSink, scope run.Sc
 		Durability: EventCommitted,
 		Committed:  append([]run.Fact(nil), committed...),
 	})
-}
-
-// forwardProgress subscribes to key's frames on a ProgressPort and emits
-// each as a provisional Event on the drive's sink (RUN-LOP-6): this is how
-// deltas produced wherever the effect runs reach the host's observation
-// stream. It ends with the stream, the context, or a port that has no
-// progress for the key.
-func (l *Loop) forwardProgress(ctx context.Context, port effect.ProgressPort, key AssignmentKey, events EventSink) {
-	_ = port.Progress(ctx, key, 0, func(f effect.ProgressFrame) bool {
-		kind, ok := progressEventKind(f.Kind)
-		if !ok {
-			return true
-		}
-		_ = events.Emit(ctx, Event{Session: key.Session, RunID: key.RunID, Effect: key.Effect,
-			Generation: f.Generation, Sequence: f.Sequence, Kind: kind, Durability: EventProvisional, Payload: f.Payload})
-		return true
-	})
-}
-
-func progressEventKind(k effect.ProgressKind) (EventKind, bool) {
-	switch k {
-	case effect.ProgressTextDelta:
-		return EventModelTextDelta, true
-	case effect.ProgressReasoningDelta:
-		return EventModelReasoningDelta, true
-	case effect.ProgressToolProgress:
-		return EventToolProgress, true
-	case effect.ProgressReset:
-		return EventProgressReset, true
-	default:
-		return "", false
-	}
 }

@@ -132,7 +132,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 				t.Fatal(err)
 			}
 			rt, w := loopRuntime(t)
-			res, err := l.Run(ctx, rt.Bind(w), "run-1", nil)
+			res, err := DriveForTest(ctx, l, rt.Bind(w), "run-1", nil)
 			if err != nil || res.Result == nil || res.Result.Status != RunCompleted {
 				t.Fatalf("run = %+v %v", res, err)
 			}

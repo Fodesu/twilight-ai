@@ -35,6 +35,7 @@ type scriptedPort struct {
 	outcomes   map[effect.AssignmentKey]chan effect.Outcome
 	settled    map[effect.AssignmentKey]effect.Outcome
 	acked      []effect.AssignmentKey
+	cancelled  []effect.AssignmentKey
 	notices    chan effect.AssignmentKey
 }
 
@@ -84,7 +85,12 @@ func (p *scriptedPort) GetOutcome(_ context.Context, key effect.AssignmentKey) (
 		return effect.Outcome{}, effect.ErrOutcomeNotReady
 	}
 }
-func (p *scriptedPort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
+func (p *scriptedPort) Cancel(_ context.Context, key effect.AssignmentKey) error {
+	p.mu.Lock()
+	p.cancelled = append(p.cancelled, key)
+	p.mu.Unlock()
+	return nil
+}
 func (p *scriptedPort) Acknowledge(_ context.Context, key effect.AssignmentKey) error {
 	p.mu.Lock()
 	p.acked = append(p.acked, key)
@@ -362,5 +368,86 @@ func TestReattachedOutcomeNotifiesWithoutDriving(t *testing.T) {
 	case got := <-notified:
 		t.Fatalf("second Notify %s", got)
 	default:
+	}
+}
+
+// Drive steps the Run once and returns with the effect it dispatched in
+// flight; the Outcome settles in the background and reaches the host as
+// Notify, and the next Drive finds the Run finished without dispatching
+// again.
+func TestDriveAwaitsOutcomeAndNotifies(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	const sid session.SessionID = "s-drive"
+	s := newSessionSide(t)
+	port := newScriptedPort(effect.AttachmentActive)
+	notified := make(chan session.SessionID, 4)
+	x := newEngine(t, Config{Executor: effect.PortsOf(port), Notify: func(id session.SessionID) { notified <- id }}, s)
+	w, tref := s.startTurn(t, x, sid)
+
+	step, err := x.Drive(ctx, w, tref.TurnID)
+	if err != nil || step.Dispatched != 1 || step.InFlight != 1 || step.Finished {
+		t.Fatalf("first drive = %+v %v, want one effect dispatched and in flight", step, err)
+	}
+	a := port.dispatched[0]
+	port.complete(a.Key(), effect.Outcome{Result: effect.ModelSucceeded{Result: model.ModelResult{Text: "done", FinishReason: model.FinishReasonStop}}})
+	select {
+	case got := <-notified:
+		if got != sid {
+			t.Fatalf("notified %s, want %s", got, sid)
+		}
+	case <-ctx.Done():
+		t.Fatal("no Notify after the Outcome settled")
+	}
+	step, err = x.Drive(ctx, w, tref.TurnID)
+	if err != nil || !step.Finished {
+		t.Fatalf("drive after the settlement = %+v %v, want finished", step, err)
+	}
+	if n := port.count(); n != 1 {
+		t.Fatalf("dispatches = %d, want 1", n)
+	}
+	port.mu.Lock()
+	acked := append([]effect.AssignmentKey(nil), port.acked...)
+	port.mu.Unlock()
+	if len(acked) != 1 || acked[0] != a.Key() {
+		t.Fatalf("acknowledged = %v, want the settled key", acked)
+	}
+}
+
+// Detach ends what the Session awaits here: an effect dispatched and not
+// yet settled is cancelled at the executor, and its Outcome, arriving
+// afterwards, is not delivered.
+func TestDetachCancelsTheEffectsInFlight(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	const sid session.SessionID = "s-detach"
+	s := newSessionSide(t)
+	port := newScriptedPort(effect.AttachmentActive)
+	notified := make(chan session.SessionID, 4)
+	x := newEngine(t, Config{Executor: effect.PortsOf(port), Notify: func(id session.SessionID) { notified <- id }}, s)
+	w, tref := s.startTurn(t, x, sid)
+	if step, err := x.Drive(ctx, w, tref.TurnID); err != nil || step.InFlight != 1 {
+		t.Fatalf("drive = %+v %v, want one effect in flight", step, err)
+	}
+	key := port.dispatched[0].Key()
+	x.Detach(sid)
+	port.mu.Lock()
+	cancelled := append([]effect.AssignmentKey(nil), port.cancelled...)
+	port.mu.Unlock()
+	if len(cancelled) != 1 || cancelled[0] != key {
+		t.Fatalf("cancelled = %v, want %v", cancelled, key)
+	}
+	port.complete(key, effect.Outcome{Result: effect.Cancelled{Message: "detached"}})
+	select {
+	case got := <-notified:
+		t.Fatalf("Notify %s after Detach", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	rec, err := s.runs.Record(ctx, sid, turn.DeriveRunID(sid, tref.TurnID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ms, ok := rec.Snapshot.State.Current.(run.ModelStep); !ok || ms.Status != run.ModelExecuting {
+		t.Fatalf("run after detach = %+v, want the model step still executing for the next owner", rec.Snapshot.State.Current)
 	}
 }

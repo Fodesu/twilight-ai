@@ -2,7 +2,6 @@ package execution
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -40,9 +39,6 @@ type loops struct {
 	// dispatch is the re-offer policy of every Loop for a retryable dispatch
 	// refusal; the zero value selects loop's defaults.
 	dispatch loop.DispatchPolicy
-	// watcher is where every Loop waits for Outcomes: one settlement
-	// subscription to the Executor shared with the recovery; required.
-	watcher *effect.Watcher
 	// planner, when set, is consulted through every Loop's BeforePrepare:
 	// the between-steps context policy, given the Writer the drive commits
 	// through.
@@ -54,9 +50,6 @@ type loops struct {
 
 // For returns the Loop of the preset, building it on first use.
 func (l *loops) For(ref preset.PresetRef) (*loop.Loop, error) {
-	if l.watcher == nil {
-		return nil, errors.New("execution: loops require a watcher")
-	}
 	ap, err := l.presets.Resolve(ref)
 	if err != nil {
 		return nil, err
@@ -75,7 +68,6 @@ func (l *loops) For(ref preset.PresetRef) (*loop.Loop, error) {
 		MalformedRetries: ap.MalformedRetries,
 		TargetResolver:   l.targets,
 		Dispatch:         l.dispatch,
-		Watcher:          l.watcher,
 	}
 	if l.planner != nil {
 		settings.BeforePrepare = l.beforePrepare

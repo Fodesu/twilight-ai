@@ -8,13 +8,13 @@ import (
 
 	"github.com/felinics/twilight/agentcore/decision"
 	run "github.com/felinics/twilight/agentcore/run"
-	effect "github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
-// ErrRunAlreadyRunning identifies a second local driver for the same Run.
-// A Loop permits concurrent execution of different Runs and serializes each
-// Run locally so every Executing target has one in-process owner (RUN-CMT-6).
+// ErrRunAlreadyRunning reports an Advance of a Run another Advance or
+// Deliver of this Loop is stepping at that moment. A Loop steps different
+// Runs concurrently and one Run one step at a time (RUN-CMT-6); the caller
+// that lost steps again once told to.
 var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
 
 // EffectContext identifies the effect a target is resolved for: the Run's
@@ -61,12 +61,6 @@ type Settings struct {
 	// Dispatch bounds the re-offers of an Assignment the Executor refused
 	// as retryable (RUN-EXE-3); the zero value selects the defaults.
 	Dispatch DispatchPolicy
-	// Watcher is where a blocking Run waits for the Outcomes it dispatched:
-	// one per (owner, executor), shared with the Reconciler, so waiting on
-	// N effects costs one settlement subscription. Its Port must be the
-	// Loop's Executor. Nil builds a private one over the Executor, which
-	// serves a single-process host; a host with a Reconciler shares its.
-	Watcher *effect.Watcher
 }
 
 // PrepareHook is Settings.BeforePrepare: the store is the Loop's own bound
@@ -128,8 +122,8 @@ type Event struct {
 type LoopDisposition uint8
 
 const (
-	// LoopWaiting: no executable action; the Run waits for a response, a
-	// recovery, or an Outcome of an effect this Loop did not dispatch.
+	// LoopWaiting: no executable action; the Run waits for a response or for
+	// the Outcome of an effect in flight (Executing lists them).
 	LoopWaiting LoopDisposition = iota
 	// LoopFinished: the Run is terminal; Result is set.
 	LoopFinished
@@ -150,13 +144,15 @@ type LoopResult struct {
 	Disposition LoopDisposition
 	// Reason is execution_recovery when ExecutionRecovery is true; otherwise empty.
 	Reason WaitReason
-	// ExecutionRecovery is true when NeedsRecovery(state) is true after this
-	// Loop has no further executable action: a ModelStep is Executing, or a
-	// ToolStep has Executing calls and no Pending calls, and none of them was
-	// dispatched by this Loop. Under Session-level ownership this only happens
-	// before the owner's takeover disposition.
+	// ExecutionRecovery is true when the Run waits on effects in flight: a
+	// ModelStep is Executing, or a ToolStep has Executing calls and no
+	// Pending calls. Whether this process awaits their Outcomes or has to
+	// reconcile them with the executor is the host's knowledge, not the
+	// Run's.
 	ExecutionRecovery bool
-	Result            *run.RunResult
+	// Executing are the keys of those effects, one per Executing target.
+	Executing []AssignmentKey
+	Result    *run.RunResult
 	// Dispatched lists the assignments an Advance handed to the Executor.
 	Dispatched []AssignmentKey
 }

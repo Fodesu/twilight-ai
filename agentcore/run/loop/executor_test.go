@@ -333,12 +333,12 @@ func (e *failingOutcomeReader) GetOutcome(ctx context.Context, key AssignmentKey
 }
 
 // A transport failure reading an Outcome changes nothing: the step stays
-// Executing, the Loop keeps waiting (the Watcher reads again), and the real
-// Outcome settles the Run when it arrives.
-func TestRunOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
+// Executing, nothing is delivered, and the real Outcome settles the Run when
+// the read recovers.
+func TestOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := &failingOutcomeReader{recordingExecutor: newRecordingExecutor(), readErr: errors.New("temporary transport error"), failed: make(chan struct{}), ready: make(chan struct{})}
-	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}})
+	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,9 +346,9 @@ func TestRunOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 	defer cancel()
 	done := make(chan LoopResult, 1)
 	go func() {
-		res, err := l.Run(ctx, rt.Bind(w), "run-1", nil)
+		res, err := DriveForTest(ctx, l, rt.Bind(w), "run-1", nil)
 		if err != nil {
-			t.Errorf("Run = %v", err)
+			t.Errorf("drive = %v", err)
 		}
 		done <- res
 	}()
@@ -363,10 +363,10 @@ func TestRunOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 	select {
 	case res := <-done:
 		if res.Disposition != LoopFinished {
-			t.Fatalf("Run = %+v, want finished", res)
+			t.Fatalf("drive = %+v, want finished", res)
 		}
 	case <-ctx.Done():
-		t.Fatal("Run did not finish after the read recovered")
+		t.Fatal("the drive did not finish after the read recovered")
 	}
 	if got := loadState(t, rt, w, "run-1").State.Status; got != RunCompleted {
 		t.Fatalf("Run status after actual outcome = %v", got)
@@ -660,10 +660,10 @@ func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error 
 }
 
 // A persistently missing body reported by a remote executor must not spin the
-// Run: the blocking Run returns the error after one withdrawal. The executor
-// owns the execution payload after Dispatch; the Owner does not rebuild it
-// from Session state during this path.
-func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
+// Run: Deliver withdraws the step once and returns the error, so the drive
+// stops. The executor owns the execution payload after Dispatch; the Owner
+// does not rebuild it from Session state during this path.
+func TestDriveStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	cases := []struct {
 		name string
 		exec func(t *testing.T, rt store.RunStore) Executor
@@ -681,9 +681,9 @@ func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err = l.Run(ctx, rt.Bind(w), "run-1", nil)
+			_, err = DriveForTest(ctx, l, rt.Bind(w), "run-1", nil)
 			if !errors.Is(err, frozen.ErrMissing) {
-				t.Fatalf("Run = %v, want the missing-body error", err)
+				t.Fatalf("drive = %v, want the missing-body error", err)
 			}
 			started, recovered := 0, 0
 			for _, f := range recordFacts(t, rt, "run-1") {

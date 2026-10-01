@@ -49,8 +49,9 @@ type responders struct {
 	fail func(session.SessionID, error)
 
 	mu sync.Mutex
-	// answering are the ResponseIDs a Responder is working on.
-	answering map[run.ResponseID]struct{}
+	// answering are the ResponseIDs a Responder is working on, by the Run
+	// each belongs to.
+	answering map[run.ResponseID]run.RunID
 }
 
 // answer is one wait claimed for answering.
@@ -96,9 +97,9 @@ func (rs *responders) claim(ctx context.Context, w writer.Writer, runID run.RunI
 			continue
 		}
 		if rs.answering == nil {
-			rs.answering = make(map[run.ResponseID]struct{})
+			rs.answering = make(map[run.ResponseID]run.RunID)
 		}
-		rs.answering[c.Waiting.ID] = struct{}{}
+		rs.answering[c.Waiting.ID] = runID
 		rs.mu.Unlock()
 		out = append(out, answer{responder: responder,
 			call: WaitingCall{Request: *run.CloneResponseRequest(c.Waiting), ToolRef: c.ToolRef, Arguments: c.Arguments}})
@@ -110,6 +111,19 @@ func (rs *responders) release(a *answer) {
 	rs.mu.Lock()
 	delete(rs.answering, a.call.Request.ID)
 	rs.mu.Unlock()
+}
+
+// answeringFor counts the waits of runID a Responder is answering now.
+func (rs *responders) answeringFor(runID run.RunID) int {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	n := 0
+	for _, r := range rs.answering {
+		if r == runID {
+			n++
+		}
+	}
+	return n
 }
 
 // answerWaiting asks the Responder of every claimable wait of the Run and

@@ -40,7 +40,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	}
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := first.Run(context.Background(), oldRuntime.Bind(oldWriter), "run-1", nil)
+		_, err := DriveForTest(context.Background(), first, oldRuntime.Bind(oldWriter), "run-1", nil)
 		firstDone <- err
 	}()
 	<-started
@@ -65,7 +65,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := second.Run(context.Background(), stack.runtime.Bind(stack.writer(t)), "run-1", nil)
+	res, err := DriveForTest(context.Background(), second, stack.runtime.Bind(stack.writer(t)), "run-1", nil)
 	if err != nil || res.Disposition != LoopFinished || res.Result.Status != RunCompleted {
 		t.Fatalf("second loop = %+v %v", res, err)
 	}

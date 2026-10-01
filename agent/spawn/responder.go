@@ -81,13 +81,16 @@ type Children interface {
 
 // Child is one opened child Session's conversation.
 type Child interface {
-	// Resume advances the child as found: its active Turn, or the Turn its
+	// Resume steps the child as found: its active Turn, or the Turn its
 	// submitted inputs start; ok is false when there is neither. It returns
-	// the Turns it drove, in order.
+	// the Turns it stepped, in order.
 	Resume(ctx context.Context) (turns []turn.TurnID, ok bool, err error)
-	// Send submits text and advances to quiescence; it returns the Turn the
-	// text landed in.
+	// Send submits text and returns once the Turn it landed in ended or
+	// waits on something the host does not carry; it returns that Turn.
 	Send(ctx context.Context, text string) (turn.TurnID, error)
+	// Settle steps the Turn on until it ends or waits on something the host
+	// does not carry.
+	Settle(ctx context.Context, turnID turn.TurnID) error
 	Close(ctx context.Context) error
 }
 
@@ -308,6 +311,9 @@ func (r *Responder) settle(ctx context.Context, c Child, child session.SessionID
 		var turnID turn.TurnID
 		if ok && len(turns) > 0 {
 			turnID = turns[len(turns)-1]
+			if err := c.Settle(ctx, turnID); err != nil {
+				return "", err
+			}
 		} else {
 			if turnID, err = r.settledFor(ctx, child, task); err != nil {
 				return "", err

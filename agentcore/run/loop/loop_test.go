@@ -170,24 +170,39 @@ func TestNewLeavesEmptySchedulingMode(t *testing.T) {
 	}
 }
 
-func TestLoopRejectsConcurrentRunForSameID(t *testing.T) {
+// blockingBuilder holds Build until released, so a test parks one step of a
+// Run inside Advance.
+type blockingBuilder struct {
+	staticBuilder
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingBuilder) Build(ctx context.Context, hint decision.Input) (decision.Prompt, error) {
+	close(b.started)
+	<-b.release
+	return b.staticBuilder.Build(ctx, hint)
+}
+
+// One Run is stepped one step at a time: a second Advance while the first
+// is inside a step is ErrRunAlreadyRunning (RUN-CMT-6).
+func TestLoopRejectsConcurrentAdvanceForSameRun(t *testing.T) {
 	rt, w := loopRuntime(t)
-	invoker := &blockingInvoker{started: make(chan struct{}), release: make(chan struct{})}
-	loop, err := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	builder := &blockingBuilder{started: make(chan struct{}), release: make(chan struct{})}
+	loop, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{}, builder, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	done := make(chan error, 1)
 	go func() {
-		_, runErr := loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
-		done <- runErr
+		_, advanceErr := loop.Advance(context.Background(), rt.Bind(w), "run-1", nil)
+		done <- advanceErr
 	}()
-	<-invoker.started
-	if _, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil); !errors.Is(err, ErrRunAlreadyRunning) {
-		t.Fatalf("concurrent Run error = %v, want ErrRunAlreadyRunning", err)
+	<-builder.started
+	if _, err := loop.Advance(context.Background(), rt.Bind(w), "run-1", nil); !errors.Is(err, ErrRunAlreadyRunning) {
+		t.Fatalf("concurrent Advance error = %v, want ErrRunAlreadyRunning", err)
 	}
-	close(invoker.release)
+	close(builder.release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +219,7 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = broken.Run(context.Background(), rt.Bind(w), "run-1", nil)
+	_, err = DriveForTest(context.Background(), broken, rt.Bind(w), "run-1", nil)
 	if !errors.Is(err, ErrModelUnavailable) || !strings.Contains(err.Error(), missing.Error()) {
 		t.Fatalf("err = %v, want ErrModelUnavailable carrying %q", err, missing)
 	}
@@ -234,7 +249,7 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := ready.Run(context.Background(), rt.Bind(w), "run-1", nil)
+	res, err := DriveForTest(context.Background(), ready, rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +293,7 @@ func TestLoopParallelBounded(t *testing.T) {
 	var res LoopResult
 	var runErr error
 	go func() {
-		res, runErr = loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
+		res, runErr = DriveForTest(context.Background(), loop, rt.Bind(w), "run-1", nil)
 		close(done)
 	}()
 
@@ -336,7 +351,7 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 	}, Position: 1}
 
 	rt, w := loopRuntime(t)
-	dispatched, err := loop.startToolCalls(context.Background(), staleCommitRuntime{RunStore: rt.Bind(w)}, nil, snapshot,
+	dispatched, _, err := loop.startToolCalls(context.Background(), staleCommitRuntime{RunStore: rt.Bind(w)}, nil, snapshot,
 		plan.StartToolCalls{StepID: stepID, CallIDs: []CallID{callID}})
 	if err != nil || len(dispatched) != 0 {
 		t.Fatalf("stale start: dispatched=%d err=%v", len(dispatched), err)
@@ -396,7 +411,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil); err == nil {
+	if _, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1", nil); err == nil {
 		t.Fatal("first run unexpectedly completed after lost start responses")
 	}
 	snapshot, err := rt.Bind(w).Load(context.Background(), "run-1")
@@ -409,7 +424,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	if current, ok := snapshot.State.Current.(ModelStep); !ok || current.Status != ModelExecuting {
 		t.Fatalf("current = %#v, want Executing ModelStep", snapshot.State.Current)
 	}
-	res, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
+	res, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1", nil)
 	if err != nil || res.Disposition != LoopWaiting || !res.ExecutionRecovery {
 		t.Fatalf("run with an orphaned Executing step = %+v %v, want waiting for recovery", res, err)
 	}
@@ -419,7 +434,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 		t.Fatalf("RecoverInterrupted = %d %v", n, err)
 	}
 	rt.loseModelStart = false // the transport is healthy again
-	if _, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil); err != nil {
+	if _, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	if invoker.calls.Load() != 1 {
@@ -442,13 +457,13 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil); err == nil {
+	if _, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1", nil); err == nil {
 		t.Fatal("first run unexpectedly completed after lost settlement responses")
 	}
 	if executions.Load() != 1 {
 		t.Fatalf("tool executions = %d, want 1", executions.Load())
 	}
-	res, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
+	res, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +490,7 @@ func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
+	res, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +518,7 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	rt, w := loopRuntime(t)
 	loop, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 
-	_, err := loop.Run(ctx, rt.Bind(w), "run-1", nil)
+	_, err := DriveForTest(ctx, loop, rt.Bind(w), "run-1", nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -529,7 +544,7 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	// A fresh Loop plans a new step; the cancelled one left no count behind.
 	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
 	loop2, _ := newLoop(t, nil, fakeCatalog{invoker2}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
-	res, err := loop2.Run(context.Background(), rt.Bind(w), "run-1", nil)
+	res, err := DriveForTest(context.Background(), loop2, rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,10 +19,11 @@ import (
 // authoritative state: every step starts from RunStore.Load, derives the next
 // action with plan.Next, records the protocol transition and, for a start,
 // hands the requested effect to the Executor as an Assignment keyed by its
-// EffectID. Outcomes are read by that key through the Executor port and
-// settled under the effect's derived CommandIDs; the Loop never waits on an
-// effect inside Advance and never learns which attempt the Executor made
-// for it.
+// EffectID. An Outcome comes back by that key through Deliver and is settled
+// under the effect's derived CommandIDs. The Loop never waits on an effect:
+// Advance returns with the keys it dispatched, and whoever hosts the Run
+// reads their Outcomes and delivers them. It never learns which attempt the
+// Executor made for an effect.
 type Loop struct {
 	// Ports is the effect layer the Loop dispatches through and the optional
 	// capabilities it uses when present: progress frames relayed to the
@@ -35,19 +36,15 @@ type Loop struct {
 	mu       sync.Mutex
 	slots    map[run.RunID]*runSlot
 	eventsMu sync.Mutex
-	// ownWatcher is the Watcher built when Settings names none; see watcher.
-	ownWatcher *effect.Watcher
 }
 
 // runSlot serializes one Run: step guards a single Advance or Deliver at a
-// time; driving marks a blocking Run in progress so a second driver is
-// reported instead of interleaved (RUN-CMT-6). refs counts the callers holding
-// the slot; the entry is dropped with the last release, so the map is bounded
-// by the Runs being driven now rather than by every Run the Loop has seen.
+// time (RUN-CMT-6). refs counts the callers holding the slot; the entry is
+// dropped with the last release, so the map is bounded by the Runs being
+// stepped now rather than by every Run the Loop has seen.
 type runSlot struct {
-	step    sync.Mutex
-	driving bool
-	refs    int
+	step sync.Mutex
+	refs int
 }
 
 // New validates the settings (RUN-LOP-1) and binds the effect ports and the
@@ -159,36 +156,6 @@ func (l *Loop) release(runID run.RunID) {
 	l.mu.Unlock()
 }
 
-// startDriving marks runID as driven by a blocking Run and holds its slot for
-// the drive; stopDriving releases both.
-func (l *Loop) startDriving(runID run.RunID) (*runSlot, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	s := l.slotLocked(runID)
-	if s.driving {
-		return nil, ErrRunAlreadyRunning
-	}
-	s.driving = true
-	s.refs++
-	return s, nil
-}
-
-func (l *Loop) stopDriving(runID run.RunID) {
-	l.mu.Lock()
-	if s, ok := l.slots[runID]; ok {
-		s.driving = false
-	}
-	l.releaseLocked(runID)
-	l.mu.Unlock()
-}
-
-func (l *Loop) isDriving(runID run.RunID) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	s, ok := l.slots[runID]
-	return ok && s.driving
-}
-
 func (l *Loop) checkArgs(ctx context.Context, st store.RunStore, runID run.RunID) error {
 	if ctx == nil {
 		return errors.New("agent: loop: nil context")
@@ -213,16 +180,13 @@ func (l *Loop) wrapSink(events EventSink) EventSink {
 // effect (RUN-LOP-2): it records protocol transitions (prepare, withdraw,
 // start barriers) and dispatches Assignments, then returns LoopDispatched,
 // LoopWaiting or LoopFinished. The caller reads each returned key through
-// Executor.GetOutcome and passes it to Deliver. A concurrent Advance or a
-// blocking Run of the same Run is reported as ErrRunAlreadyRunning. store is
-// the RunStore bound to the caller's write capability: every commit of the
-// step goes through it (OWN-HDL-2).
+// the executor and passes its Outcome to Deliver. A concurrent Advance or
+// Deliver of the same Run is reported as ErrRunAlreadyRunning. store is the
+// RunStore bound to the caller's write capability: every commit of the step
+// goes through it (OWN-HDL-2).
 func (l *Loop) Advance(ctx context.Context, st store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, st, runID); err != nil {
 		return LoopResult{}, err
-	}
-	if l.isDriving(runID) {
-		return LoopResult{}, ErrRunAlreadyRunning
 	}
 	s := l.acquire(runID)
 	defer l.release(runID)
@@ -292,24 +256,48 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 				return LoopResult{Disposition: LoopDispatched, Dispatched: []AssignmentKey{*dispatched}}, nil
 			}
 		case plan.StartToolCalls:
-			dispatched, err := l.startToolCalls(ctx, rt, events, &snapshot, act)
+			dispatched, held, err := l.startToolCalls(ctx, rt, events, &snapshot, act)
 			if err != nil {
 				return LoopResult{}, err
 			}
 			if len(dispatched) > 0 {
 				return LoopResult{Disposition: LoopDispatched, Dispatched: dispatched}, nil
 			}
-		case plan.Idle:
-			recovery := run.NeedsRecovery(snapshot.State)
-			reason := WaitReason("")
-			if recovery {
-				reason = ExecutionRecovery
+			if held {
+				// The scheduling window is full of calls in flight: the
+				// Pending ones start when one of them settles.
+				return LoopResult{Disposition: LoopWaiting, Executing: executingKeys(rt.Scope(), &snapshot.State)}, nil
 			}
-			return LoopResult{Disposition: LoopWaiting, Reason: reason, ExecutionRecovery: recovery}, nil
+		case plan.Idle:
+			res := LoopResult{Disposition: LoopWaiting}
+			if run.NeedsRecovery(snapshot.State) {
+				res.Reason, res.ExecutionRecovery = ExecutionRecovery, true
+				res.Executing = executingKeys(rt.Scope(), &snapshot.State)
+			}
+			return res, nil
 		default:
 			return LoopResult{}, fmt.Errorf("agent: loop: unknown action %T", action)
 		}
 	}
+}
+
+// executingKeys are the keys of the effects state is Executing under: the
+// model step's, or one per Executing tool call.
+func executingKeys(scope run.Scope, state *run.MachineState) []AssignmentKey {
+	var keys []AssignmentKey
+	switch cur := state.Current.(type) {
+	case run.ModelStep:
+		if cur.Status == run.ModelExecuting && cur.Effect != "" {
+			keys = append(keys, AssignmentKey{Session: scope, RunID: state.RunID, Effect: cur.Effect})
+		}
+	case run.ToolStep:
+		for i := range cur.Calls {
+			if c := &cur.Calls[i]; c.Status == run.ToolExecuting && c.Effect != "" {
+				keys = append(keys, AssignmentKey{Session: scope, RunID: state.RunID, Effect: c.Effect})
+			}
+		}
+	}
+	return keys
 }
 
 // finish is the single exit for a terminal Run, whether the terminal state
@@ -401,156 +389,6 @@ func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, even
 		return l.finish(ctx, events, rt.Scope(), runID, finished), nil
 	}
 	return LoopResult{Disposition: LoopDelivered}, nil
-}
-
-// Run drives the Run until it finishes, has no executable action, or the
-// context is cancelled (RUN-LOP-2): Advance, wait for the Outcomes of what it
-// dispatched, GetOutcome, Deliver, repeat. It is the blocking form every
-// host uses; hosts that receive Outcomes from elsewhere call Advance and
-// Deliver themselves. The caller context bounds the drive: on cancellation the
-// in-flight assignments of the Run are cancelled and their Outcomes are still
-// settled (RUN-LOP-5) before ctx.Err() is returned.
-func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
-	if err := l.checkArgs(ctx, rt, runID); err != nil {
-		return LoopResult{}, err
-	}
-	s, err := l.startDriving(runID)
-	if err != nil {
-		return LoopResult{}, err
-	}
-	defer l.stopDriving(runID)
-	events = l.wrapSink(events)
-
-	outcomes := make(chan outcomeRead, 64)
-	pending := map[AssignmentKey]func(){}
-	cancelled := false
-	settleCtx := context.WithoutCancel(ctx)
-	readCtx, stopReads := context.WithCancel(settleCtx)
-	defer stopReads()
-	// Registrations with the Watcher outlive this drive unless dropped: a
-	// key still pending when Run returns (ownership lost, a read error)
-	// belongs to whoever drives next.
-	defer func() {
-		for _, cancel := range pending {
-			cancel()
-		}
-	}()
-
-	// onOwnershipLost stops every in-flight effect: their Outcomes are not ours
-	// to write any more (RUN-LOP-5). The cancelled effects still report, so the
-	// pending Outcomes are drained -- never settled -- before returning; a tool
-	// that ignores its context blocks here as it always would.
-	onOwnershipLost := func(err error) error {
-		for key := range pending {
-			_ = l.Executor.Cancel(settleCtx, key)
-		}
-		for len(pending) > 0 {
-			read := <-outcomes
-			delete(pending, read.key)
-		}
-		return err
-	}
-
-	for {
-		if len(pending) == 0 {
-			if cancelled {
-				return LoopResult{}, ctx.Err()
-			}
-			s.step.Lock()
-			res, err := l.advance(ctx, rt, runID, events)
-			s.step.Unlock()
-			if err != nil {
-				if ownershipLost(err) {
-					return LoopResult{}, onOwnershipLost(err)
-				}
-				return LoopResult{}, err
-			}
-			if res.Disposition != LoopDispatched {
-				return res, nil
-			}
-			for _, k := range res.Dispatched {
-				pending[k] = l.awaitOutcome(readCtx, k, outcomes)
-				if l.Ports.Progress != nil && events != nil {
-					go l.forwardProgress(readCtx, l.Ports.Progress, k, events)
-				}
-			}
-		}
-
-		var read outcomeRead
-		if cancelled {
-			read = <-outcomes
-		} else {
-			select {
-			case read = <-outcomes:
-			case <-ctx.Done():
-				// Stop what we started; each cancelled effect still reports an
-				// Outcome, settled below under the detached context.
-				cancelled = true
-				for key := range pending {
-					_ = l.Executor.Cancel(settleCtx, key)
-				}
-				continue
-			}
-		}
-		if _, ours := pending[read.key]; !ours {
-			continue // an Outcome of an attempt this drive did not dispatch
-		}
-		if read.err != nil {
-			return LoopResult{}, fmt.Errorf("agent: loop: read outcome: %w", read.err)
-		}
-		pending[read.key]()
-		delete(pending, read.key)
-
-		s.step.Lock()
-		res, err := l.deliver(settleCtx, rt, read.outcome, events)
-		s.step.Unlock()
-		if err != nil {
-			if ownershipLost(err) {
-				return LoopResult{}, onOwnershipLost(err)
-			}
-			return res, err
-		}
-		if res.Disposition == LoopFinished {
-			return res, nil
-		}
-	}
-}
-
-type outcomeRead struct {
-	key     AssignmentKey
-	outcome Outcome
-	err     error
-}
-
-// watcher is where this Loop's blocking Runs wait for Outcomes: the one
-// Settings names, or a private one over the Executor built on first use.
-func (l *Loop) watcher() *effect.Watcher {
-	if l.Settings.Watcher != nil {
-		return l.Settings.Watcher
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.ownWatcher == nil {
-		l.ownWatcher = &effect.Watcher{Port: l.Executor, Settlements: l.Ports.Settlements, Recover: l.Ports.Recover}
-	}
-	return l.ownWatcher
-}
-
-// awaitOutcome registers key with the Watcher and forwards what it finds to
-// outcomes: the Outcome once the executor's settlement notice (or the
-// Watcher's periodic read) makes it readable, or the definitive error of a
-// key the executor will never answer for. Nothing is held open for the
-// length of the execution; the returned cancel drops the registration.
-func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes chan<- outcomeRead) (cancel func()) {
-	send := func(read outcomeRead) {
-		select {
-		case outcomes <- read:
-		case <-ctx.Done():
-		}
-	}
-	return l.watcher().Watch(ctx, key,
-		func(out Outcome) { send(outcomeRead{key: key, outcome: out}) },
-		func(err error) { send(outcomeRead{key: key, err: err}) })
 }
 
 // commit builds the envelope via the sanctioned constructor and submits it.

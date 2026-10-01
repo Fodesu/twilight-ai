@@ -1,11 +1,12 @@
 // Package conversation is the orchestration over one owned Session: the
-// Controller admits inputs into Turns and advances the Session to its next
-// quiescent point through the Engine it is given. The Turn protocol
-// itself -- the Coordinator, the quiescence guards, the request and result
-// vocabulary -- is the Turn module's; this package re-exports that
-// vocabulary for the hosts. Every call runs on the caller's goroutine and
-// ctx; which calls run in the background, what a reply is and which
-// policies run at quiescence are the host's decisions, taken on the
+// Controller admits inputs into Turns and advances the Session by one step
+// through the Engine it is given. The Turn protocol itself -- the
+// Coordinator, the quiescence guards, the request and result vocabulary --
+// is the Turn module's. Every call runs on the caller's goroutine and ctx
+// and returns once the Session has nothing to do on it: an effect in flight
+// settles in the Engine and reaches the host as a notice, and the host
+// advances again. Which calls run in the background, what a reply is and
+// which policies run at quiescence are the host's decisions, taken on the
 // Settlement each call returns.
 package conversation
 
@@ -30,24 +31,29 @@ type Turns interface {
 	turn.Reader
 }
 
-// DriveResult is what one drive of a Turn reports: the Turn's committed
-// answer, and whether another local driver of the same Run was already
-// carrying it, in which case this call drove nothing and the answer is the
-// status as read. AlreadyDriving is a fact about this process, not about
-// the Turn, so it is not a Turn disposition: the Turn's durable vocabulary
-// stays the Turn module's.
+// DriveResult is what one step of a Turn reports: the Turn's committed
+// answer and what the step left behind. InFlight counts the effects of the
+// Run this process awaits after the step, whose Outcomes reach the host as
+// notices; an active Turn with none in flight waits on something this
+// process does not carry. AlreadyDriving reports another step of the same
+// Run in progress in this process, in which case this call did nothing and
+// the answer is the status as read. Both are facts about this process, not
+// about the Turn, so they are not Turn dispositions: the Turn's durable
+// vocabulary stays the Turn module's.
 type DriveResult struct {
 	turn.TurnResult
+	InFlight       int
 	AlreadyDriving bool
 }
 
 // Settlement is what one advance of the Session reports: the Turns it
-// drove, in order -- the Turn it began with, then every Turn it started
-// from inputs that were submitted but not yet delivered. Quiescent reports
-// that no such input remains and no Turn is active: the point at which the
-// host's quiescence policies apply. It is false when another driver
-// carries the settlement (AlreadyDriving), when the advance stopped at the
-// TurnBudget and when a concurrent advance took the pending inputs.
+// stepped, in order -- the Turn it began with and, when that Turn ended,
+// every Turn it started from inputs that were submitted but not yet
+// delivered. Quiescent reports that no Turn is active and no such input
+// remains: the point at which the host's quiescence policies apply. It is
+// false while a Turn is active, when another step of the same Run carries
+// it (AlreadyDriving), when the advance stopped at the TurnBudget and when a
+// concurrent advance took the pending inputs.
 type Settlement struct {
 	Turns     []DriveResult
 	Quiescent bool
@@ -97,14 +103,14 @@ var (
 	ErrTurnBudget = errors.New("conversation: turn budget exhausted with inputs still submitted")
 )
 
-// Controller is the orchestration over one owned Session. Submit
-// admits an input into a Turn, Advance drives a Turn to settlement and on
-// through every Turn the remaining inputs start, Resume does the same for
-// a Session as found after a restart, and Stop settles the active Turn.
-// Every command runs through the Config's Writer; reads go by SessionID.
-// Concurrent calls are safe: writes serialize in the Writer, and a call
-// whose input lands in a running Turn reports AlreadyDriving. It starts no
-// goroutine of its own.
+// Controller is the orchestration over one owned Session. Submit admits an
+// input into a Turn, Advance steps a Turn once and, when it ended, on
+// through the Turns the remaining inputs start, Resume does the same for a
+// Session as found after a restart or a notice, and Stop settles the active
+// Turn. Every command runs through the Config's Writer; reads go by
+// SessionID. Concurrent calls are safe: writes serialize in the Writer, and
+// a call that meets a step in progress reports AlreadyDriving. It starts no
+// goroutine of its own and waits on no effect.
 type Controller struct {
 	w      writer.Writer
 	engine execution.Engine
@@ -195,10 +201,10 @@ func (r *Controller) Submit(ctx context.Context, id run.InputID, content run.Can
 	return Submitted{}, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, r.routeRetries, lastErr.Error())
 }
 
-// Send submits the input and advances the Session to quiescence: the first
-// Turn of the Settlement is the one the input landed in, the rest are the
-// Turns the remaining inputs started. When another driver of this process
-// took the input, the single Turn reports AlreadyDriving and that driver
+// Send submits the input and advances the Session once: the first Turn of
+// the Settlement is the one the input landed in, the rest are the Turns the
+// remaining inputs started once it ended. When another step of this process
+// took the input, the single Turn reports AlreadyDriving and that step
 // settles.
 func (r *Controller) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Settlement, error) {
 	sub, err := r.Submit(ctx, id, content)
@@ -212,23 +218,27 @@ func (r *Controller) Send(ctx context.Context, id run.InputID, content run.Canon
 	return r.Advance(ctx, sub.Ref.TurnID)
 }
 
-// Advance drives the Turn to its next quiescent point and, while its
-// settlement leaves inputs submitted but undelivered, starts the next Turn
-// from them and drives it, until no input remains and no Turn is active:
-// the Settlement is then Quiescent. An advance that stops at the TurnBudget
-// returns the Turns so far with ErrTurnBudget. The caller's ctx bounds the
-// drive: a cancelled drive leaves the Turn active for the next Resume.
+// Advance steps the Turn once. A Turn still active afterwards -- effects
+// dispatched, a response awaited -- is the Settlement: its Outcomes reach
+// the host as notices and the host advances again. A Turn that ended lets
+// the inputs submitted but undelivered start the next Turn, stepped once in
+// turn, until a Turn stays active or no input remains and no Turn is
+// active: the Settlement is then Quiescent. An advance that stops at the
+// TurnBudget returns the Turns so far with ErrTurnBudget. The caller's ctx
+// bounds the step: a cancelled step leaves the Turn active for the next
+// Resume.
 func (r *Controller) Advance(ctx context.Context, turnID turn.TurnID) (Settlement, error) {
 	resp, err := r.drive(ctx, turnID)
 	if err != nil {
 		return Settlement{}, err
 	}
-	return r.settle(ctx, resp)
+	return r.settle(ctx, &resp)
 }
 
-// Resume advances a Session as found after a restart: the still-active Turn
-// when there is one, otherwise the Turn the submitted, undelivered inputs
-// start. ok is false when there is neither.
+// Resume advances a Session as found after a restart or a notice: the
+// still-active Turn when there is one, otherwise the Turn the submitted,
+// undelivered inputs start. ok is false when there is neither; the
+// Settlement is then Quiescent.
 func (r *Controller) Resume(ctx context.Context) (Settlement, bool, error) {
 	if active, ok, err := r.active(ctx); err != nil {
 		return Settlement{}, false, err
@@ -237,10 +247,13 @@ func (r *Controller) Resume(ctx context.Context) (Settlement, bool, error) {
 		return out, true, err
 	}
 	resp, ok, err := r.next(ctx)
-	if err != nil || !ok {
+	if err != nil {
 		return Settlement{}, false, err
 	}
-	out, err := r.settle(ctx, resp)
+	if !ok {
+		return Settlement{Quiescent: true}, false, nil
+	}
+	out, err := r.settle(ctx, &resp)
 	return out, true, err
 }
 
@@ -266,11 +279,9 @@ func (r *Controller) active(ctx context.Context) (turn.TurnID, bool, error) {
 	return "", false, nil
 }
 
-// drive runs the Turn to its next quiescent point and reads its committed
-// answer; AlreadyDriving reports a concurrent local driver of the same Run
-// carried it, in which case the answer is the status as read.
+// drive steps the Turn once and reads its committed answer.
 func (r *Controller) drive(ctx context.Context, turnID turn.TurnID) (DriveResult, error) {
-	taken, err := r.engine.Drive(ctx, r.w, turnID)
+	step, err := r.engine.Drive(ctx, r.w, turnID)
 	if err != nil {
 		return DriveResult{}, err
 	}
@@ -278,7 +289,7 @@ func (r *Controller) drive(ctx context.Context, turnID turn.TurnID) (DriveResult
 	if err != nil {
 		return DriveResult{}, err
 	}
-	return DriveResult{TurnResult: resp, AlreadyDriving: taken}, nil
+	return DriveResult{TurnResult: resp, InFlight: step.InFlight, AlreadyDriving: step.AlreadyDriving}, nil
 }
 
 // route commits the inputs' route: Deliver into the active Turn when there
@@ -351,16 +362,19 @@ func (r *Controller) next(ctx context.Context) (DriveResult, bool, error) {
 	return resp, err == nil, err
 }
 
-// settle is what follows one drive: while the settlement leaves submitted,
-// undelivered inputs, the next Turn starts from them; when none remains and
-// no Turn is active, the Settlement is Quiescent.
-func (r *Controller) settle(ctx context.Context, resp DriveResult) (Settlement, error) {
-	out := Settlement{Turns: []DriveResult{resp}}
-	if resp.AlreadyDriving {
-		// The running driver settles the Turn and advances in its own call.
-		return out, nil
-	}
+// settle is what follows one step: a Turn still active is the Settlement,
+// its next step waits on a notice; a Turn that ended lets the submitted,
+// undelivered inputs start the next Turn; when none remains and no Turn is
+// active, the Settlement is Quiescent.
+func (r *Controller) settle(ctx context.Context, resp *DriveResult) (Settlement, error) {
+	out := Settlement{Turns: []DriveResult{*resp}}
+	last := *resp
 	for range r.turnBudget {
+		if last.AlreadyDriving || last.Status == turn.TurnActive {
+			// The step in progress, or the notice of what this step
+			// dispatched, carries the Turn on.
+			return out, nil
+		}
 		next, ok, err := r.next(ctx)
 		if err != nil {
 			if errors.Is(err, turn.ErrConflict) {
@@ -374,9 +388,7 @@ func (r *Controller) settle(ctx context.Context, resp DriveResult) (Settlement, 
 			return out, nil
 		}
 		out.Turns = append(out.Turns, next)
-		if next.AlreadyDriving {
-			return out, nil
-		}
+		last = next
 	}
 	return out, ErrTurnBudget
 }
