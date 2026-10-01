@@ -2,21 +2,20 @@ package loop
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agentcore/ledger"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
-	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/sdk"
 )
 
 // The owner process dies while a tool call is Executing. A new owner takes
 // the Session over, the takeover settles the call as Unknown, a fresh
 // Loop finishes the Run, and the dead owner's late settlement is fenced with
-// ErrOwnershipLost (RUN-CMT-6/7, RUN-LOP-5).
+// ownership loss (RUN-CMT-6/7, RUN-LOP-5).
 func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
@@ -82,8 +81,8 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 
 	// The dead owner's worker finally returns: its settlement is fenced.
 	close(block)
-	if err := <-firstDone; !errors.Is(err, store.ErrOwnershipLost) {
-		t.Fatalf("old owner loop error = %v, want ErrOwnershipLost", err)
+	if err := <-firstDone; !ledger.IsOwnershipLost(err) {
+		t.Fatalf("old owner loop error = %v, want ownership lost", err)
 	}
 	// Nothing of the old owner reached the ledger after the takeover.
 	for _, f := range recordFacts(t, stack.runtime, "run-1") {

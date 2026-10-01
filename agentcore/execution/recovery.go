@@ -2,10 +2,10 @@ package execution
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -198,7 +198,7 @@ func (r *recovery) deliver(lt *lifetime, out effect.Outcome) {
 	}
 	res, err := l.Deliver(ctx, r.runs.Bind(w), out)
 	if err != nil {
-		if errors.Is(err, store.ErrOwnershipLost) {
+		if ledger.IsOwnershipLost(err) {
 			r.lost(lt)
 		}
 		r.report(sid, fmt.Errorf("execution: settling outcome for run %s: %w", out.Key.RunID, err))
@@ -215,7 +215,7 @@ func (r *recovery) deliver(lt *lifetime, out effect.Outcome) {
 func (r *recovery) lost(lt *lifetime) {
 	lt.mu.Lock()
 	if lt.lost == nil {
-		lt.lost = fmt.Errorf("%w: the session was taken over", store.ErrOwnershipLost)
+		lt.lost = &ledger.Error{Code: ledger.CodeOwnershipLost, Detail: "the session was taken over"}
 	}
 	lt.mu.Unlock()
 	r.end(lt)

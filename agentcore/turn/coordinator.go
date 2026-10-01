@@ -63,8 +63,6 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, wo
 	res, err := unit.Commit(ctx, w, c.now(), work)
 	if err != nil {
 		switch {
-		case errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}):
-			return fmt.Errorf("%w: %w", store.ErrOwnershipLost, err)
 		case errors.Is(err, chatlog.ErrNotSubmitted), errors.Is(err, sessionstore.ErrRunExists):
 			return fmt.Errorf("%w: %w", ErrConflict, err)
 		}

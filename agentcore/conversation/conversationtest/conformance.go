@@ -8,7 +8,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
-	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 	"testing"
@@ -492,7 +491,7 @@ func testRecovery(t *testing.T, factory Factory) {
 	if st.Status != turn.TurnActive || st.Disposition == turn.ResumeExecuting {
 		t.Fatalf("status after recovery = %+v", st)
 	}
-	if _, err := old.Deliver(h.ctx, oldWriter, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !errors.Is(err, store.ErrOwnershipLost) {
+	if _, err := old.Deliver(h.ctx, oldWriter, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !ledger.IsOwnershipLost(err) {
 		t.Fatalf("superseded coordinator deliver = %v, want ownership lost", err)
 	}
 	if v, _ := h.chat().Inputs.Get("late"); v.Status != chatlog.InputSubmitted {

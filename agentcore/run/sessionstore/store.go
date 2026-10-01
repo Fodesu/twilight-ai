@@ -78,14 +78,6 @@ func NewSessionRunStore(cfg Config) (*SessionRunStore, error) {
 
 func (s *SessionRunStore) nowMilli() int64 { return s.cfg.Now().UnixMilli() }
 
-// ownershipError maps the Writer's ownership loss onto the Run sentinel.
-func ownershipError(err error) error {
-	if errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost) {
-		return fmt.Errorf("%w: %w", store.ErrOwnershipLost, err)
-	}
-	return err
-}
-
 func loadMachine(view writer.View) (Machine, error) {
 	state, err := view.Projection(MachineProjectionID, MachineProjection.Version)
 	if err != nil {
@@ -149,7 +141,7 @@ func (b *bound) Commit(ctx context.Context, req store.CommitRequest) (store.Comm
 	}
 	res, err := unit.Commit(ctx, b.w, b.s.nowMilli(), unit.Work{CommitID: ledger.CommitID(req.Command.ID), Parts: []unit.Part{cmd}})
 	if err != nil {
-		return store.CommitResult{}, ownershipError(err)
+		return store.CommitResult{}, err
 	}
 	return cmd.Result(ctx, b.w, &res)
 }

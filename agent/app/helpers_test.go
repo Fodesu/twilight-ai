@@ -2,7 +2,6 @@ package app_test
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -235,7 +235,7 @@ func errorsIsOwnershipLost(err error) string {
 	if err == nil {
 		return "no error"
 	}
-	if errors.Is(err, store.ErrOwnershipLost) {
+	if ledger.IsOwnershipLost(err) {
 		return "ownership lost"
 	}
 	return err.Error()

@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"errors"
 	"github.com/felinics/twilight/agentcore/run/effect"
 
 	run "github.com/felinics/twilight/agentcore/run"
@@ -71,6 +70,3 @@ func (l *Loop) settle(ctx context.Context, rt store.RunStore, e *effectRef, base
 	}
 	return nil, nil
 }
-
-// ownershipLost reports the terminal ownership error (RUN-LOP-5).
-func ownershipLost(err error) bool { return errors.Is(err, store.ErrOwnershipLost) }

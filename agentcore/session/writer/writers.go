@@ -38,7 +38,7 @@ func (ws *writerSet) Writer(ctx context.Context, sid session.SessionID) (Writer,
 		// host's decision (CloseWriter forgets the failed Writer first). Every
 		// other failure is: a fresh Writer rebuilds from the log and a replay
 		// of the same CommitID is answered by the kernel's index (EXT-WRT-4).
-		if errors.Is(lost, &ledger.Error{Code: ledger.CodeOwnershipLost}) {
+		if ledger.IsOwnershipLost(lost) {
 			return nil, lost
 		}
 		if !errors.Is(lost, errWriterClosed) {

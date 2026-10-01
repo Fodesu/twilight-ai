@@ -2,11 +2,11 @@ package loop
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/felinics/twilight/agentcore/ledger"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/store"
@@ -28,7 +28,7 @@ func (c *commitLog) Commit(ctx context.Context, req store.CommitRequest) (store.
 	return c.RunStore.Commit(ctx, req)
 }
 
-// A model-step settlement fenced by ErrOwnershipLost is returned as is,
+// A model-step settlement fenced by ownership loss is returned as is,
 // without the one-shot replay a non-sentinel commit error would get
 // (RUN-LOP-5). Cancelling the other effects of the Run is the host's act.
 func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
@@ -57,8 +57,8 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, store.ErrOwnershipLost) {
-			t.Fatalf("loop error = %v, want ErrOwnershipLost", err)
+		if !ledger.IsOwnershipLost(err) {
+			t.Fatalf("loop error = %v, want ownership lost", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("loop did not return after ownership loss")

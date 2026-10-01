@@ -1,5 +1,7 @@
 package ledger
 
+import "errors"
+
 type ErrorCode string
 
 const (
@@ -44,3 +46,7 @@ func (e *Error) Is(target error) bool {
 	t, ok := target.(*Error)
 	return ok && t.Code == e.Code
 }
+
+// IsOwnershipLost reports an error that says the Session's ownership was
+// superseded: the capability behind it writes nothing any more.
+func IsOwnershipLost(err error) bool { return errors.Is(err, &Error{Code: CodeOwnershipLost}) }

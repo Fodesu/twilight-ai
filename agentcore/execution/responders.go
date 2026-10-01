@@ -201,17 +201,13 @@ func (rs *responders) respond(ctx context.Context, w writer.Writer, a *answer) (
 		return false, nil // the drive was cancelled: the wait stays for the next one
 	}
 	if err := rs.settleResponse(ctx, w, a, payload, rerr); err != nil {
-		if lostOwnership(err) {
+		if ledger.IsOwnershipLost(err) {
 			return false, err
 		}
 		rs.report(w.SessionID(), fmt.Errorf("execution: settle response of run %s call %s: %w", a.call.Request.RunID, a.call.Request.CallID, err))
 		return false, nil
 	}
 	return true, nil
-}
-
-func lostOwnership(err error) bool {
-	return errors.Is(err, store.ErrOwnershipLost) || errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost)
 }
 
 // settleResponse commits the answer as SubmitToolResponse, or the error as
