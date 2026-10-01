@@ -20,7 +20,7 @@ import (
 // what it commits (an in-turn checkpoint) is what the PromptBuilder reads
 // next. Errors stop the drive.
 type Planner interface {
-	BeforePrepare(ctx context.Context, w writer.Writer, input decision.Input) error
+	BeforePrepare(ctx context.Context, w writer.Writer, input run.PromptInput) error
 }
 
 // loops builds the Loop of each AgentPreset once and hands the same Loop to
@@ -105,7 +105,7 @@ func (l *loops) ForRun(ctx context.Context, w writer.Writer, runID run.RunID) (*
 
 // beforePrepare hands the Loop's hook to the Planner with the Writer of
 // the Session the Run belongs to.
-func (l *loops) beforePrepare(ctx context.Context, scope run.Scope, input decision.Input) error {
+func (l *loops) beforePrepare(ctx context.Context, scope run.Scope, input run.PromptInput) error {
 	w, ok := l.writerOf(session.SessionID(scope))
 	if !ok {
 		return fmt.Errorf("execution: planner: session %s is not open in this process", scope)

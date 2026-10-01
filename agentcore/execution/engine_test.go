@@ -138,7 +138,7 @@ func (p *scriptedPort) count() int {
 // message under the preset's model.
 type staticBuilder struct{ ap preset.AgentPreset }
 
-func (b staticBuilder) Build(_ context.Context, in decision.Input) (decision.Prompt, error) {
+func (b staticBuilder) Build(_ context.Context, in run.PromptInput) (decision.Prompt, error) {
 	ids := make([]run.InputID, len(in.Inputs))
 	for i, x := range in.Inputs {
 		ids[i] = x.ID

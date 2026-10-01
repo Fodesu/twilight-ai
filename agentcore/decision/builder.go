@@ -14,11 +14,11 @@ import (
 type BuilderRef = preset.PromptBuilderRef
 
 // Builder assembles the next model input from the surrounding
-// conversation, which it reads by the Input's Scope. The Prompt it returns
+// conversation, which it reads by the input's Scope. The Prompt it returns
 // is already the frozen ModelRequest the Run persists; a builder that
 // composes its request in a provider SDK's types converts before returning.
 type Builder interface {
-	Build(context.Context, Input) (Prompt, error)
+	Build(context.Context, run.PromptInput) (Prompt, error)
 }
 
 // Prompt is one built model input: the model to call, the frozen request
@@ -30,16 +30,6 @@ type Prompt struct {
 	InputIDs []run.InputID
 	Token    run.PromptToken
 	Tools    []run.ToolSpec
-}
-
-// Input is what the execution hands the Builder: the Run boundary facts
-// only. Conversation content (previous assistant output, tool results) is
-// read from the Session by the Builder itself.
-type Input struct {
-	Scope      run.Scope // filled by the caller; planning does not know it
-	RunID      run.RunID
-	SourceStep run.StepID
-	Inputs     []run.AgentInput
 }
 
 // ToolSpecs splits the preset's tool contracts into what each side of the

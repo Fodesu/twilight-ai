@@ -3,7 +3,6 @@ package plan
 import (
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/run"
 )
 
@@ -15,7 +14,7 @@ import (
 type Action interface{ action() }
 
 type NeedModelRequest struct {
-	Hint decision.Input
+	Hint run.PromptInput
 }
 
 func (NeedModelRequest) action() {}
@@ -63,7 +62,7 @@ func Next(s run.MachineState) (Action, error) {
 		if s.LastToolStep != nil {
 			source = s.LastToolStep.RefValue.ID
 		}
-		return NeedModelRequest{Hint: decision.Input{
+		return NeedModelRequest{Hint: run.PromptInput{
 			RunID:      s.RunID,
 			SourceStep: source,
 			Inputs:     append([]run.AgentInput(nil), s.PendingInputs...),

@@ -98,7 +98,7 @@ type staticBuilder struct {
 	specs []ToolSpec
 }
 
-func (p staticBuilder) Build(_ context.Context, hint decision.Input) (decision.Prompt, error) {
+func (p staticBuilder) Build(_ context.Context, hint PromptInput) (decision.Prompt, error) {
 	model := p.model
 	if model == "" {
 		model = testModel
@@ -180,7 +180,7 @@ type blockingBuilder struct {
 	release chan struct{}
 }
 
-func (b *blockingBuilder) Build(ctx context.Context, hint decision.Input) (decision.Prompt, error) {
+func (b *blockingBuilder) Build(ctx context.Context, hint PromptInput) (decision.Prompt, error) {
 	close(b.started)
 	<-b.release
 	return b.staticBuilder.Build(ctx, hint)

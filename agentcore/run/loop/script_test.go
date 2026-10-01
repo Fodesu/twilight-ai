@@ -127,10 +127,10 @@ type scriptBuilder struct {
 	model    run.ModelRef
 	specs    []run.ToolSpec
 	defs     map[run.ToolRef]sdk.ToolDefinition
-	lastHint decision.Input
+	lastHint run.PromptInput
 }
 
-func (p *scriptBuilder) Build(_ context.Context, hint decision.Input) (decision.Prompt, error) {
+func (p *scriptBuilder) Build(_ context.Context, hint run.PromptInput) (decision.Prompt, error) {
 	p.lastHint = hint
 	model := p.model
 	if model == "" {

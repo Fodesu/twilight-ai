@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/decision"
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
@@ -58,7 +57,7 @@ type Settings struct {
 
 // PrepareHook is Settings.BeforePrepare: scope is the Run's Scope and input
 // the PromptInput the plan is about to hand the PromptBuilder.
-type PrepareHook func(ctx context.Context, scope run.Scope, input decision.Input) error
+type PrepareHook func(ctx context.Context, scope run.Scope, input run.PromptInput) error
 
 type LoopDisposition uint8
 

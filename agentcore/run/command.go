@@ -249,3 +249,13 @@ func (c AcceptInput) InputIDs() []InputID {
 	}
 	return ids
 }
+
+// PromptInput is what a plan hands the prompt builder for a model step: the
+// Run boundary facts only. Conversation content is the builder's own read of
+// the Session, by Scope.
+type PromptInput struct {
+	Scope      Scope // filled by the caller; planning does not know it
+	RunID      RunID
+	SourceStep StepID
+	Inputs     []AgentInput
+}

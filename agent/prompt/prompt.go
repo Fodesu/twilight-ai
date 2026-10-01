@@ -52,7 +52,7 @@ func NewContextPromptBuilder(ap preset.AgentPreset, sources decision.Sources) de
 	return &ContextPromptBuilder{Sources: sources, Preset: ap}
 }
 
-func (p *ContextPromptBuilder) Build(ctx context.Context, hint decision.Input) (decision.Prompt, error) {
+func (p *ContextPromptBuilder) Build(ctx context.Context, hint run.PromptInput) (decision.Prompt, error) {
 	if p.Sources.Projections == nil || p.Preset.Model == "" {
 		return decision.Prompt{}, errors.New("decision: builder requires projections and a model")
 	}
