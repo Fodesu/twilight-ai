@@ -508,12 +508,12 @@ func (s *Server) outcome(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if !s.readJSON(w, r, &req) {
 		return
 	}
-	outcome, err := s.Worker.GetOutcomeEnvelope(r.Context(), req.Key)
+	outcome, err := s.Worker.GetOutcome(r.Context(), req.Key)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, outcome)
+	writeJSON(w, protocol.EncodeOutcome(outcome))
 }
 
 func (s *Server) cancel(w stdhttp.ResponseWriter, r *stdhttp.Request) {

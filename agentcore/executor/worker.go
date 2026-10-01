@@ -627,22 +627,6 @@ func (w *Worker) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effe
 	return protocol.DecodeOutcome(state.Outcome), nil
 }
 
-// GetOutcomeEnvelope returns the persisted wire outcome without losing the
-// stable error/status representation used by the HTTP binding.
-func (w *Worker) GetOutcomeEnvelope(ctx context.Context, key effect.AssignmentKey) (protocol.OutcomeEnvelope, error) {
-	if _, err := w.GetOutcome(ctx, key); err != nil {
-		return protocol.OutcomeEnvelope{}, err
-	}
-	state, _, ok, err := w.store.Load(ctx, key)
-	if err != nil {
-		return protocol.OutcomeEnvelope{}, err
-	}
-	if !ok || state.Outcome == nil {
-		return protocol.OutcomeEnvelope{}, effect.ErrOutcomeNotReady
-	}
-	return *state.Outcome, nil
-}
-
 func (w *Worker) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 	state, _, ok, err := w.store.Load(ctx, key)
 	if err != nil {
