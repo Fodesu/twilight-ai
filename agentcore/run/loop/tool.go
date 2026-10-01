@@ -30,7 +30,7 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 // Executing fill the scheduling window: they start once one of those
 // settles. An empty list that is not held means nothing is executing on
 // this Loop's behalf and the reload decides.
-func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, act plan.StartToolCalls) (dispatched []AssignmentKey, held bool, err error) {
+func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, snapshot *store.Snapshot, act plan.StartToolCalls) (dispatched []AssignmentKey, held bool, err error) {
 	runID := snapshot.State.RunID
 	ts, ok := snapshot.State.Current.(run.ToolStep)
 	if !ok || ts.RefValue.ID != act.StepID {
@@ -89,7 +89,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 			// barrier, no effect, no attempt. A call is declined at most
 			// once, so the decline is identified by the call alone and a
 			// retry of the same rejection is idempotent (RUN-EXE-5).
-			res, err := l.commit(ctx, rt, runID, schema.Identity().DeriveDeclineCommandID(runID, act.StepID, callID), snapshot.Position,
+			_, err = l.commit(ctx, rt, runID, schema.Identity().DeriveDeclineCommandID(runID, act.StepID, callID), snapshot.Position,
 				run.DeclineToolCall{StepID: act.StepID, CallID: callID, Failure: *known})
 			if err != nil {
 				if retriable(err) {
@@ -97,7 +97,6 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 				}
 				return dispatched, false, err
 			}
-			l.emitCommitted(ctx, events, rt.Scope(), runID, res.Facts)
 			continue
 		}
 
@@ -115,11 +114,6 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 			// Run did not start under this effect.
 			continue
 		}
-		l.emitCommitted(ctx, events, rt.Scope(), runID, start.Facts)
-		if events != nil {
-			_ = events.Emit(ctx, Event{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID,
-				Kind: EventToolStarted, Durability: EventCommitted})
-		}
 		assignment := probe
 		assignment.Effect = ref.id
 		if err := l.dispatch(ctx, assignment); err != nil {
@@ -132,7 +126,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 			// The effect never started: settle it as a Known execution
 			// failure so the call does not stay Executing.
 			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}
-			if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
+			if _, serr := l.settle(context.WithoutCancel(ctx), rt, &ref, start.Snapshot.Position,
 				run.SubmitToolFailure{StepID: act.StepID, CallID: callID, Effect: ref.id, Failure: failure, Outcome: run.ToolOutcomeKnown}); serr != nil {
 				return dispatched, false, serr
 			}

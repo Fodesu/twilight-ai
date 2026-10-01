@@ -10,7 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/sdk"
@@ -67,7 +67,7 @@ func TestModelDeltasReachTheEventStream(t *testing.T) {
 		select {
 		case e := <-events:
 			if e.Progress != nil {
-				if e.Progress.Kind == string(loop.EventModelTextDelta) {
+				if e.Progress.Kind == string(effect.ProgressTextDelta) {
 					var text string
 					_ = json.Unmarshal(e.Progress.Payload, &text)
 					deltas = append(deltas, text)

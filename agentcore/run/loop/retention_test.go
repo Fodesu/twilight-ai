@@ -104,7 +104,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 				t.Fatal(err)
 			}
 			rt, w := loopRuntime(t)
-			if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
+			if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
 				t.Fatal(err)
 			}
 			return l
@@ -116,23 +116,23 @@ func TestLoopReleasesSlots(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
+			if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
 				t.Fatal(err)
 			}
 			result := mustFreezeResult(t, textResult("done"))
-			if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: result}}, nil); err != nil {
+			if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: result}}); err != nil {
 				t.Fatal(err)
 			}
 			return l
 		}},
 		{"run", func(t *testing.T) *Loop {
 			invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("done")}}
-			l, err := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+			l, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 			if err != nil {
 				t.Fatal(err)
 			}
 			rt, w := loopRuntime(t)
-			res, err := DriveForTest(ctx, l, rt.Bind(w), "run-1", nil)
+			res, err := DriveForTest(ctx, l, rt.Bind(w), "run-1")
 			if err != nil || res.Result == nil || res.Result.Status != RunCompleted {
 				t.Fatalf("run = %+v %v", res, err)
 			}

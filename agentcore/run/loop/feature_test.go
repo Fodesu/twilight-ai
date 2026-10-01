@@ -215,7 +215,7 @@ func (f *Feature) RunError(want error) *Feature {
 func (f *Feature) drive() error {
 	f.t.Helper()
 	f.ensureLoop()
-	res, err := loop.DriveForTest(f.runCtx, f.loop, f.rt, f.runID, nil)
+	res, err := loop.DriveForTest(f.runCtx, f.loop, f.rt, f.runID)
 	f.last = res
 	return err
 }

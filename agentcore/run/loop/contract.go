@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/felinics/twilight/agentcore/decision"
@@ -61,57 +60,6 @@ type Settings struct {
 // PromptBuilder.
 type PrepareHook func(ctx context.Context, store store.RunStore, input decision.Input) error
 
-// --- EventSink: realtime observation, never authority (RUN-LOP-6) ---
-
-type EventSink interface {
-	Emit(context.Context, Event) error
-}
-
-type EventDurability uint8
-
-const (
-	EventProvisional EventDurability = iota
-	EventCommitted
-)
-
-type EventKind string
-
-const (
-	EventAgentCommitted      EventKind = "agent_committed"
-	EventModelTextDelta      EventKind = "model_text_delta"
-	EventModelReasoningDelta EventKind = "model_reasoning_delta"
-	EventToolProgress        EventKind = "tool_progress"
-	EventToolStarted         EventKind = "tool_started"
-	EventToolCompleted       EventKind = "tool_completed"
-	EventRunFinished         EventKind = "run_finished"
-	// EventProgressReset voids the provisional observations of an effect
-	// received so far: the Worker re-dispatched it and a new Generation of
-	// deltas begins (RUN-EXE-12).
-	EventProgressReset EventKind = "progress_reset"
-)
-
-type Event struct {
-	// Session is the Run's Scope.
-	Session run.Scope
-	RunID   run.RunID
-	StepID  run.StepID
-	CallID  run.CallID
-	// Effect names the effect a provisional observation belongs to and
-	// Generation its attempt under the Worker; both are zero for committed
-	// observations.
-	Effect     run.EffectID
-	Generation int
-	// Sequence orders provisional observations within one stream. Committed
-	// observations never set it: the commit order is the authority.
-	Sequence   uint64
-	Kind       EventKind
-	Durability EventDurability
-	Payload    json.RawMessage
-	// Committed is set for an EventAgentCommitted observation: the Run facts
-	// the accepted command produced, in stream order; nil for provisional.
-	Committed []run.Fact
-}
-
 type LoopDisposition uint8
 
 const (
@@ -135,26 +83,15 @@ const (
 
 type LoopResult struct {
 	Disposition LoopDisposition
-	// Reason is execution_recovery when ExecutionRecovery is true; otherwise empty.
-	Reason WaitReason
-	// ExecutionRecovery is true when the Run waits on effects in flight: a
-	// ModelStep is Executing, or a ToolStep has Executing calls and no
-	// Pending calls. Whether this process awaits their Outcomes or has to
-	// reconcile them with the executor is the host's knowledge, not the
-	// Run's.
-	ExecutionRecovery bool
-	// Executing are the keys of those effects, one per Executing target.
+	// Executing are the keys of the effects a waiting Run has in flight, one
+	// per Executing target. Whether this process awaits their Outcomes or
+	// has to reconcile them with the executor is the host's knowledge, not
+	// the Run's.
 	Executing []AssignmentKey
 	Result    *run.RunResult
 	// Dispatched lists the assignments an Advance handed to the Executor.
 	Dispatched []AssignmentKey
 }
-
-type WaitReason string
-
-const (
-	ExecutionRecovery WaitReason = "execution_recovery"
-)
 
 // DispatchPolicy is how a Loop repeats a Dispatch the Executor refused with
 // effect.ErrDispatchRetryable (RUN-EXE-3): at most Retries offers inside one

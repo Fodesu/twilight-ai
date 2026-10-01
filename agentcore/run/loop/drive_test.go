@@ -16,7 +16,7 @@ import (
 // the Run finishes, waits, or a step fails. A ctx that ends cancels the
 // effects in flight once and still delivers their Outcomes, then reports
 // ctx's error. It exists for the tests of this package.
-func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.RunID, sink EventSink) (LoopResult, error) {
+func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.RunID) (LoopResult, error) {
 	settleCtx := context.WithoutCancel(ctx)
 	pending := map[AssignmentKey]struct{}{}
 	cancelled := false
@@ -25,7 +25,7 @@ func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.Run
 			if cancelled {
 				return LoopResult{}, ctx.Err()
 			}
-			res, err := l.Advance(ctx, rt, runID, sink)
+			res, err := l.Advance(ctx, rt, runID)
 			if err != nil {
 				return LoopResult{}, err
 			}
@@ -41,7 +41,7 @@ func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.Run
 			return LoopResult{}, err
 		}
 		delete(pending, key)
-		res, err := l.Deliver(settleCtx, rt, out, sink)
+		res, err := l.Deliver(settleCtx, rt, out)
 		if err != nil {
 			if ownershipLost(err) {
 				for k := range pending {

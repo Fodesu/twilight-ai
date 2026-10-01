@@ -23,10 +23,10 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
 	rt, w := loopRuntime(t)
-	interpreter, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
+	interpreter, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
-	res, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1", nil)
+	res, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,26 +47,6 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	if !found {
 		t.Fatal("missing ToolCallFailed Unknown with panic")
 	}
-}
-
-func TestRegressionRunFinishedEmitted(t *testing.T) {
-	rt, w := loopRuntime(t)
-	var kinds []EventKind
-	sink := sinkFunc(func(_ context.Context, e Event) error {
-		kinds = append(kinds, e.Kind)
-		return nil
-	})
-	interpreter, _ := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}},
-		fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
-	if _, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1", sink); err != nil {
-		t.Fatal(err)
-	}
-	for _, k := range kinds {
-		if k == EventRunFinished {
-			return
-		}
-	}
-	t.Fatalf("EventRunFinished never emitted; kinds = %v", kinds)
 }
 
 func TestRegressionAliasedToolRefExecutes(t *testing.T) {
@@ -95,10 +75,10 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 		textResult("done"),
 	}}
 	rt, w := loopRuntime(t)
-	interpreter, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"fs.read": tool}},
+	interpreter, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"fs.read": tool}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
-	res, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1", nil)
+	res, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +92,8 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 
 func TestRegressionStreamNilResult(t *testing.T) {
 	rt, w := loopRuntime(t)
-	interpreter, _ := newLoop(t, nil, fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticBuilder{}, Settings{}, true)
-	res, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1", nil)
+	interpreter, _ := newLoop(t, fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticBuilder{}, Settings{}, true)
+	res, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,10 +101,6 @@ func TestRegressionStreamNilResult(t *testing.T) {
 		t.Fatalf("res = %+v", res.Result)
 	}
 }
-
-type sinkFunc func(context.Context, Event) error
-
-func (f sinkFunc) Emit(ctx context.Context, e Event) error { return f(ctx, e) }
 
 type nilResultStreamer struct{}
 

@@ -10,7 +10,7 @@ import (
 // RequireWaiting checks Loop yielded and a call is waiting for kind.
 func (f *Feature) RequireWaiting(kind run.ResponseKind) {
 	f.t.Helper()
-	if f.last.Disposition != loop.LoopWaiting || f.last.ExecutionRecovery {
+	if f.last.Disposition != loop.LoopWaiting || len(f.last.Executing) != 0 {
 		f.t.Fatalf("loop = %+v, want Waiting", f.last)
 	}
 	w := f.waiting()

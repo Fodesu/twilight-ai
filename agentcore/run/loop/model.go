@@ -14,7 +14,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
-func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, hint decision.Input) error {
+func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, snapshot *store.Snapshot, hint decision.Input) error {
 	hint.Scope = rt.Scope()
 	p, err := l.Builder.Build(ctx, hint)
 	if err != nil {
@@ -37,7 +37,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events Eve
 	}
 	cmdID := schema.Identity().DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
 	stepID := schema.Identity().DeriveModelStepID(snapshot.State.RunID, cmdID)
-	res, err := l.commit(ctx, rt, snapshot.State.RunID, cmdID, snapshot.Position, run.PrepareModelRequest{
+	_, err = l.commit(ctx, rt, snapshot.State.RunID, cmdID, snapshot.Position, run.PrepareModelRequest{
 		StepID:        stepID,
 		Model:         modelRef,
 		Request:       frozenRequest,
@@ -50,7 +50,6 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events Eve
 		// ModelStepPrepared carries the frozen request — the most informative
 		// fact of the run; observers must see it like every other accepted
 		// transition.
-		l.emitCommitted(ctx, events, rt.Scope(), snapshot.State.RunID, res.Facts)
 		return nil
 	}
 	if !retriable(err) {
@@ -76,7 +75,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events Eve
 // the reload should decide (another actor moved the step). A model catalog
 // that cannot serve the step withdraws it to Open and reports the error: no
 // model call has happened.
-func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, stepID run.StepID) (*AssignmentKey, error) {
+func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, snapshot *store.Snapshot, stepID run.StepID) (*AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	prepared, ok := snapshot.State.Current.(run.ModelStep)
 	if !ok || prepared.RefValue.ID != stepID {
@@ -105,7 +104,6 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events Eve
 		}
 		return nil, err
 	}
-	l.emitCommitted(ctx, events, rt.Scope(), runID, start.Facts)
 
 	modelStep, ok := start.Snapshot.State.Current.(run.ModelStep)
 	if !ok || modelStep.RefValue.ID != stepID || modelStep.Status != run.ModelExecuting || modelStep.Effect != ref.id {
@@ -119,7 +117,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events Eve
 
 	request, err := rt.FrozenRequest(ctx, prepared.RequestDigest)
 	if err != nil {
-		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
+		if _, serr := l.settle(context.WithoutCancel(ctx), rt, &ref, start.Snapshot.Position,
 			run.RecoverModelExecution{StepID: stepID, Effect: ref.id}); serr != nil {
 			return nil, serr
 		}
@@ -135,7 +133,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events Eve
 		}
 		// Nothing was called: withdraw the step to Open under this effect's
 		// recovery identity and surface the condition (RUN-LOP-3).
-		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
+		if _, serr := l.settle(context.WithoutCancel(ctx), rt, &ref, start.Snapshot.Position,
 			run.RecoverModelExecution{StepID: stepID, Effect: ref.id}); serr != nil {
 			return nil, serr
 		}

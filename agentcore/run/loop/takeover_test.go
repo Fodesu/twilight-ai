@@ -33,14 +33,14 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 		}}
 	call := sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: "slow", Input: sdk.ParseToolArguments(`{"x":1}`)}}}
-	first, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{call}}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"slow": slow}},
+	first, err := newLoop(t, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{call}}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"slow": slow}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := DriveForTest(context.Background(), first, oldRuntime.Bind(oldWriter), "run-1", nil)
+		_, err := DriveForTest(context.Background(), first, oldRuntime.Bind(oldWriter), "run-1")
 		firstDone <- err
 	}()
 	<-started
@@ -60,12 +60,12 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 		t.Fatalf("after takeover current = %T, want Open", snap.State.Current)
 	}
 
-	second, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"slow": slow}},
+	second, err := newLoop(t, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"slow": slow}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := DriveForTest(context.Background(), second, stack.runtime.Bind(stack.writer(t)), "run-1", nil)
+	res, err := DriveForTest(context.Background(), second, stack.runtime.Bind(stack.writer(t)), "run-1")
 	if err != nil || res.Disposition != LoopFinished || res.Result.Status != RunCompleted {
 		t.Fatalf("second loop = %+v %v", res, err)
 	}

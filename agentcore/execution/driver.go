@@ -27,9 +27,6 @@ type driver struct {
 	// responders answer the ExternalResponse waits a drive leaves; nil
 	// answers none.
 	responders *responders
-	// sink receives the drives' provisional observations: the executor's
-	// progress frames relayed from the Loop. nil discards them.
-	sink loop.EventSink
 }
 
 // Drive advances the Turn while it is active: resolve its recorded preset
@@ -62,7 +59,7 @@ func (d *driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 		if err := lt.fenced(); err != nil {
 			return DriveResult{}, err
 		}
-		res, err := l.Advance(ctx, d.runs.Bind(w), view.RunID, d.sink)
+		res, err := l.Advance(ctx, d.runs.Bind(w), view.RunID)
 		if err != nil {
 			return DriveResult{}, err
 		}

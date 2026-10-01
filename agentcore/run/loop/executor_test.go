@@ -217,13 +217,13 @@ func TestTargetResolvedPerEffect(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: mustFreezeResult(t, toolCallResult("c1", "c2"))}}, nil); err != nil {
+	if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: mustFreezeResult(t, toolCallResult("c1", "c2"))}}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := l.Advance(ctx, rt.Bind(w), "run-1", nil)
+	res, err := l.Advance(ctx, rt.Bind(w), "run-1")
 	if err != nil || res.Disposition != LoopDispatched || len(res.Dispatched) != 2 {
 		t.Fatalf("advance = %+v %v", res, err)
 	}
@@ -259,7 +259,7 @@ func TestAdvanceCopiesOpaqueTargetIntoAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Advance(context.Background(), rt.Bind(w), "run-1", nil); err != nil {
+	if _, err := l.Advance(context.Background(), rt.Bind(w), "run-1"); err != nil {
 		t.Fatal(err)
 	}
 	assignment := exec.last()
@@ -280,7 +280,7 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	res, err := l.Advance(ctx, rt.Bind(w), "run-1", nil)
+	res, err := l.Advance(ctx, rt.Bind(w), "run-1")
 	if err != nil || res.Disposition != LoopDispatched || len(res.Dispatched) != 1 {
 		t.Fatalf("advance = %+v %v", res, err)
 	}
@@ -294,13 +294,13 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	}
 
 	// Nothing moves while the effect is outstanding.
-	again, err := l.Advance(ctx, rt.Bind(w), "run-1", nil)
-	if err != nil || again.Disposition != LoopWaiting || !again.ExecutionRecovery {
+	again, err := l.Advance(ctx, rt.Bind(w), "run-1")
+	if err != nil || again.Disposition != LoopWaiting || len(again.Executing) == 0 {
 		t.Fatalf("advance while executing = %+v %v", again, err)
 	}
 
 	result := mustFreezeResult(t, textResult("done"))
-	delivered, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: a.Key(), Result: ModelSucceeded{Result: result}}, nil)
+	delivered, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: a.Key(), Result: ModelSucceeded{Result: result}})
 	if err != nil || delivered.Disposition != LoopFinished || delivered.Result == nil || delivered.Result.Status != RunCompleted {
 		t.Fatalf("deliver = %+v %v", delivered, err)
 	}
@@ -346,7 +346,7 @@ func TestOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 	defer cancel()
 	done := make(chan LoopResult, 1)
 	go func() {
-		res, err := DriveForTest(ctx, l, rt.Bind(w), "run-1", nil)
+		res, err := DriveForTest(ctx, l, rt.Bind(w), "run-1")
 		if err != nil {
 			t.Errorf("drive = %v", err)
 		}
@@ -383,7 +383,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
 		t.Fatal(err)
 	}
 	key := exec.last().Key()
@@ -393,7 +393,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 	}
 	before := len(recordFacts(t, rt, "run-1"))
 	result := mustFreezeResult(t, textResult("late"))
-	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Result: ModelSucceeded{Result: result}}, nil)
+	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Result: ModelSucceeded{Result: result}})
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("late deliver = %+v %v", res, err)
 	}
@@ -401,12 +401,12 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 		t.Fatalf("stale outcome wrote %d fact(s)", after-before)
 	}
 	// A key naming another effect is stale too.
-	if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
 		t.Fatal(err)
 	}
 	forged := exec.last().Key()
 	forged.Effect = "someone-else"
-	res, err = l.Deliver(ctx, rt.Bind(w), Outcome{Key: forged, Result: ModelSucceeded{Result: result}}, nil)
+	res, err = l.Deliver(ctx, rt.Bind(w), Outcome{Key: forged, Result: ModelSucceeded{Result: result}})
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("forged deliver = %+v %v", res, err)
 	}
@@ -424,7 +424,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, stack.runtime.Bind(stack.writer(t)), "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, stack.runtime.Bind(stack.writer(t)), "run-1"); err != nil {
 		t.Fatal(err)
 	}
 	a := exec.last()
@@ -440,7 +440,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	var reattached []Outcome
 	var mu sync.Mutex
 	deliverToNew := func(out Outcome) {
-		if _, err := newLoop.Deliver(ctx, stack.runtime.Bind(stack.writer(t)), out, nil); err != nil {
+		if _, err := newLoop.Deliver(ctx, stack.runtime.Bind(stack.writer(t)), out); err != nil {
 			t.Errorf("reattached deliver: %v", err)
 		}
 		mu.Lock()
@@ -497,7 +497,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, stack.runtime.Bind(stack.writer(t)), "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, stack.runtime.Bind(stack.writer(t)), "run-1"); err != nil {
 		t.Fatal(err)
 	}
 	a := exec.last()
@@ -512,7 +512,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	if _, open := state.Current.(Open); !open || state.ModelSteps != 0 {
 		t.Fatalf("state after disposition = %+v, want Open with no counted step", state)
 	}
-	res, err := l.Advance(ctx, stack.runtime.Bind(stack.writer(t)), "run-1", nil)
+	res, err := l.Advance(ctx, stack.runtime.Bind(stack.writer(t)), "run-1")
 	if err != nil || res.Disposition != LoopDispatched || len(res.Dispatched) != 1 {
 		t.Fatalf("advance after disposition = %+v %v, want a fresh dispatch", res, err)
 	}
@@ -595,11 +595,11 @@ func TestDeliverCancelledModelRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
 		t.Fatal(err)
 	}
 	key := exec.last().Key()
-	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Result: Cancelled{Message: "cancelled"}}, nil)
+	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Result: Cancelled{Message: "cancelled"}})
 	if err != nil || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver cancelled = %+v %v", res, err)
 	}
@@ -622,18 +622,18 @@ func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
 		t.Fatal(err)
 	}
 	first := exec.last()
-	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: first.Key(), Result: ModelFailed{Code: FailureFrozenValueMissing, Message: "frozen value missing"}}, nil)
+	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: first.Key(), Result: ModelFailed{Code: FailureFrozenValueMissing, Message: "frozen value missing"}})
 	if !errors.Is(err, frozen.ErrMissing) || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver missing body = %+v %v, want delivered plus the missing-body error", res, err)
 	}
 	if snap := loadState(t, rt, w, "run-1"); snap.State.ModelSteps != 0 {
 		t.Fatalf("withdrawn step still counted: %+v", snap.State)
 	}
-	again, err := l.Advance(ctx, rt.Bind(w), "run-1", nil)
+	again, err := l.Advance(ctx, rt.Bind(w), "run-1")
 	if err != nil || again.Disposition != LoopDispatched {
 		t.Fatalf("advance after missing body = %+v %v", again, err)
 	}
@@ -681,7 +681,7 @@ func TestDriveStopsAfterOneMissingBodyRecovery(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err = DriveForTest(ctx, l, rt.Bind(w), "run-1", nil)
+			_, err = DriveForTest(ctx, l, rt.Bind(w), "run-1")
 			if !errors.Is(err, frozen.ErrMissing) {
 				t.Fatalf("drive = %v, want the missing-body error", err)
 			}

@@ -33,9 +33,8 @@ type Loop struct {
 	Builder  decision.Builder
 	Settings Settings
 
-	mu       sync.Mutex
-	slots    map[run.RunID]*runSlot
-	eventsMu sync.Mutex
+	mu    sync.Mutex
+	slots map[run.RunID]*runSlot
 }
 
 // runSlot serializes one Run: step guards a single Advance or Deliver at a
@@ -169,13 +168,6 @@ func (l *Loop) checkArgs(ctx context.Context, st store.RunStore, runID run.RunID
 	return nil
 }
 
-func (l *Loop) wrapSink(events EventSink) EventSink {
-	if events == nil {
-		return nil
-	}
-	return &serializedEventSink{sink: events, mu: &l.eventsMu}
-}
-
 // Advance moves the Run to its next quiescent point without waiting on any
 // effect (RUN-LOP-2): it records protocol transitions (prepare, withdraw,
 // start barriers) and dispatches Assignments, then returns LoopDispatched,
@@ -185,7 +177,7 @@ func (l *Loop) wrapSink(events EventSink) EventSink {
 // step in progress and then takes its own, from the state that step left.
 // store is the RunStore bound to the caller's write capability: every
 // commit of the step goes through it (OWN-HDL-2).
-func (l *Loop) Advance(ctx context.Context, st store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
+func (l *Loop) Advance(ctx context.Context, st store.RunStore, runID run.RunID) (LoopResult, error) {
 	if err := l.checkArgs(ctx, st, runID); err != nil {
 		return LoopResult{}, err
 	}
@@ -193,14 +185,14 @@ func (l *Loop) Advance(ctx context.Context, st store.RunStore, runID run.RunID, 
 	defer l.release(runID)
 	s.step.Lock()
 	defer s.step.Unlock()
-	return l.advance(ctx, st, runID, l.wrapSink(events))
+	return l.advance(ctx, st, runID)
 }
 
 // advance is the body of Advance. It only dispatches assignments and returns
 // their keys; outcome retrieval is a separate message-shaped operation through
 // Executor.GetOutcome. This keeps the Executor boundary usable across process
 // boundaries.
-func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
+func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID) (LoopResult, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return LoopResult{}, err
@@ -213,7 +205,7 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 			return LoopResult{}, fmt.Errorf("agent: loop: store returned RunID %q for %q", snapshot.State.RunID, runID)
 		}
 		if snapshot.State.Status.Terminal() {
-			return l.finish(ctx, events, rt.Scope(), runID, snapshot.State.Result), nil
+			return finish(snapshot.State.Result), nil
 		}
 
 		action, err := plan.Next(snapshot.State)
@@ -231,23 +223,20 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 					return LoopResult{}, err
 				}
 			}
-			if err := l.planAndPrepare(ctx, rt, events, &snapshot, act.Hint); err != nil {
+			if err := l.planAndPrepare(ctx, rt, &snapshot, act.Hint); err != nil {
 				return LoopResult{}, err
 			}
 		case plan.WithdrawPrepared:
 			// Inputs arrived after this step was frozen: discard the unsent
 			// request and replan with them (RUN-LOP-8). A retriable rejection
 			// means another actor moved the Run; the reload decides.
-			res, err := l.commit(ctx, rt, runID, schema.Identity().DeriveWithdrawCommandID(runID, act.StepID), snapshot.Position,
+			_, err := l.commit(ctx, rt, runID, schema.Identity().DeriveWithdrawCommandID(runID, act.StepID), snapshot.Position,
 				run.WithdrawPreparedStep(act))
 			if err != nil && !retriable(err) {
 				return LoopResult{}, err
 			}
-			if err == nil {
-				l.emitCommitted(ctx, events, rt.Scope(), runID, res.Facts)
-			}
 		case plan.StartModelCall:
-			dispatched, err := l.startModelStep(ctx, rt, events, &snapshot, act.StepID)
+			dispatched, err := l.startModelStep(ctx, rt, &snapshot, act.StepID)
 			if err != nil {
 				return LoopResult{}, err
 			}
@@ -255,7 +244,7 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 				return LoopResult{Disposition: LoopDispatched, Dispatched: []AssignmentKey{*dispatched}}, nil
 			}
 		case plan.StartToolCalls:
-			dispatched, held, err := l.startToolCalls(ctx, rt, events, &snapshot, act)
+			dispatched, held, err := l.startToolCalls(ctx, rt, &snapshot, act)
 			if err != nil {
 				return LoopResult{}, err
 			}
@@ -270,7 +259,6 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 		case plan.Idle:
 			res := LoopResult{Disposition: LoopWaiting}
 			if run.NeedsRecovery(snapshot.State) {
-				res.Reason, res.ExecutionRecovery = ExecutionRecovery, true
 				res.Executing = executingKeys(rt.Scope(), &snapshot.State)
 			}
 			return res, nil
@@ -301,10 +289,7 @@ func executingKeys(scope run.Scope, state *run.MachineState) []AssignmentKey {
 
 // finish is the single exit for a terminal Run, whether the terminal state
 // was read by Load or returned by the settlement that produced it.
-func (l *Loop) finish(ctx context.Context, events EventSink, scope run.Scope, runID run.RunID, result *run.RunResult) LoopResult {
-	if events != nil {
-		_ = events.Emit(ctx, Event{Session: scope, RunID: runID, Kind: EventRunFinished, Durability: EventCommitted})
-	}
+func finish(result *run.RunResult) LoopResult {
 	return LoopResult{Disposition: LoopFinished, Result: result}
 }
 
@@ -315,7 +300,7 @@ func (l *Loop) finish(ctx context.Context, events EventSink, scope run.Scope, ru
 // LoopFinished when the settlement terminated the Run, LoopDelivered when the
 // host should Advance next, LoopDropped for a stale Outcome. Ownership loss
 // is returned as is (RUN-LOP-5).
-func (l *Loop) Deliver(ctx context.Context, st store.RunStore, out Outcome, events EventSink) (LoopResult, error) {
+func (l *Loop) Deliver(ctx context.Context, st store.RunStore, out Outcome) (LoopResult, error) {
 	if err := l.checkArgs(ctx, st, out.Key.RunID); err != nil {
 		return LoopResult{}, err
 	}
@@ -323,10 +308,10 @@ func (l *Loop) Deliver(ctx context.Context, st store.RunStore, out Outcome, even
 	defer l.release(out.Key.RunID)
 	s.step.Lock()
 	defer s.step.Unlock()
-	return l.deliver(ctx, st, out, l.wrapSink(events))
+	return l.deliver(ctx, st, out)
 }
 
-func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, events EventSink) (LoopResult, error) {
+func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome) (LoopResult, error) {
 	if out.Key.Session != "" && out.Key.Session != rt.Scope() {
 		return LoopResult{Disposition: LoopDropped}, nil
 	}
@@ -369,13 +354,9 @@ func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, even
 
 	// Settlement uses a detached control context: a cancelled host request must
 	// not discard an accepted effect's outcome (RUN-LOP-5).
-	finished, err := l.settle(context.WithoutCancel(ctx), rt, events, &ref, snapshot.Position, cmd)
+	finished, err := l.settle(context.WithoutCancel(ctx), rt, &ref, snapshot.Position, cmd)
 	if err != nil {
 		return LoopResult{}, err
-	}
-	if callID != "" && events != nil {
-		_ = events.Emit(ctx, Event{Session: rt.Scope(), RunID: runID, StepID: stepID, CallID: callID,
-			Kind: EventToolCompleted, Durability: EventCommitted})
 	}
 	if settleErr != nil {
 		// The settlement landed (the step is withdrawn to Open) but the
@@ -385,7 +366,7 @@ func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, even
 		return LoopResult{Disposition: LoopDelivered}, settleErr
 	}
 	if finished != nil {
-		return l.finish(ctx, events, rt.Scope(), runID, finished), nil
+		return finish(finished), nil
 	}
 	return LoopResult{Disposition: LoopDelivered}, nil
 }

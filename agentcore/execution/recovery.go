@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -53,9 +54,9 @@ type recovery struct {
 	// maxRedispatches bounds redispatches per effect; zero selects the
 	// reconciler's default.
 	maxRedispatches int
-	// sink receives the provisional observations of a Run settled after a
-	// reattached Outcome; nil discards them.
-	sink loop.EventSink
+	// progress is the transient stream the effects' frames are published to;
+	// nil publishes none.
+	progress *observe.Progresses
 
 	mu        sync.Mutex
 	lifetimes map[session.SessionID]*lifetime
@@ -152,7 +153,7 @@ func (r *recovery) settled(lt *lifetime) {
 // awaitOutcome registers key on the shared Watcher under lt: its Outcome is
 // delivered through the Loop of its Run and reported through notify, a read
 // the executor answers definitively is reported as a failure. The effect's
-// progress frames are relayed to the sink meanwhile. Nothing is held open
+// progress frames reach the transient stream meanwhile. Nothing is held open
 // for the length of the execution; the lifetime's end drops the wait. The
 // delivery leaves the Watcher's goroutine: it takes the Run's step lock,
 // and the step holding that lock may itself be waiting on the Watcher.
@@ -173,8 +174,8 @@ func (r *recovery) awaitOutcome(lt *lifetime, key effect.AssignmentKey) {
 			}
 		})
 	lt.track(key, drop)
-	if r.ports.Progress != nil && r.sink != nil {
-		go forwardProgress(lt.ctx, r.ports.Progress, key, r.sink)
+	if r.ports.Progress != nil && r.progress != nil {
+		go forwardProgress(lt.ctx, r.ports.Progress, key, r.progress)
 	}
 }
 
@@ -194,7 +195,7 @@ func (r *recovery) deliver(lt *lifetime, out effect.Outcome) {
 		r.report(sid, fmt.Errorf("execution: outcome for run %s: %w", out.Key.RunID, err))
 		return
 	}
-	res, err := l.Deliver(ctx, r.runs.Bind(w), out, r.sink)
+	res, err := l.Deliver(ctx, r.runs.Bind(w), out)
 	if err != nil {
 		if errors.Is(err, store.ErrOwnershipLost) {
 			r.lost(lt)

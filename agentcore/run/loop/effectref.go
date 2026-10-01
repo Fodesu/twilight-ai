@@ -47,7 +47,7 @@ func (e *effectRef) recoveryID() run.CommandID {
 // When the accepted settlement terminates the Run, the terminal RunResult is
 // returned: the RunStore already handed back the folded state, so the Loop
 // finishes from it instead of reloading a Run the projection no longer holds.
-func (l *Loop) settle(ctx context.Context, rt store.RunStore, events EventSink, e *effectRef, base run.RunPosition, cmd run.AgentCommand) (*run.RunResult, error) {
+func (l *Loop) settle(ctx context.Context, rt store.RunStore, e *effectRef, base run.RunPosition, cmd run.AgentCommand) (*run.RunResult, error) {
 	id := e.settlementID()
 	if _, recovering := cmd.(run.RecoverModelExecution); recovering {
 		id = e.recoveryID()
@@ -59,7 +59,6 @@ func (l *Loop) settle(ctx context.Context, rt store.RunStore, events EventSink, 
 		}
 		return nil, err
 	}
-	l.emitCommitted(ctx, events, rt.Scope(), e.runID, res.Facts)
 	// The settlement is a Session fact: the executor may collect the
 	// effect's record (RUN-EXE-13). A refused or failed acknowledgement
 	// changes nothing here; the executor's time-based collection covers it.

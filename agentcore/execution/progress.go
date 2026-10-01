@@ -3,37 +3,23 @@ package execution
 import (
 	"context"
 
+	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/session"
 )
 
-// forwardProgress subscribes to key's frames on port and emits each as a
-// provisional Event on sink: this is how deltas produced wherever the
-// effect runs reach the host's observation stream. It ends with the
-// stream, the context, or a port that has no progress for the key.
-func forwardProgress(ctx context.Context, port effect.ProgressPort, key effect.AssignmentKey, sink loop.EventSink) {
+// forwardProgress subscribes to key's frames on port and publishes each to
+// the transient stream: this is how deltas produced wherever the effect
+// runs reach the host's observation stream. It ends with the stream, the
+// context, or a port that has no progress for the key.
+func forwardProgress(ctx context.Context, port effect.ProgressPort, key effect.AssignmentKey, progress *observe.Progresses) {
+	sid := session.SessionID(key.Session)
 	_ = port.Progress(ctx, key, 0, func(f effect.ProgressFrame) bool {
-		kind, ok := progressEventKind(f.Kind)
-		if !ok {
+		if f.Kind == effect.ProgressEnd {
 			return true
 		}
-		_ = sink.Emit(ctx, loop.Event{Session: key.Session, RunID: key.RunID, Effect: key.Effect,
-			Generation: f.Generation, Sequence: f.Sequence, Kind: kind, Durability: loop.EventProvisional, Payload: f.Payload})
+		progress.Publish(sid, observe.Progress{RunID: key.RunID, Effect: key.Effect, Generation: f.Generation,
+			Sequence: f.Sequence, Kind: string(f.Kind), Payload: f.Payload})
 		return true
 	})
-}
-
-func progressEventKind(k effect.ProgressKind) (loop.EventKind, bool) {
-	switch k {
-	case effect.ProgressTextDelta:
-		return loop.EventModelTextDelta, true
-	case effect.ProgressReasoningDelta:
-		return loop.EventModelReasoningDelta, true
-	case effect.ProgressToolProgress:
-		return loop.EventToolProgress, true
-	case effect.ProgressReset:
-		return loop.EventProgressReset, true
-	default:
-		return "", false
-	}
 }

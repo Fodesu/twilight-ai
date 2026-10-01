@@ -176,16 +176,15 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 			cfg.Notify(lt.w.SessionID())
 		}
 	}
-	sink := progressSink{x.progress}
 	lps := &loops{ports: cfg.Executor, presets: presets, decisions: cfg.Decisions, targets: cfg.TargetResolver, dispatch: cfg.Dispatch,
 		sources: decision.Sources{Projections: src.Projections, Content: src.Content}, planner: cfg.Planner}
 	x.recovery = &recovery{runs: src.Runs, ports: cfg.Executor, loops: lps, watcher: x.watcher, fail: report, notify: notify,
-		missingEffects: cfg.MissingEffects, redispatches: cfg.Redispatches, maxRedispatches: cfg.MaxRedispatches, sink: sink}
+		missingEffects: cfg.MissingEffects, redispatches: cfg.Redispatches, maxRedispatches: cfg.MaxRedispatches, progress: x.progress}
 	var rs *responders
 	if len(cfg.Responders) > 0 {
 		rs = &responders{runs: src.Runs, tools: cfg.Responders, fail: report}
 	}
-	x.driver = &driver{runs: src.Runs, loops: lps, recovery: x.recovery, responders: rs, sink: sink}
+	x.driver = &driver{runs: src.Runs, loops: lps, recovery: x.recovery, responders: rs}
 	return x, nil
 }
 
@@ -230,18 +229,4 @@ func (x *engine) Progress() *observe.Progresses { return x.progress }
 func (x *engine) Close() {
 	x.recovery.Close()
 	x.watcher.Close()
-}
-
-// progressSink is the drive's loop.EventSink: provisional observations
-// become transient Progress events; committed observations are already on
-// the committed stream from the Writer, so they are dropped here.
-type progressSink struct{ progress *observe.Progresses }
-
-func (s progressSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic // hugeParam: EventSink contract takes the Event by value
-	if e.Durability != loop.EventProvisional {
-		return nil
-	}
-	s.progress.Publish(session.SessionID(e.Session), observe.Progress{RunID: e.RunID, Effect: e.Effect, Generation: e.Generation,
-		Sequence: e.Sequence, Kind: string(e.Kind), Payload: e.Payload})
-	return nil
 }

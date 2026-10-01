@@ -331,7 +331,7 @@ func TestReattachedOutcomeNotifiesWithoutDriving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := l.Advance(ctx, s.runs.Bind(w), surface.Turns[tref.TurnID].RunID, nil)
+	res, err := l.Advance(ctx, s.runs.Bind(w), surface.Turns[tref.TurnID].RunID)
 	if err != nil || len(res.Dispatched) != 1 {
 		t.Fatalf("advance = %+v %v, want one dispatch", res, err)
 	}
