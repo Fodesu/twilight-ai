@@ -30,13 +30,18 @@ type StopRequest struct {
 
 // ResumeDisposition is where a still-active Turn stands when a caller looks
 // at it again. It is not a Turn's own fact: the Coordinator computes it from
-// the Turn's status and its Run's state.
+// the Turn's status and its Run's state. It says what the Run waits for;
+// whether the process reading it is the one carrying that wait is the
+// reader's own knowledge.
 type ResumeDisposition string
 
 const (
+	// ResumeWaitingForResponse: a tool call waits for a response.
 	ResumeWaitingForResponse ResumeDisposition = "waiting_for_response"
-	ResumeWaitingForRecovery ResumeDisposition = "waiting_for_recovery"
-	ResumeFinished           ResumeDisposition = "finished"
+	// ResumeExecuting: a model step or tool call is Executing; the Run moves
+	// when its Outcome is settled.
+	ResumeExecuting ResumeDisposition = "executing"
+	ResumeFinished  ResumeDisposition = "finished"
 )
 
 // TurnResult is the Turn protocol's answer: the Turn's status, and where it

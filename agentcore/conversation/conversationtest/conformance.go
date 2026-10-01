@@ -349,7 +349,7 @@ func testStatus(t *testing.T, factory Factory) {
 		ended       bool
 	}{
 		{"open run has no disposition", func(*harness, run.RunID) {}, turn.TurnActive, "", 0, false},
-		{"executing model needs recovery", func(h *harness, r run.RunID) { h.executingModel(r) }, turn.TurnActive, turn.ResumeWaitingForRecovery, 0, false},
+		{"executing model needs recovery", func(h *harness, r run.RunID) { h.executingModel(r) }, turn.TurnActive, turn.ResumeExecuting, 0, false},
 		{"approval call waits for a response", func(h *harness, r run.RunID) { h.waitingTool(r) }, turn.TurnActive, turn.ResumeWaitingForResponse, 1, false},
 		{"completed run is finished", func(h *harness, r run.RunID) { h.complete(r) }, turn.TurnCompleted, turn.ResumeFinished, 0, true},
 		{"cancelled run is finished and failed", func(h *harness, r run.RunID) { h.appCancel(r) }, turn.TurnFailed, turn.ResumeFinished, 0, true},
@@ -476,7 +476,7 @@ func testRecovery(t *testing.T, factory Factory) {
 	// Model executing when the owner dies: the takeover disposes it and the
 	// Turn stays active; the superseded Coordinator is fenced.
 	h.executingModel(resp.RunID)
-	if st := h.status("t1"); st.Disposition != turn.ResumeWaitingForRecovery {
+	if st := h.status("t1"); st.Disposition != turn.ResumeExecuting {
 		t.Fatalf("before takeover disposition = %s", st.Disposition)
 	}
 	// The input is submitted before the takeover so the superseded Writer's
@@ -489,7 +489,7 @@ func testRecovery(t *testing.T, factory Factory) {
 		t.Fatalf("recover executing model = %d %v", n, err)
 	}
 	st := h.status("t1")
-	if st.Status != turn.TurnActive || st.Disposition == turn.ResumeWaitingForRecovery {
+	if st.Status != turn.TurnActive || st.Disposition == turn.ResumeExecuting {
 		t.Fatalf("status after recovery = %+v", st)
 	}
 	if _, err := old.Deliver(h.ctx, oldWriter, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !errors.Is(err, store.ErrOwnershipLost) {

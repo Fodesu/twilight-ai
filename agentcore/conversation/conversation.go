@@ -31,19 +31,29 @@ type Turns interface {
 	turn.Reader
 }
 
-// DriveResult is what one step of a Turn reports: the Turn's committed
-// answer and what the step left behind. InFlight counts the effects of the
-// Run this process awaits after the step, whose Outcomes reach the host as
-// notices; an active Turn with none in flight waits on something this
-// process does not carry. AlreadyDriving reports another step of the same
-// Run in progress in this process, in which case this call did nothing and
-// the answer is the status as read. Both are facts about this process, not
-// about the Turn, so they are not Turn dispositions: the Turn's durable
-// vocabulary stays the Turn module's.
-type DriveResult struct {
+// Standing is where a Turn stands for the process that stepped it: what
+// the caller does next. It is a fact about this process, not a Turn
+// disposition: the Turn's durable vocabulary stays the Turn module's.
+type Standing string
+
+const (
+	// Ended: the Turn is no longer active.
+	Ended Standing = "ended"
+	// Carried: the Turn is active and this process carries it on -- it
+	// awaits the Outcomes of its effects or answers its wait -- so a notice
+	// follows and the caller advances again from it.
+	Carried Standing = "carried"
+	// Blocked: the Turn is active and waits on something this process does
+	// not carry: a response from outside, or an execution left to the
+	// control plane. Nothing here moves it; the caller returns.
+	Blocked Standing = "blocked"
+)
+
+// TurnProgress is what one step of a Turn reports: the Turn's committed
+// answer and where it stands for this process.
+type TurnProgress struct {
 	turn.TurnResult
-	InFlight       int
-	AlreadyDriving bool
+	Standing Standing
 }
 
 // Settlement is what one advance of the Session reports: the Turns it
@@ -51,11 +61,10 @@ type DriveResult struct {
 // every Turn it started from inputs that were submitted but not yet
 // delivered. Quiescent reports that no Turn is active and no such input
 // remains: the point at which the host's quiescence policies apply. It is
-// false while a Turn is active, when another step of the same Run carries
-// it (AlreadyDriving), when the advance stopped at the TurnBudget and when a
-// concurrent advance took the pending inputs.
+// false while a Turn is active, when the advance stopped at the TurnBudget
+// and when a concurrent advance took the pending inputs.
 type Settlement struct {
-	Turns     []DriveResult
+	Turns     []TurnProgress
 	Quiescent bool
 }
 
@@ -109,8 +118,8 @@ var (
 // Session as found after a restart or a notice, and Stop settles the active
 // Turn. Every command runs through the Config's Writer; reads go by
 // SessionID. Concurrent calls are safe: writes serialize in the Writer, and
-// a call that meets a step in progress reports AlreadyDriving. It starts no
-// goroutine of its own and waits on no effect.
+// a Run takes one step at a time. It starts no goroutine of its own and
+// waits on no effect.
 type Controller struct {
 	w      writer.Writer
 	engine execution.Engine
@@ -165,13 +174,12 @@ func (r *Controller) ref(turnID turn.TurnID) turn.TurnRef {
 	return turn.TurnRef{SessionID: r.sid, TurnID: turnID}
 }
 
-// Submitted is what Submit reports: the Turn the input landed in, and
-// whether another driver of this process is already carrying that Turn, in
-// which case it settles and reports there and the caller has nothing to
-// advance.
+// Submitted is what Submit reports: the Turn the input landed in. Absorbed
+// reports that a concurrent route delivered the input first; the Turn it
+// landed in is already carried, and the caller has nothing to advance.
 type Submitted struct {
-	Ref            turn.TurnRef
-	AlreadyDriving bool
+	Ref      turn.TurnRef
+	Absorbed bool
 }
 
 // Submit records one input body under id and commits its route: into the
@@ -195,7 +203,7 @@ func (r *Controller) Submit(ctx context.Context, id run.InputID, content run.Can
 		}
 		lastErr = err
 		if taken, ok := r.absorbed(ctx, in); ok {
-			return Submitted{Ref: taken.Ref, AlreadyDriving: true}, nil
+			return Submitted{Ref: taken.Ref, Absorbed: true}, nil
 		}
 	}
 	return Submitted{}, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, r.routeRetries, lastErr.Error())
@@ -203,17 +211,17 @@ func (r *Controller) Submit(ctx context.Context, id run.InputID, content run.Can
 
 // Send submits the input and advances the Session once: the first Turn of
 // the Settlement is the one the input landed in, the rest are the Turns the
-// remaining inputs started once it ended. When another step of this process
-// took the input, the single Turn reports AlreadyDriving and that step
-// settles.
+// remaining inputs started once it ended. An input a concurrent route
+// delivered first is reported as the single Turn it landed in, Carried by
+// that route's step.
 func (r *Controller) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Settlement, error) {
 	sub, err := r.Submit(ctx, id, content)
 	if err != nil {
 		return Settlement{}, err
 	}
-	if sub.AlreadyDriving {
+	if sub.Absorbed {
 		resp, _ := r.absorbedStatus(ctx, sub.Ref)
-		return Settlement{Turns: []DriveResult{resp}}, nil
+		return Settlement{Turns: []TurnProgress{resp}}, nil
 	}
 	return r.Advance(ctx, sub.Ref.TurnID)
 }
@@ -280,16 +288,23 @@ func (r *Controller) active(ctx context.Context) (turn.TurnID, bool, error) {
 }
 
 // drive steps the Turn once and reads its committed answer.
-func (r *Controller) drive(ctx context.Context, turnID turn.TurnID) (DriveResult, error) {
+func (r *Controller) drive(ctx context.Context, turnID turn.TurnID) (TurnProgress, error) {
 	step, err := r.engine.Drive(ctx, r.w, turnID)
 	if err != nil {
-		return DriveResult{}, err
+		return TurnProgress{}, err
 	}
 	resp, err := r.turns.Status(ctx, r.ref(turnID))
 	if err != nil {
-		return DriveResult{}, err
+		return TurnProgress{}, err
 	}
-	return DriveResult{TurnResult: resp, InFlight: step.InFlight, AlreadyDriving: step.AlreadyDriving}, nil
+	standing := Blocked
+	switch {
+	case step.Finished || resp.Status != turn.TurnActive:
+		standing = Ended
+	case step.InFlight > 0:
+		standing = Carried
+	}
+	return TurnProgress{TurnResult: resp, Standing: standing}, nil
 }
 
 // route commits the inputs' route: Deliver into the active Turn when there
@@ -315,40 +330,44 @@ func (r *Controller) route(ctx context.Context, inputs []run.AgentInput) (turn.T
 
 // absorbed reports whether another driver already delivered the input; the
 // Turn that took it settles and reports there.
-func (r *Controller) absorbed(ctx context.Context, in run.AgentInput) (DriveResult, bool) {
+func (r *Controller) absorbed(ctx context.Context, in run.AgentInput) (TurnProgress, bool) {
 	chat, err := chatlog.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
-		return DriveResult{}, false
+		return TurnProgress{}, false
 	}
 	v, ok := chat.Inputs.Get(chatlog.InputID(in.ID))
 	if !ok || v.Status == chatlog.InputSubmitted {
-		return DriveResult{}, false
+		return TurnProgress{}, false
 	}
 	resp, _ := r.absorbedStatus(ctx, r.ref(turn.TurnID(v.Input.TurnID)))
 	return resp, true
 }
 
-// absorbedStatus is the AlreadyDriving answer for a Turn another driver
-// carries: its status as read, or its Ref alone when the read fails.
-func (r *Controller) absorbedStatus(ctx context.Context, ref turn.TurnRef) (DriveResult, error) {
-	out := DriveResult{TurnResult: turn.TurnResult{Ref: ref}, AlreadyDriving: true}
+// absorbedStatus is the answer for a Turn a concurrent route delivered the
+// input into: its status as read, or its Ref alone when the read fails,
+// standing Carried since that route's step carries it.
+func (r *Controller) absorbedStatus(ctx context.Context, ref turn.TurnRef) (TurnProgress, error) {
+	out := TurnProgress{TurnResult: turn.TurnResult{Ref: ref}, Standing: Carried}
 	resp, err := r.turns.Status(ctx, ref)
 	if err == nil {
 		out.TurnResult = resp
+		if resp.Status != turn.TurnActive {
+			out.Standing = Ended
+		}
 	}
 	return out, err
 }
 
 // next starts a Turn from the submitted, undelivered inputs and drives it;
 // ok is false when there is none.
-func (r *Controller) next(ctx context.Context) (DriveResult, bool, error) {
+func (r *Controller) next(ctx context.Context) (TurnProgress, bool, error) {
 	chat, err := chatlog.ReadSurface(ctx, r.proj, r.sid)
 	if err != nil {
-		return DriveResult{}, false, err
+		return TurnProgress{}, false, err
 	}
 	pending := chat.SubmittedInputs()
 	if len(pending) == 0 {
-		return DriveResult{}, false, nil
+		return TurnProgress{}, false, nil
 	}
 	inputs := make([]run.AgentInput, len(pending))
 	for i, in := range pending {
@@ -356,7 +375,7 @@ func (r *Controller) next(ctx context.Context) (DriveResult, bool, error) {
 	}
 	ref, err := r.route(ctx, inputs)
 	if err != nil {
-		return DriveResult{}, false, err
+		return TurnProgress{}, false, err
 	}
 	resp, err := r.drive(ctx, ref.TurnID)
 	return resp, err == nil, err
@@ -366,13 +385,14 @@ func (r *Controller) next(ctx context.Context) (DriveResult, bool, error) {
 // its next step waits on a notice; a Turn that ended lets the submitted,
 // undelivered inputs start the next Turn; when none remains and no Turn is
 // active, the Settlement is Quiescent.
-func (r *Controller) settle(ctx context.Context, resp *DriveResult) (Settlement, error) {
-	out := Settlement{Turns: []DriveResult{*resp}}
+func (r *Controller) settle(ctx context.Context, resp *TurnProgress) (Settlement, error) {
+	out := Settlement{Turns: []TurnProgress{*resp}}
 	last := *resp
 	for range r.turnBudget {
-		if last.AlreadyDriving || last.Status == turn.TurnActive {
-			// The step in progress, or the notice of what this step
-			// dispatched, carries the Turn on.
+		if last.Standing != Ended {
+			// A carried Turn moves on from the notice of what this step
+			// dispatched; a blocked one waits on what this process does not
+			// carry. Either way the advance ends here.
 			return out, nil
 		}
 		next, ok, err := r.next(ctx)

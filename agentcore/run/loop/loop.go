@@ -180,19 +180,18 @@ func (l *Loop) wrapSink(events EventSink) EventSink {
 // effect (RUN-LOP-2): it records protocol transitions (prepare, withdraw,
 // start barriers) and dispatches Assignments, then returns LoopDispatched,
 // LoopWaiting or LoopFinished. The caller reads each returned key through
-// the executor and passes its Outcome to Deliver. A concurrent Advance or
-// Deliver of the same Run is reported as ErrRunAlreadyRunning. store is the
-// RunStore bound to the caller's write capability: every commit of the step
-// goes through it (OWN-HDL-2).
+// the executor and passes its Outcome to Deliver. One Run takes one step at
+// a time: a concurrent Advance or Deliver of the same Run waits for the
+// step in progress and then takes its own, from the state that step left.
+// store is the RunStore bound to the caller's write capability: every
+// commit of the step goes through it (OWN-HDL-2).
 func (l *Loop) Advance(ctx context.Context, st store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, st, runID); err != nil {
 		return LoopResult{}, err
 	}
 	s := l.acquire(runID)
 	defer l.release(runID)
-	if !s.step.TryLock() {
-		return LoopResult{}, ErrRunAlreadyRunning
-	}
+	s.step.Lock()
 	defer s.step.Unlock()
 	return l.advance(ctx, st, runID, l.wrapSink(events))
 }

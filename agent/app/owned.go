@@ -61,10 +61,10 @@ func (o *Owned) Drive(ctx context.Context, turnID turn.TurnID) (turn.TurnResult,
 		if err != nil {
 			return turn.TurnResult{}, err
 		}
-		if res.Status != turn.TurnActive || (step.InFlight == 0 && !step.AlreadyDriving) {
+		if res.Status != turn.TurnActive || step.InFlight == 0 {
 			return res, nil
 		}
-		if err := awaitProgress(ctx, events, res.RunID, turnID, step.AlreadyDriving); err != nil {
+		if err := awaitProgress(ctx, events, res.RunID, turnID); err != nil {
 			return res, err
 		}
 	}

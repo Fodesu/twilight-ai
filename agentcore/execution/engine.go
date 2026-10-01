@@ -57,24 +57,22 @@ type Engine interface {
 }
 
 // DriveResult is what one Drive reports. Exactly one of Dispatched > 0,
-// Waiting, Finished and AlreadyDriving describes the step; InFlight says
-// whether this process carries the Turn on from here.
+// Waiting and Finished describes the step; InFlight says whether this
+// process carries the Turn on from here.
 type DriveResult struct {
 	// Dispatched is the number of effects the step handed to the executor.
 	Dispatched int
 	// InFlight is the number of effects of the Run whose Outcomes this
-	// process awaits after the step, the dispatched ones included; each
-	// settles in the background and reaches the host as Notify. A Turn
-	// still active with none in flight waits on something this process does
-	// not carry: a response, or an execution left to the control plane.
+	// process awaits after the step, the dispatched ones included, and the
+	// waits a Responder is answering; each settles in the background and
+	// reaches the host as Notify. A Turn still active with none in flight
+	// waits on something this process does not carry: a response, or an
+	// execution left to the control plane.
 	InFlight int
 	// Waiting reports a Run with no executable action.
 	Waiting bool
 	// Finished reports a Turn that is no longer active.
 	Finished bool
-	// AlreadyDriving reports another step of the same Run in progress in
-	// this process; this call did nothing.
-	AlreadyDriving bool
 }
 
 // Sources are the Session-side services the Engine reads; a

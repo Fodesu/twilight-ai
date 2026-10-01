@@ -79,15 +79,10 @@ type Result struct {
 	TurnID      turn.TurnID
 	Status      turn.TurnStatus
 	Disposition turn.ResumeDisposition
-	// InFlight is the number of effects of the Turn this process still
-	// awaits; their Outcomes settle in the background and the Turn moves on
-	// from them. An active Turn with none in flight waits on something this
-	// process does not carry.
-	InFlight int
-	// AlreadyDriving reports that another step of the Turn was in progress
-	// in this process when this call met it; that step settles and reports.
-	// It is a fact about this process, not a Turn disposition.
-	AlreadyDriving bool
+	// Standing is where the Turn stands for this process: Ended, Carried
+	// (its effects settle in the background and it moves on from them) or
+	// Blocked (it waits on something this process does not carry).
+	Standing conversation.Standing
 	// Reply is the settled Turn's last assistant text; empty while the Turn
 	// still runs or when the attempt produced no text.
 	Reply string
@@ -218,7 +213,7 @@ func (s *Session) Wait(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if last := results[len(results)-1]; last.Status == turn.TurnActive && !last.AlreadyDriving {
+		if results[len(results)-1].Standing == conversation.Blocked {
 			return nil
 		}
 	}
@@ -243,9 +238,10 @@ func (s *Session) Events(ctx context.Context) <-chan Event { return s.app.Events
 // Send submits text and returns once the Turn it landed in has ended or
 // waits on something this process does not carry: the first Result is that
 // Turn, further Results are the Turns this call started from inputs still
-// submitted when it ended. An input absorbed into a step in progress reports
-// AlreadyDriving at once; that step carries it. A settlement that stopped at
-// the TurnBudget returns the Results so far with ErrTurnBudget.
+// submitted when it ended. An input a concurrent route delivered first is
+// reported at once as the Turn it landed in, Carried by that route. A
+// settlement that stopped at the TurnBudget returns the Results so far with
+// ErrTurnBudget.
 func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 	// The subscription precedes the submission, so no commit of the Turn is
 	// missed between the two.
@@ -256,9 +252,13 @@ func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if sub.AlreadyDriving {
+	if sub.Absorbed {
 		res, _ := s.app.Turns.Status(ctx, sub.Ref)
-		return []Result{{TurnID: sub.Ref.TurnID, Status: res.Status, Disposition: res.Disposition, AlreadyDriving: true}}, nil
+		standing := conversation.Carried
+		if res.Status != "" && res.Status != turn.TurnActive {
+			standing = conversation.Ended
+		}
+		return []Result{{TurnID: sub.Ref.TurnID, Status: res.Status, Disposition: res.Disposition, Standing: standing}}, nil
 	}
 	return s.settleTurn(ctx, events, sub.Ref.TurnID)
 }
@@ -278,16 +278,16 @@ func (s *Session) settleTurn(ctx context.Context, events <-chan Event, turnID tu
 	return s.settleFrom(ctx, events, st, err)
 }
 
-// settleFrom continues a Settlement: while the last Turn stepped is active
-// with effects in flight here or a step in progress, it waits for the
-// stream to report a commit of its Run and advances again.
+// settleFrom continues a Settlement: while the last Turn stepped is
+// Carried, it waits for the stream to report a commit of its Run and
+// advances again.
 func (s *Session) settleFrom(ctx context.Context, events <-chan Event, st conversation.Settlement, err error) ([]Result, error) {
 	for err == nil && len(st.Turns) > 0 {
 		last := st.Turns[len(st.Turns)-1]
-		if last.Status != turn.TurnActive || (last.InFlight == 0 && !last.AlreadyDriving) {
+		if last.Standing != conversation.Carried {
 			break
 		}
-		if err = awaitProgress(ctx, events, last.RunID, last.Ref.TurnID, last.AlreadyDriving); err != nil {
+		if err = awaitProgress(ctx, events, last.RunID, last.Ref.TurnID); err != nil {
 			break
 		}
 		var next conversation.Settlement
@@ -302,26 +302,13 @@ func (s *Session) settleFrom(ctx context.Context, events <-chan Event, st conver
 	return s.settled(ctx, st), err
 }
 
-// stepPoll bounds how long a caller waits on a step another goroutine of
-// this process is in the middle of before it looks again.
-const stepPoll = 20 * time.Millisecond
-
 // awaitProgress blocks until the stream reports a commit of the Run or the
-// Turn, a background failure, or -- while another step is in progress --
-// stepPoll elapsed; ctx bounds the wait.
-func awaitProgress(ctx context.Context, events <-chan Event, runID run.RunID, turnID turn.TurnID, stepping bool) error {
-	var tick <-chan time.Time
-	if stepping {
-		timer := time.NewTimer(stepPoll)
-		defer timer.Stop()
-		tick = timer.C
-	}
+// Turn, or a background failure; ctx bounds the wait.
+func awaitProgress(ctx context.Context, events <-chan Event, runID run.RunID, turnID turn.TurnID) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-tick:
-			return nil
 		case e, ok := <-events:
 			if !ok {
 				return errors.New("app: the session's event stream ended")
@@ -363,7 +350,7 @@ func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) 
 	if err != nil {
 		return turn.TurnRef{}, err
 	}
-	if sub.AlreadyDriving {
+	if sub.Absorbed {
 		// A running driver carries the input; nothing to advance here.
 		return sub.Ref, nil
 	}
@@ -425,9 +412,9 @@ func (s *Session) settled(ctx context.Context, st conversation.Settlement) []Res
 
 // result wraps one drive result with the settled Turn's reply;
 // materialization failures are reported to Warn and leave Reply empty.
-func (s *Session) result(ctx context.Context, resp *conversation.DriveResult) Result {
-	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, InFlight: resp.InFlight, AlreadyDriving: resp.AlreadyDriving}
-	if !resp.AlreadyDriving && resp.Disposition == turn.ResumeFinished {
+func (s *Session) result(ctx context.Context, resp *conversation.TurnProgress) Result {
+	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, Standing: resp.Standing}
+	if resp.Standing == conversation.Ended {
 		text, err := s.app.Reply(ctx, resp.Ref)
 		if err != nil {
 			s.app.warn(fmt.Errorf("app: materialize reply of turn %s: %w", resp.Ref.TurnID, err))

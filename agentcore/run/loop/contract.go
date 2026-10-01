@@ -3,19 +3,12 @@ package loop
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/felinics/twilight/agentcore/decision"
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/store"
 )
-
-// ErrRunAlreadyRunning reports an Advance of a Run another Advance or
-// Deliver of this Loop is stepping at that moment. A Loop steps different
-// Runs concurrently and one Run one step at a time (RUN-CMT-6); the caller
-// that lost steps again once told to.
-var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
 
 // EffectContext identifies the effect a target is resolved for: the Run's
 // Scope and identity, the Step, the call of a tool effect, the EffectID the

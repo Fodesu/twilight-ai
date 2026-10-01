@@ -45,14 +45,14 @@ func (c children) TurnSurface(ctx context.Context, sid session.SessionID) (turn.
 	return c.app.TurnSurface(ctx, sid)
 }
 
-// AwaitingRecovery reads the Turn's disposition: waiting_for_recovery is a
-// Run with an execution in flight that no process here drives.
+// AwaitingRecovery reads the Turn's disposition: a Run Executing with no
+// Session of this host carrying it waits for the takeover disposition.
 func (c children) AwaitingRecovery(ctx context.Context, ref turn.TurnRef) (bool, error) {
 	res, err := c.app.Turns.Status(ctx, ref)
 	if err != nil {
 		return false, err
 	}
-	return res.Status == turn.TurnActive && res.Disposition == turn.ResumeWaitingForRecovery, nil
+	return res.Status == turn.TurnActive && res.Disposition == turn.ResumeExecuting, nil
 }
 
 // InputText is the text of the Turn's first input as this agent shapes

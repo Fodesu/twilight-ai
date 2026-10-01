@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/conversation"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
@@ -97,8 +98,8 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		return err == nil && len(surface.Turns["t1"].InputIDs) == 2
 	})
 	close(tool.release)
-	if resp := <-deliverDone; !resp.AlreadyDriving && resp.Disposition != turn.ResumeFinished {
-		t.Fatalf("deliver = %+v, want already driving or finished", resp)
+	if resp := <-deliverDone; resp.Standing == conversation.Blocked {
+		t.Fatalf("deliver = %+v, want carried by the running step or finished", resp)
 	}
 	resp := <-done
 	if resp.Status != turn.TurnCompleted {

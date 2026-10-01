@@ -251,7 +251,7 @@ func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnVi
 	case snapshot.State.Status.Terminal():
 		resp.Disposition = ResumeFinished
 	case run.NeedsRecovery(snapshot.State):
-		resp.Disposition = ResumeWaitingForRecovery
+		resp.Disposition = ResumeExecuting
 	default:
 		resp.Waiting = run.WaitingCalls(snapshot.State)
 		if len(resp.Waiting) > 0 {

@@ -64,9 +64,6 @@ func (d *driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 		}
 		res, err := l.Advance(ctx, d.runs.Bind(w), view.RunID, d.sink)
 		if err != nil {
-			if errors.Is(err, loop.ErrRunAlreadyRunning) {
-				return DriveResult{AlreadyDriving: true, InFlight: d.inFlight(lt, view.RunID)}, nil
-			}
 			return DriveResult{}, err
 		}
 		switch res.Disposition {

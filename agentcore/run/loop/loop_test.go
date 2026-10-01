@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/sdkconv"
@@ -184,27 +185,46 @@ func (b *blockingBuilder) Build(ctx context.Context, hint decision.Input) (decis
 	return b.staticBuilder.Build(ctx, hint)
 }
 
-// One Run is stepped one step at a time: a second Advance while the first
-// is inside a step is ErrRunAlreadyRunning (RUN-CMT-6).
-func TestLoopRejectsConcurrentAdvanceForSameRun(t *testing.T) {
+// One Run takes one step at a time: a second Advance while the first is
+// inside a step waits for it and then steps from the state it left, so the
+// two never interleave and the second never repeats the first's dispatch
+// (RUN-CMT-6).
+func TestLoopSerializesConcurrentAdvancesOfOneRun(t *testing.T) {
 	rt, w := loopRuntime(t)
 	builder := &blockingBuilder{started: make(chan struct{}), release: make(chan struct{})}
 	loop, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{}, builder, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
+	first := make(chan LoopResult, 1)
 	go func() {
-		_, advanceErr := loop.Advance(context.Background(), rt.Bind(w), "run-1", nil)
-		done <- advanceErr
+		res, err := loop.Advance(context.Background(), rt.Bind(w), "run-1", nil)
+		if err != nil {
+			t.Error(err)
+		}
+		first <- res
 	}()
 	<-builder.started
-	if _, err := loop.Advance(context.Background(), rt.Bind(w), "run-1", nil); !errors.Is(err, ErrRunAlreadyRunning) {
-		t.Fatalf("concurrent Advance error = %v, want ErrRunAlreadyRunning", err)
+	second := make(chan LoopResult, 1)
+	go func() {
+		res, err := loop.Advance(context.Background(), rt.Bind(w), "run-1", nil)
+		if err != nil {
+			t.Error(err)
+		}
+		second <- res
+	}()
+	select {
+	case res := <-second:
+		t.Fatalf("second Advance returned %+v while the first was inside its step", res)
+	case <-time.After(50 * time.Millisecond):
 	}
 	close(builder.release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	a, b := <-first, <-second
+	if a.Disposition != LoopDispatched || len(a.Dispatched) != 1 {
+		t.Fatalf("first Advance = %+v, want one dispatch", a)
+	}
+	if b.Disposition != LoopWaiting || len(b.Dispatched) != 0 || len(b.Executing) != 1 {
+		t.Fatalf("second Advance = %+v, want waiting on the first's effect", b)
 	}
 }
 
