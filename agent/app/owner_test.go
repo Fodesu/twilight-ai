@@ -13,7 +13,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
@@ -24,10 +23,10 @@ import (
 // each model assignment with a scripted Outcome from another goroutine.
 type recordingExecutor struct {
 	mu       sync.Mutex
-	assigned []loop.Assignment
+	assigned []effect.Assignment
 	reply    string
-	outcomes map[loop.AssignmentKey]chan loop.Outcome
-	settled  map[loop.AssignmentKey]loop.Outcome
+	outcomes map[effect.AssignmentKey]chan effect.Outcome
+	settled  map[effect.AssignmentKey]effect.Outcome
 }
 
 // frozenModel stands in for the backend boundary: the effect protocol
@@ -40,42 +39,42 @@ func frozenModel(r sdk.ModelResult) model.ModelResult {
 	return frozen
 }
 
-func (e *recordingExecutor) Validate(context.Context, loop.Assignment) (*run.ToolFailure, error) {
+func (e *recordingExecutor) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
 	return nil, nil
 }
 
-func (e *recordingExecutor) Dispatch(_ context.Context, a loop.Assignment) error {
+func (e *recordingExecutor) Dispatch(_ context.Context, a effect.Assignment) error {
 	e.mu.Lock()
 	if e.outcomes == nil {
-		e.outcomes = make(map[loop.AssignmentKey]chan loop.Outcome)
+		e.outcomes = make(map[effect.AssignmentKey]chan effect.Outcome)
 	}
 	e.assigned = append(e.assigned, a)
-	e.outcomes[a.Key()] = make(chan loop.Outcome, 1)
+	e.outcomes[a.Key()] = make(chan effect.Outcome, 1)
 	ch := e.outcomes[a.Key()]
 	reply := e.reply
 	e.mu.Unlock()
 	go func() {
-		ch <- loop.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: reply, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})}}
+		ch <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: reply, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})}}
 	}()
 	return nil
 }
 
-func (e *recordingExecutor) Attach(context.Context, loop.AssignmentKey) (loop.Attachment, error) {
-	return loop.Attachment{State: loop.AttachmentMissing, Execution: loop.ExecutionNotFound}, nil
+func (e *recordingExecutor) Attach(context.Context, effect.AssignmentKey) (effect.Attachment, error) {
+	return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 }
 
-func (e *recordingExecutor) Abort(context.Context, loop.AssignmentKey) (loop.Attachment, error) {
-	return loop.Attachment{State: loop.AttachmentAborted, Execution: loop.ExecutionAborted}, nil
+func (e *recordingExecutor) Abort(context.Context, effect.AssignmentKey) (effect.Attachment, error) {
+	return effect.Attachment{State: effect.AttachmentAborted, Execution: effect.ExecutionAborted}, nil
 }
 
-func (e *recordingExecutor) GetStatus(context.Context, loop.AssignmentKey) (loop.ExecutionStatus, error) {
-	return loop.ExecutionRunning, nil
+func (e *recordingExecutor) GetStatus(context.Context, effect.AssignmentKey) (effect.ExecutionStatus, error) {
+	return effect.ExecutionRunning, nil
 }
 
 // GetOutcome is a read (effect.ExecutionPort): a key whose scripted reply
 // has not landed yet is ErrOutcomeNotReady, a settled key answers the same
 // Outcome on every read.
-func (e *recordingExecutor) GetOutcome(_ context.Context, key loop.AssignmentKey) (loop.Outcome, error) {
+func (e *recordingExecutor) GetOutcome(_ context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if out, ok := e.settled[key]; ok {
@@ -83,17 +82,17 @@ func (e *recordingExecutor) GetOutcome(_ context.Context, key loop.AssignmentKey
 	}
 	ch := e.outcomes[key]
 	if ch == nil {
-		return loop.Outcome{}, loop.ErrExecutionNotFound
+		return effect.Outcome{}, effect.ErrExecutionNotFound
 	}
 	select {
 	case out := <-ch:
 		if e.settled == nil {
-			e.settled = map[loop.AssignmentKey]loop.Outcome{}
+			e.settled = map[effect.AssignmentKey]effect.Outcome{}
 		}
 		e.settled[key] = out
 		return out, nil
 	default:
-		return loop.Outcome{}, loop.ErrOutcomeNotReady
+		return effect.Outcome{}, effect.ErrOutcomeNotReady
 	}
 }
 
@@ -102,10 +101,10 @@ func (e *recordingExecutor) GetOutcome(_ context.Context, key loop.AssignmentKey
 // its poll.
 func (e *recordingExecutor) Settlements(ctx context.Context, _ string, after uint64, fn func(effect.Settlement) bool) error {
 	seq := after
-	noticed := map[loop.AssignmentKey]bool{}
+	noticed := map[effect.AssignmentKey]bool{}
 	for {
 		e.mu.Lock()
-		var ready []loop.AssignmentKey
+		var ready []effect.AssignmentKey
 		for key, ch := range e.outcomes {
 			if noticed[key] {
 				continue
@@ -117,7 +116,7 @@ func (e *recordingExecutor) Settlements(ctx context.Context, _ string, after uin
 			select {
 			case out := <-ch:
 				if e.settled == nil {
-					e.settled = map[loop.AssignmentKey]loop.Outcome{}
+					e.settled = map[effect.AssignmentKey]effect.Outcome{}
 				}
 				e.settled[key] = out
 				ready = append(ready, key)
@@ -140,12 +139,12 @@ func (e *recordingExecutor) Settlements(ctx context.Context, _ string, after uin
 	}
 }
 
-func (e *recordingExecutor) Cancel(context.Context, loop.AssignmentKey) error { return nil }
+func (e *recordingExecutor) Cancel(context.Context, effect.AssignmentKey) error { return nil }
 
-func (e *recordingExecutor) assignments() []loop.Assignment {
+func (e *recordingExecutor) assignments() []effect.Assignment {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return append([]loop.Assignment(nil), e.assigned...)
+	return append([]effect.Assignment(nil), e.assigned...)
 }
 
 // The Owner side needs no effect implementation (OWN-PRT-2): a Host built

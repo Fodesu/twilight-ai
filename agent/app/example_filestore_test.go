@@ -8,7 +8,7 @@ import (
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -218,7 +218,7 @@ func (t *stagedTool) ResponsePolicy() run.ResponsePolicy        { return run.Dir
 func (t *stagedTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
 func (t *stagedTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
 func (t *stagedTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (t *stagedTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (t *stagedTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	t.mu.Lock()
 	var st *toolStage
 	if len(t.stages) > 0 {
@@ -230,5 +230,5 @@ func (t *stagedTool) Execute(_ context.Context, req local.ToolExecutionRequest) 
 		close(st.started)
 		<-st.release
 	}
-	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
+	return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }

@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 )
@@ -17,7 +18,7 @@ type Resolver struct {
 }
 
 func (r *Resolver) ResolveTarget(ctx context.Context, ec loop.EffectContext) (*run.TargetRef, error) {
-	if ec.Kind != loop.AssignmentTool || ec.Placement != run.PlacementWorkspace {
+	if ec.Kind != effect.AssignmentTool || ec.Placement != run.PlacementWorkspace {
 		return nil, nil
 	}
 	b, err := Read(ctx, r.Projections, session.SessionID(ec.Session))

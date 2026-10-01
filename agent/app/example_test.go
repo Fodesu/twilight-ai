@@ -12,7 +12,7 @@ import (
 	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
@@ -191,10 +191,10 @@ func (t *lookupTool) ResponsePolicy() run.ResponsePolicy        { return run.Dir
 func (t *lookupTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
 func (t *lookupTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
 func (t *lookupTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (t *lookupTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (t *lookupTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	if t.ran.CompareAndSwap(false, true) {
 		<-t.block
-		return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
+		return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 	}
-	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
+	return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }

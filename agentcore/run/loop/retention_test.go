@@ -15,8 +15,8 @@ import (
 func echoExecutor(t *testing.T) (*local.LocalExecutor, ToolSpec) {
 	t.Helper()
 	tool := &fakeTool{ref: "echo", def: toolDef("echo"), policy: DirectExecution,
-		execute: func(_ context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
+		execute: func(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
+			return effect.ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
 	exec, err := local.NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": tool}}, nil, false)
 	if err != nil {
@@ -34,9 +34,9 @@ func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {
 	ctx := context.Background()
 	var keys []string
 	for _, n := range []string{"1", "2", "3"} {
-		a := Assignment{Session: testScope, RunID: "run-1", StepID: StepID("step-" + n), CallID: CallID("call-" + n),
+		a := effect.Assignment{Session: testScope, RunID: "run-1", StepID: StepID("step-" + n), CallID: CallID("call-" + n),
 			Effect: EffectID("effect-" + n),
-			Body:   ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
+			Body:   effect.ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
 		ref, err := exec.Prepare(ctx, a)
 		if err != nil {
 			t.Fatal(err)
@@ -61,19 +61,19 @@ func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := exec.Status(ctx, tc.key)
-			if got := errors.Is(err, ErrExecutionNotFound); got != tc.evicted {
+			if got := errors.Is(err, effect.ErrExecutionNotFound); got != tc.evicted {
 				t.Fatalf("status error = %v; evicted = %v, want %v", err, got, tc.evicted)
 			}
 			if !tc.evicted && err != nil {
 				t.Fatal(err)
 			}
 			_, err = exec.Outcome(ctx, tc.key)
-			if got := errors.Is(err, ErrExecutionNotFound); got != tc.evicted {
+			if got := errors.Is(err, effect.ErrExecutionNotFound); got != tc.evicted {
 				t.Fatalf("outcome error = %v; evicted = %v, want %v", err, got, tc.evicted)
 			}
-			want := AttachmentTerminal
+			want := effect.AttachmentTerminal
 			if tc.evicted {
-				want = AttachmentMissing
+				want = effect.AttachmentMissing
 			}
 			if att, err := exec.Attach(ctx, tc.key); err != nil || att.State != want {
 				t.Fatalf("attach = %+v %v; want %s", att, err, want)
@@ -82,10 +82,10 @@ func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {
 	}
 	// Lowering the bound drops the surplus at once.
 	exec.SetRetainedOutcomes(1)
-	if att, err := exec.Attach(ctx, keys[1]); err != nil || att.State != AttachmentMissing {
+	if att, err := exec.Attach(ctx, keys[1]); err != nil || att.State != effect.AttachmentMissing {
 		t.Fatalf("attach after lowering the bound = %+v %v; want missing", att, err)
 	}
-	if att, err := exec.Attach(ctx, keys[2]); err != nil || att.State != AttachmentTerminal {
+	if att, err := exec.Attach(ctx, keys[2]); err != nil || att.State != effect.AttachmentTerminal {
 		t.Fatalf("attach newest after lowering the bound = %+v %v; want terminal", att, err)
 	}
 }
@@ -120,7 +120,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 				t.Fatal(err)
 			}
 			result := mustFreezeResult(t, textResult("done"))
-			if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: result}}); err != nil {
+			if _, err := l.Deliver(ctx, rt.Bind(w), effect.Outcome{Key: exec.last().Key(), Result: effect.ModelSucceeded{Result: result}}); err != nil {
 				t.Fatal(err)
 			}
 			return l

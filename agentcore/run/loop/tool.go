@@ -30,7 +30,7 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 // Executing fill the scheduling window: they start once one of those
 // settles. An empty list that is not held means nothing is executing on
 // this Loop's behalf and the reload decides.
-func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, snapshot *store.Snapshot, act plan.StartToolCalls) (dispatched []AssignmentKey, held bool, err error) {
+func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, snapshot *store.Snapshot, act plan.StartToolCalls) (dispatched []effect.AssignmentKey, held bool, err error) {
 	runID := snapshot.State.RunID
 	ts, ok := snapshot.State.Current.(run.ToolStep)
 	if !ok || ts.RefValue.ID != act.StepID {
@@ -74,13 +74,13 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, snapshot *
 		// pre-start check, so the Validate probe carries what the Assignment
 		// will carry.
 		target, err := l.targetFor(ctx, EffectContext{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID,
-			Effect: ref.id, Kind: AssignmentTool, Tool: call.ToolRef, Placement: call.Placement})
+			Effect: ref.id, Kind: effect.AssignmentTool, Tool: call.ToolRef, Placement: call.Placement})
 		if err != nil {
 			return dispatched, false, err
 		}
-		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay, Placement: call.Placement}
-		probe := Assignment{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID, Target: target, Body: binding}
-		known, err := l.Executor.Validate(ctx, probe)
+		binding := effect.ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay, Placement: call.Placement}
+		probe := effect.Assignment{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID, Target: target, Body: binding}
+		known, err := l.Ports.Execution.Validate(ctx, probe)
 		if err != nil {
 			return dispatched, false, err
 		}
@@ -166,17 +166,17 @@ func executingCall(step *run.ToolStep, id run.EffectID) (run.ToolCallState, bool
 // toolCompletion maps a tool Outcome to the settlement of the call's tool
 // effect. A sealed outcome maps directly; a missing outcome or a transport
 // error is Unknown, because the effect may have happened (RUN-LOP-5).
-func toolCompletion(stepID run.StepID, callID run.CallID, eff run.EffectID, out Outcome) run.AgentCommand {
+func toolCompletion(stepID run.StepID, callID run.CallID, eff run.EffectID, out effect.Outcome) run.AgentCommand {
 	switch o := out.Result.(type) {
-	case ToolExecutionSucceeded:
+	case effect.ToolExecutionSucceeded:
 		return run.SubmitToolResult{StepID: stepID, CallID: callID, Effect: eff, Result: o.Result}
-	case ToolExecutionFailed:
+	case effect.ToolExecutionFailed:
 		failure := o.Failure
 		if failure.Class == "" || failure.Class == run.FailureEffectUnknown {
 			failure.Class = run.FailureExecution
 		}
 		return run.SubmitToolFailure{StepID: stepID, CallID: callID, Effect: eff, Failure: failure, Outcome: run.ToolOutcomeKnown}
-	case ToolExecutionUnknown:
+	case effect.ToolExecutionUnknown:
 		failure := o.Failure
 		if failure.Class != "" && failure.Class != run.FailureEffectUnknown && failure.Message == "" {
 			failure.Message = "tool reported " + failure.Class

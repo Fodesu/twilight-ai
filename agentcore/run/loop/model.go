@@ -75,22 +75,22 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, snapshot *
 // the reload should decide (another actor moved the step). A model catalog
 // that cannot serve the step withdraws it to Open and reports the error: no
 // model call has happened.
-func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, snapshot *store.Snapshot, stepID run.StepID) (*AssignmentKey, error) {
+func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, snapshot *store.Snapshot, stepID run.StepID) (*effect.AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	prepared, ok := snapshot.State.Current.(run.ModelStep)
 	if !ok || prepared.RefValue.ID != stepID {
 		return nil, fmt.Errorf("agent: loop: model step %q is not current", stepID)
 	}
 	ref := modelEffect(runID, &prepared)
-	target, err := l.targetFor(ctx, EffectContext{Session: rt.Scope(), RunID: runID, StepID: stepID, Effect: ref.id, Kind: AssignmentModel})
+	target, err := l.targetFor(ctx, EffectContext{Session: rt.Scope(), RunID: runID, StepID: stepID, Effect: ref.id, Kind: effect.AssignmentModel})
 	if err != nil {
 		return nil, err
 	}
-	assignment := Assignment{Session: rt.Scope(), RunID: runID, StepID: stepID, Effect: ref.id, Target: target,
-		Body: ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
+	assignment := effect.Assignment{Session: rt.Scope(), RunID: runID, StepID: stepID, Effect: ref.id, Target: target,
+		Body: effect.ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
 	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model
 	// fails here, with the step still Prepared and no start or recovery fact.
-	unavailable, err := l.Executor.Validate(ctx, assignment)
+	unavailable, err := l.Ports.Execution.Validate(ctx, assignment)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, snapshot *
 		}
 		return nil, fmt.Errorf("agent: loop: load frozen model request: %w", err)
 	}
-	assignment.Body = ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest, Request: &request}
+	assignment.Body = effect.ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest, Request: &request}
 
 	if err := l.dispatch(ctx, assignment); err != nil {
 		if errors.Is(err, effect.ErrDispatchUnknown) {
@@ -155,7 +155,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, snapshot *
 // lands, and the drive stops instead of prompt building, freezing and dispatching
 // again against the same missing store. Whether to try again is the host's
 // decision, so a persistently unreadable store cannot spin the Run.
-func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
+func (l *Loop) modelCompletion(step *run.ModelStep, out effect.Outcome) (run.AgentCommand, error) {
 	stepID := step.RefValue.ID
 	withdraw := run.RecoverModelExecution{StepID: stepID, Effect: step.Effect}
 	var result model.ModelResult

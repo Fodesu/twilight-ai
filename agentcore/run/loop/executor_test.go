@@ -23,32 +23,32 @@ import (
 // can observe the Loop's dispatch and hand Outcomes back at will.
 type recordingExecutor struct {
 	mu           sync.Mutex
-	dispatched   []Assignment
-	outcomes     map[AssignmentKey]chan Outcome
-	settled      map[AssignmentKey]Outcome
-	attached     []Assignment
+	dispatched   []effect.Assignment
+	outcomes     map[effect.AssignmentKey]chan effect.Outcome
+	settled      map[effect.AssignmentKey]effect.Outcome
+	attached     []effect.Assignment
 	attachReply  bool
-	cancelled    []AssignmentKey
-	acknowledged []AssignmentKey
+	cancelled    []effect.AssignmentKey
+	acknowledged []effect.AssignmentKey
 }
 
 func newRecordingExecutor() *recordingExecutor {
-	return &recordingExecutor{outcomes: map[AssignmentKey]chan Outcome{}}
+	return &recordingExecutor{outcomes: map[effect.AssignmentKey]chan effect.Outcome{}}
 }
 
-func (e *recordingExecutor) Validate(context.Context, Assignment) (*ToolFailure, error) {
+func (e *recordingExecutor) Validate(context.Context, effect.Assignment) (*ToolFailure, error) {
 	return nil, nil
 }
 
-func (e *recordingExecutor) Dispatch(_ context.Context, a Assignment) error {
+func (e *recordingExecutor) Dispatch(_ context.Context, a effect.Assignment) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.dispatched = append(e.dispatched, a)
-	e.outcomes[a.Key()] = make(chan Outcome, 1)
+	e.outcomes[a.Key()] = make(chan effect.Outcome, 1)
 	return nil
 }
 
-func (e *recordingExecutor) Attach(_ context.Context, key AssignmentKey) (Attachment, error) {
+func (e *recordingExecutor) Attach(_ context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, a := range e.dispatched {
@@ -58,31 +58,31 @@ func (e *recordingExecutor) Attach(_ context.Context, key AssignmentKey) (Attach
 		}
 	}
 	if e.attachReply {
-		return Attachment{State: AttachmentActive, Execution: ExecutionRunning, BackendAttached: true}, nil
+		return effect.Attachment{State: effect.AttachmentActive, Execution: effect.ExecutionRunning, BackendAttached: true}, nil
 	}
-	return Attachment{State: AttachmentMissing, Execution: ExecutionNotFound}, nil
+	return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 }
 
 // Abort closes a key nothing was dispatched for; a dispatched key keeps its
 // attachment, as the real store does.
-func (e *recordingExecutor) Abort(ctx context.Context, key AssignmentKey) (Attachment, error) {
+func (e *recordingExecutor) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	e.mu.Lock()
 	_, dispatched := e.outcomes[key]
 	e.mu.Unlock()
 	if dispatched && e.attachReply {
 		return e.Attach(ctx, key)
 	}
-	return Attachment{State: AttachmentAborted, Execution: ExecutionAborted}, nil
+	return effect.Attachment{State: effect.AttachmentAborted, Execution: effect.ExecutionAborted}, nil
 }
 
-func (e *recordingExecutor) GetStatus(context.Context, AssignmentKey) (ExecutionStatus, error) {
-	return ExecutionRunning, nil
+func (e *recordingExecutor) GetStatus(context.Context, effect.AssignmentKey) (effect.ExecutionStatus, error) {
+	return effect.ExecutionRunning, nil
 }
 
 // GetOutcome is a read (effect.ExecutionPort): a dispatched key whose test
 // has not handed an Outcome back yet is ErrOutcomeNotReady, and a settled
 // key answers the same Outcome on every read.
-func (e *recordingExecutor) GetOutcome(_ context.Context, key AssignmentKey) (Outcome, error) {
+func (e *recordingExecutor) GetOutcome(_ context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if out, ok := e.settled[key]; ok {
@@ -90,17 +90,17 @@ func (e *recordingExecutor) GetOutcome(_ context.Context, key AssignmentKey) (Ou
 	}
 	ch, ok := e.outcomes[key]
 	if !ok {
-		return Outcome{}, ErrExecutionNotFound
+		return effect.Outcome{}, effect.ErrExecutionNotFound
 	}
 	select {
 	case out := <-ch:
 		if e.settled == nil {
-			e.settled = map[AssignmentKey]Outcome{}
+			e.settled = map[effect.AssignmentKey]effect.Outcome{}
 		}
 		e.settled[key] = out
 		return out, nil
 	default:
-		return Outcome{}, ErrOutcomeNotReady
+		return effect.Outcome{}, effect.ErrOutcomeNotReady
 	}
 }
 
@@ -109,10 +109,10 @@ func (e *recordingExecutor) GetOutcome(_ context.Context, key AssignmentKey) (Ou
 // its poll. A test that hands an Outcome back sees it delivered at once.
 func (e *recordingExecutor) Settlements(ctx context.Context, _ string, after uint64, fn func(effect.Settlement) bool) error {
 	seq := after
-	noticed := map[AssignmentKey]bool{}
+	noticed := map[effect.AssignmentKey]bool{}
 	for {
 		e.mu.Lock()
-		var ready []AssignmentKey
+		var ready []effect.AssignmentKey
 		for key, ch := range e.outcomes {
 			if noticed[key] {
 				continue
@@ -124,7 +124,7 @@ func (e *recordingExecutor) Settlements(ctx context.Context, _ string, after uin
 			select {
 			case out := <-ch:
 				if e.settled == nil {
-					e.settled = map[AssignmentKey]Outcome{}
+					e.settled = map[effect.AssignmentKey]effect.Outcome{}
 				}
 				e.settled[key] = out
 				ready = append(ready, key)
@@ -147,27 +147,27 @@ func (e *recordingExecutor) Settlements(ctx context.Context, _ string, after uin
 	}
 }
 
-func (e *recordingExecutor) Cancel(_ context.Context, key AssignmentKey) error {
+func (e *recordingExecutor) Cancel(_ context.Context, key effect.AssignmentKey) error {
 	e.mu.Lock()
 	e.cancelled = append(e.cancelled, key)
 	e.mu.Unlock()
 	return nil
 }
 
-func (e *recordingExecutor) Acknowledge(_ context.Context, key AssignmentKey) error {
+func (e *recordingExecutor) Acknowledge(_ context.Context, key effect.AssignmentKey) error {
 	e.mu.Lock()
 	e.acknowledged = append(e.acknowledged, key)
 	e.mu.Unlock()
 	return nil
 }
 
-func (e *recordingExecutor) last() Assignment {
+func (e *recordingExecutor) last() effect.Assignment {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.dispatched[len(e.dispatched)-1]
 }
 
-func (e *recordingExecutor) deliver(t *testing.T, key AssignmentKey, out Outcome) {
+func (e *recordingExecutor) deliver(t *testing.T, key effect.AssignmentKey, out effect.Outcome) {
 	t.Helper()
 	e.mu.Lock()
 	ch, ok := e.outcomes[key]
@@ -198,7 +198,7 @@ func (r *recordingTargetResolver) ResolveTarget(_ context.Context, ec EffectCont
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seen = append(r.seen, ec)
-	if ec.Kind != AssignmentTool {
+	if ec.Kind != effect.AssignmentTool {
 		return nil, nil
 	}
 	return &TargetRef{Kind: "workspace", ID: "ws-" + string(ec.CallID)}, nil
@@ -220,7 +220,7 @@ func TestTargetResolvedPerEffect(t *testing.T) {
 	if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: mustFreezeResult(t, toolCallResult("c1", "c2"))}}); err != nil {
+	if _, err := l.Deliver(ctx, rt.Bind(w), effect.Outcome{Key: exec.last().Key(), Result: effect.ModelSucceeded{Result: mustFreezeResult(t, toolCallResult("c1", "c2"))}}); err != nil {
 		t.Fatal(err)
 	}
 	res, err := l.Advance(ctx, rt.Bind(w), "run-1")
@@ -228,7 +228,7 @@ func TestTargetResolvedPerEffect(t *testing.T) {
 		t.Fatalf("advance = %+v %v", res, err)
 	}
 	exec.mu.Lock()
-	dispatched := append([]Assignment(nil), exec.dispatched...)
+	dispatched := append([]effect.Assignment(nil), exec.dispatched...)
 	exec.mu.Unlock()
 	if len(dispatched) != 3 || len(resolver.seen) != len(dispatched) {
 		t.Fatalf("dispatched %d assignments, resolver asked %d times", len(dispatched), len(resolver.seen))
@@ -300,14 +300,14 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	}
 
 	result := mustFreezeResult(t, textResult("done"))
-	delivered, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: a.Key(), Result: ModelSucceeded{Result: result}})
+	delivered, err := l.Deliver(ctx, rt.Bind(w), effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: result}})
 	if err != nil || delivered.Disposition != LoopFinished || delivered.Result == nil || delivered.Result.Status != RunCompleted {
 		t.Fatalf("deliver = %+v %v", delivered, err)
 	}
 	// The settlement is a fact: the executor is told it may collect the
 	// effect's record (RUN-EXE-13).
 	exec.mu.Lock()
-	acked := append([]AssignmentKey(nil), exec.acknowledged...)
+	acked := append([]effect.AssignmentKey(nil), exec.acknowledged...)
 	exec.mu.Unlock()
 	if len(acked) != 1 || acked[0] != a.Key() {
 		t.Fatalf("acknowledged = %+v, want %+v", acked, a.Key())
@@ -322,13 +322,13 @@ type failingOutcomeReader struct {
 	once    sync.Once
 }
 
-func (e *failingOutcomeReader) GetOutcome(ctx context.Context, key AssignmentKey) (Outcome, error) {
+func (e *failingOutcomeReader) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	select {
 	case <-e.ready:
 		return e.recordingExecutor.GetOutcome(ctx, key)
 	default:
 		e.once.Do(func() { close(e.failed) })
-		return Outcome{}, e.readErr
+		return effect.Outcome{}, e.readErr
 	}
 }
 
@@ -359,7 +359,7 @@ func TestOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 		t.Fatalf("read error changed Run: %+v", snapshot.State)
 	}
 	close(exec.ready)
-	exec.deliver(t, exec.last().Key(), Outcome{Result: ModelSucceeded{Result: mustFreezeResult(t, textResult("eventual result"))}})
+	exec.deliver(t, exec.last().Key(), effect.Outcome{Result: effect.ModelSucceeded{Result: mustFreezeResult(t, textResult("eventual result"))}})
 	select {
 	case res := <-done:
 		if res.Disposition != LoopFinished {
@@ -393,7 +393,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 	}
 	before := len(recordFacts(t, rt, "run-1"))
 	result := mustFreezeResult(t, textResult("late"))
-	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Result: ModelSucceeded{Result: result}})
+	res, err := l.Deliver(ctx, rt.Bind(w), effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: result}})
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("late deliver = %+v %v", res, err)
 	}
@@ -406,7 +406,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 	}
 	forged := exec.last().Key()
 	forged.Effect = "someone-else"
-	res, err = l.Deliver(ctx, rt.Bind(w), Outcome{Key: forged, Result: ModelSucceeded{Result: result}})
+	res, err = l.Deliver(ctx, rt.Bind(w), effect.Outcome{Key: forged, Result: effect.ModelSucceeded{Result: result}})
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("forged deliver = %+v %v", res, err)
 	}
@@ -437,9 +437,9 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reattached []Outcome
+	var reattached []effect.Outcome
 	var mu sync.Mutex
-	deliverToNew := func(out Outcome) {
+	deliverToNew := func(out effect.Outcome) {
 		if _, err := newLoop.Deliver(ctx, stack.runtime.Bind(stack.writer(t)), out); err != nil {
 			t.Errorf("reattached deliver: %v", err)
 		}
@@ -461,7 +461,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 
 	// The attempt finishes on the executor; its Outcome reaches the new owner.
 	result := mustFreezeResult(t, textResult("done"))
-	exec.deliver(t, a.Key(), Outcome{Result: ModelSucceeded{Result: result}})
+	exec.deliver(t, a.Key(), effect.Outcome{Result: effect.ModelSucceeded{Result: result}})
 	deadline := time.After(2 * time.Second)
 	for {
 		mu.Lock()
@@ -502,7 +502,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	}
 	a := exec.last()
 	stack.open(t)
-	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: func(Outcome) {}})
+	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: func(effect.Outcome) {}})
 	if err != nil || n != 1 || len(exec.attached) != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
 	}
@@ -528,13 +528,13 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	block := make(chan struct{})
 	seenTarget := make(chan *TargetRef, 1)
 	tool := &fakeTool{ref: "echo", def: toolDef("echo"), policy: DirectExecution,
-		execute: func(ctx context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(ctx context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 			seenTarget <- req.Target
 			select {
 			case <-ctx.Done():
-				return ToolExecutionUnknown{Failure: ToolFailure{Class: FailureEffectUnknown, Message: ctx.Err().Error()}}
+				return effect.ToolExecutionUnknown{Failure: ToolFailure{Class: FailureEffectUnknown, Message: ctx.Err().Error()}}
 			case <-block:
-				return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
+				return effect.ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 			}
 		}}
 	exec, err := local.NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": tool}}, nil, false)
@@ -543,8 +543,8 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	}
 	spec := toolSpec(t, "echo", DirectExecution)
 	target := TargetRef{Kind: "workspace", ID: "ws-1"}
-	a := Assignment{Session: testScope, RunID: "run-1", StepID: "step-1", CallID: "call-1", Effect: "effect-1", Target: &target,
-		Body: ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
+	a := effect.Assignment{Session: testScope, RunID: "run-1", StepID: "step-1", CallID: "call-1", Effect: "effect-1", Target: &target,
+		Body: effect.ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
 	ref, err := exec.Prepare(context.Background(), a)
 	if err != nil {
 		t.Fatal(err)
@@ -564,7 +564,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 		t.Fatalf("idempotent duplicate start = %v", dup)
 	}
 	attached, err := exec.Attach(context.Background(), ref)
-	if err != nil || attached.State != AttachmentActive {
+	if err != nil || attached.State != effect.AttachmentActive {
 		t.Fatalf("attach running = %+v %v", attached, err)
 	}
 	if err := exec.Cancel(context.Background(), ref); err != nil {
@@ -574,10 +574,10 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, cancelled := out.Result.(Cancelled); !cancelled || out.Key != a.Key() {
+	if _, cancelled := out.Result.(effect.Cancelled); !cancelled || out.Key != a.Key() {
 		t.Fatalf("cancelled outcome = %+v", out)
 	}
-	if attached, _ := exec.Attach(context.Background(), ref); attached.State != AttachmentTerminal {
+	if attached, _ := exec.Attach(context.Background(), ref); attached.State != effect.AttachmentTerminal {
 		t.Fatalf("attach after completion = %+v; want terminal", attached)
 	}
 	if exec.InFlight() != 0 {
@@ -599,7 +599,7 @@ func TestDeliverCancelledModelRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := exec.last().Key()
-	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Result: Cancelled{Message: "cancelled"}})
+	res, err := l.Deliver(ctx, rt.Bind(w), effect.Outcome{Key: key, Result: effect.Cancelled{Message: "cancelled"}})
 	if err != nil || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver cancelled = %+v %v", res, err)
 	}
@@ -626,7 +626,7 @@ func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := exec.last()
-	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: first.Key(), Result: ModelFailed{Code: FailureFrozenValueMissing, Message: "frozen value missing"}})
+	res, err := l.Deliver(ctx, rt.Bind(w), effect.Outcome{Key: first.Key(), Result: effect.ModelFailed{Code: effect.FailureFrozenValueMissing, Message: "frozen value missing"}})
 	if !errors.Is(err, frozen.ErrMissing) || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver missing body = %+v %v, want delivered plus the missing-body error", res, err)
 	}
@@ -646,7 +646,7 @@ func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 // accepts every model assignment and reports the miss as an Outcome.
 type missingBodyExecutor struct{ recordingExecutor }
 
-func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error {
+func (e *missingBodyExecutor) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if err := e.recordingExecutor.Dispatch(ctx, a); err != nil {
 		return err
 	}
@@ -654,7 +654,7 @@ func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error 
 	ch := e.outcomes[a.Key()]
 	e.mu.Unlock()
 	go func() {
-		ch <- Outcome{Key: a.Key(), Result: ModelFailed{Code: FailureFrozenValueMissing, Message: "frozen value missing"}}
+		ch <- effect.Outcome{Key: a.Key(), Result: effect.ModelFailed{Code: effect.FailureFrozenValueMissing, Message: "frozen value missing"}}
 	}()
 	return nil
 }
@@ -666,9 +666,9 @@ func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error 
 func TestDriveStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	cases := []struct {
 		name string
-		exec func(t *testing.T, rt store.RunStore) Executor
+		exec func(t *testing.T, rt store.RunStore) effect.ExecutionPort
 	}{
-		{"remote outcome", func(*testing.T, store.RunStore) Executor {
+		{"remote outcome", func(*testing.T, store.RunStore) effect.ExecutionPort {
 			return &missingBodyExecutor{recordingExecutor: *newRecordingExecutor()}
 		}},
 	}
@@ -705,7 +705,7 @@ func TestDriveStopsAfterOneMissingBodyRecovery(t *testing.T) {
 }
 
 // mustModel is the model body of an Assignment.
-func mustModel(t testing.TB, a Assignment) ModelAssignment {
+func mustModel(t testing.TB, a effect.Assignment) effect.ModelAssignment {
 	t.Helper()
 	m, ok := a.Model()
 	if !ok {
@@ -750,8 +750,8 @@ func TestLocalExecutorValidateChecksToolDeclarations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "c1", Effect: "e",
-				Body: ToolAssignment{ToolRef: "echo", DefinitionDigest: digest, Arguments: cj(`{}`), Policy: DirectExecution, Replay: tc.assigned, Placement: tc.assignedPlacement}}
+			a := effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "c1", Effect: "e",
+				Body: effect.ToolAssignment{ToolRef: "echo", DefinitionDigest: digest, Arguments: cj(`{}`), Policy: DirectExecution, Replay: tc.assigned, Placement: tc.assignedPlacement}}
 			failure, err := exec.Validate(context.Background(), a)
 			if err != nil {
 				t.Fatal(err)
@@ -768,15 +768,15 @@ func TestLocalExecutorValidateChecksToolDeclarations(t *testing.T) {
 
 // awaitRef reads ref's Outcome until it is readable: Outcome is a plain read
 // and the local.LocalExecutor announces settlement through its notice.Source.
-func awaitRef(ctx context.Context, exec *local.LocalExecutor, ref string) (Outcome, error) {
+func awaitRef(ctx context.Context, exec *local.LocalExecutor, ref string) (effect.Outcome, error) {
 	for {
 		out, err := exec.Outcome(ctx, ref)
-		if !errors.Is(err, ErrOutcomeNotReady) {
+		if !errors.Is(err, effect.ErrOutcomeNotReady) {
 			return out, err
 		}
 		select {
 		case <-ctx.Done():
-			return Outcome{}, ctx.Err()
+			return effect.Outcome{}, ctx.Err()
 		case <-time.After(time.Millisecond):
 		}
 	}

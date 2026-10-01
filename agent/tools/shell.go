@@ -11,7 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -65,7 +65,7 @@ func (Shell) ValidateArguments(args run.CanonicalJSON) error {
 	return nil
 }
 
-func (Shell) Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (Shell) Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	var a shellArgs
 	if err := decode(req.Arguments, &a); err != nil {
 		return fail(run.FailureInvalidArguments, err.Error(), run.RetryNever)

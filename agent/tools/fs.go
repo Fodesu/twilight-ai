@@ -10,7 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -60,7 +60,7 @@ func (ReadFile) ValidateArguments(args run.CanonicalJSON) error {
 	}
 	return nil
 }
-func (ReadFile) Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (ReadFile) Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	var a pathArgs
 	if err := decode(req.Arguments, &a); err != nil {
 		return fail(run.FailureInvalidArguments, err.Error(), run.RetryNever)
@@ -110,7 +110,7 @@ func (WriteFile) ValidateArguments(args run.CanonicalJSON) error {
 	}
 	return nil
 }
-func (WriteFile) Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (WriteFile) Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	var a writeArgs
 	if err := decode(req.Arguments, &a); err != nil {
 		return fail(run.FailureInvalidArguments, err.Error(), run.RetryNever)
@@ -145,7 +145,7 @@ func (ListDir) ValidateArguments(args run.CanonicalJSON) error {
 	}
 	return args.Decode(&a)
 }
-func (ListDir) Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (ListDir) Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	var a pathArgs
 	if !req.Arguments.IsZero() {
 		if err := req.Arguments.Decode(&a); err != nil {

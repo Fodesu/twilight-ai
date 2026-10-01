@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agentcore/run/effect"
 
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -63,7 +64,7 @@ func (l *Loop) settle(ctx context.Context, rt store.RunStore, e *effectRef, base
 	// effect's record (RUN-EXE-13). A refused or failed acknowledgement
 	// changes nothing here; the executor's time-based collection covers it.
 	if l.Ports.Ack != nil {
-		_ = l.Ports.Ack.Acknowledge(ctx, AssignmentKey{Session: rt.Scope(), RunID: e.runID, Effect: e.id})
+		_ = l.Ports.Ack.Acknowledge(ctx, effect.AssignmentKey{Session: rt.Scope(), RunID: e.runID, Effect: e.id})
 	}
 	if res.Snapshot.State.Status.Terminal() {
 		return res.Snapshot.State.Result, nil

@@ -31,7 +31,7 @@ import (
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
@@ -195,7 +195,7 @@ func (tool) ValidateArguments(args run.CanonicalJSON) error {
 	return err
 }
 
-func (t tool) Execute(context.Context, local.ToolExecutionRequest) loop.ToolExecutionOutcome {
-	return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureExecution,
+func (t tool) Execute(context.Context, local.ToolExecutionRequest) effect.ToolExecutionOutcome {
+	return effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureExecution,
 		Message: fmt.Sprintf("%s is answered by the spawn Responder (app.Config.Spawn), never executed", t.ref)}}
 }

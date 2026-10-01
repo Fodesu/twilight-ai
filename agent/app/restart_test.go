@@ -13,7 +13,6 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
@@ -222,11 +221,11 @@ func TestRestartRedispatchesMissingEffect(t *testing.T) {
 // as a remote executor does.
 type reattachingExecutor struct {
 	recordingExecutor
-	attached []loop.AssignmentKey
+	attached []effect.AssignmentKey
 	reads    chan context.Context
 }
 
-func (e *reattachingExecutor) GetOutcome(ctx context.Context, key loop.AssignmentKey) (loop.Outcome, error) {
+func (e *reattachingExecutor) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	if e.reads != nil {
 		select {
 		case e.reads <- ctx:
@@ -236,26 +235,26 @@ func (e *reattachingExecutor) GetOutcome(ctx context.Context, key loop.Assignmen
 	return e.recordingExecutor.GetOutcome(ctx, key)
 }
 
-func (e *reattachingExecutor) Attach(_ context.Context, key loop.AssignmentKey) (loop.Attachment, error) {
+func (e *reattachingExecutor) Attach(_ context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.attached = append(e.attached, key)
 	if e.outcomes == nil {
-		e.outcomes = make(map[loop.AssignmentKey]chan loop.Outcome)
+		e.outcomes = make(map[effect.AssignmentKey]chan effect.Outcome)
 	}
 	if e.outcomes[key] == nil {
-		e.outcomes[key] = make(chan loop.Outcome, 1)
+		e.outcomes[key] = make(chan effect.Outcome, 1)
 	}
-	return loop.Attachment{State: loop.AttachmentActive, Execution: loop.ExecutionRunning, BackendAttached: true}, nil
+	return effect.Attachment{State: effect.AttachmentActive, Execution: effect.ExecutionRunning, BackendAttached: true}, nil
 }
 
 // Abort finds the attempt this executor still holds, so the takeover keeps
 // it instead of disposing.
-func (e *reattachingExecutor) Abort(ctx context.Context, key loop.AssignmentKey) (loop.Attachment, error) {
+func (e *reattachingExecutor) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	return e.Attach(ctx, key)
 }
 
-func (e *reattachingExecutor) complete(key loop.AssignmentKey, out loop.Outcome) {
+func (e *reattachingExecutor) complete(key effect.AssignmentKey, out effect.Outcome) {
 	e.mu.Lock()
 	ch := e.outcomes[key]
 	e.mu.Unlock()
@@ -313,7 +312,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	// relay asks whether the Executor holds the effect (RUN-EXE-15): every
 	// Attach names the one running attempt.
 	exec.mu.Lock()
-	var key loop.AssignmentKey
+	var key effect.AssignmentKey
 	if len(exec.attached) > 0 {
 		key = exec.attached[0]
 	}
@@ -345,7 +344,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	}
 
 	// The executor finishes the original attempt; its Outcome reaches process 2.
-	exec.complete(exec.attached[0], loop.Outcome{Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "reattached", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})}})
+	exec.complete(exec.attached[0], effect.Outcome{Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "reattached", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})}})
 	deadline := time.After(2 * time.Second)
 	for {
 		tsurf, err = p2.TurnSurface(ctx, sid)

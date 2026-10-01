@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/decision"
 	. "github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
@@ -63,7 +64,7 @@ type fakeTool struct {
 	ref       ToolRef
 	def       sdk.ToolDefinition
 	policy    ResponsePolicy
-	execute   func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome
+	execute   func(context.Context, local.ToolExecutionRequest) effect.ToolExecutionOutcome
 	valErr    error
 	replay    ReplayPolicy
 	placement ToolPlacement
@@ -75,7 +76,7 @@ func (f *fakeTool) ResponsePolicy() ResponsePolicy        { return f.policy }
 func (f *fakeTool) Replay() ReplayPolicy                  { return f.replay }
 func (f *fakeTool) Placement() ToolPlacement              { return f.placement }
 func (f *fakeTool) ValidateArguments(CanonicalJSON) error { return f.valErr }
-func (f *fakeTool) Execute(ctx context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
+func (f *fakeTool) Execute(ctx context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	return f.execute(ctx, req)
 }
 
@@ -291,7 +292,7 @@ func TestLoopParallelBounded(t *testing.T) {
 	gate := make(chan struct{})
 	started := make(chan struct{}, 3)
 	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(context.Context, local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 			cur := concurrent.Add(1)
 			for {
 				p := peak.Load()
@@ -302,7 +303,7 @@ func TestLoopParallelBounded(t *testing.T) {
 			started <- struct{}{}
 			<-gate // hold every worker until released so concurrency is real
 			concurrent.Add(-1)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
+			return effect.ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2", "c3"), textResult("done")}}
 	rt, w := loopRuntime(t)
@@ -349,8 +350,8 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 	args := cj(`{}`)
 	callID := schema.Identity().DeriveCallID("model-1", 0)
 	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome {
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: args}}
+		execute: func(context.Context, local.ToolExecutionRequest) effect.ToolExecutionOutcome {
+			return effect.ToolExecutionSucceeded{Result: ToolExecutionResult{Output: args}}
 		}}
 	loop, err := newLoop(t, fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
 		staticBuilder{}, Settings{}, false)
@@ -467,9 +468,9 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	var executions atomic.Int32
 	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(_ context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 			executions.Add(1)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
+			return effect.ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
 	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},

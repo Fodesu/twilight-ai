@@ -25,11 +25,9 @@ import (
 // reads their Outcomes and delivers them. It never learns which attempt the
 // Executor made for an effect.
 type Loop struct {
-	// Ports is the effect layer the Loop dispatches through and the optional
-	// capabilities it uses when present: progress frames relayed to the
-	// sink, settled effects acknowledged. Executor is Ports.Execution.
+	// Ports is the effect layer the Loop dispatches through; of the optional
+	// capabilities it uses only Ack, to acknowledge a settled effect.
 	Ports    effect.Ports
-	Executor Executor
 	Builder  decision.Builder
 	Settings Settings
 
@@ -61,7 +59,7 @@ func New(ports effect.Ports, builder decision.Builder, settings Settings) (*Loop
 	if settings.Scheduling.MaxParallel < 0 {
 		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
-	return &Loop{Ports: ports, Executor: ports.Execution, Builder: builder, Settings: settings, slots: make(map[run.RunID]*runSlot)}, nil
+	return &Loop{Ports: ports, Builder: builder, Settings: settings, slots: make(map[run.RunID]*runSlot)}, nil
 }
 
 func (l *Loop) toolScheduling() run.ToolScheduling {
@@ -83,11 +81,11 @@ func (l *Loop) toolScheduling() run.ToolScheduling {
 
 // dispatch hands an Assignment to the Executor, repeating a retryable refusal
 // within the dispatch policy; every other answer is returned as is.
-func (l *Loop) dispatch(ctx context.Context, a Assignment) error {
+func (l *Loop) dispatch(ctx context.Context, a effect.Assignment) error {
 	var err error
 	policy := l.Settings.Dispatch
 	for attempt := 1; ; attempt++ {
-		err = l.Executor.Dispatch(ctx, a)
+		err = l.Ports.Execution.Dispatch(ctx, a)
 		if err == nil || !errors.Is(err, effect.ErrDispatchRetryable) || attempt >= policy.retries() {
 			return err
 		}
@@ -241,7 +239,7 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID) 
 				return LoopResult{}, err
 			}
 			if dispatched != nil {
-				return LoopResult{Disposition: LoopDispatched, Dispatched: []AssignmentKey{*dispatched}}, nil
+				return LoopResult{Disposition: LoopDispatched, Dispatched: []effect.AssignmentKey{*dispatched}}, nil
 			}
 		case plan.StartToolCalls:
 			dispatched, held, err := l.startToolCalls(ctx, rt, &snapshot, act)
@@ -270,17 +268,17 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID) 
 
 // executingKeys are the keys of the effects state is Executing under: the
 // model step's, or one per Executing tool call.
-func executingKeys(scope run.Scope, state *run.MachineState) []AssignmentKey {
-	var keys []AssignmentKey
+func executingKeys(scope run.Scope, state *run.MachineState) []effect.AssignmentKey {
+	var keys []effect.AssignmentKey
 	switch cur := state.Current.(type) {
 	case run.ModelStep:
 		if cur.Status == run.ModelExecuting && cur.Effect != "" {
-			keys = append(keys, AssignmentKey{Session: scope, RunID: state.RunID, Effect: cur.Effect})
+			keys = append(keys, effect.AssignmentKey{Session: scope, RunID: state.RunID, Effect: cur.Effect})
 		}
 	case run.ToolStep:
 		for i := range cur.Calls {
 			if c := &cur.Calls[i]; c.Status == run.ToolExecuting && c.Effect != "" {
-				keys = append(keys, AssignmentKey{Session: scope, RunID: state.RunID, Effect: c.Effect})
+				keys = append(keys, effect.AssignmentKey{Session: scope, RunID: state.RunID, Effect: c.Effect})
 			}
 		}
 	}
@@ -300,7 +298,7 @@ func finish(result *run.RunResult) LoopResult {
 // LoopFinished when the settlement terminated the Run, LoopDelivered when the
 // host should Advance next, LoopDropped for a stale Outcome. Ownership loss
 // is returned as is (RUN-LOP-5).
-func (l *Loop) Deliver(ctx context.Context, st store.RunStore, out Outcome) (LoopResult, error) {
+func (l *Loop) Deliver(ctx context.Context, st store.RunStore, out effect.Outcome) (LoopResult, error) {
 	if err := l.checkArgs(ctx, st, out.Key.RunID); err != nil {
 		return LoopResult{}, err
 	}
@@ -311,7 +309,7 @@ func (l *Loop) Deliver(ctx context.Context, st store.RunStore, out Outcome) (Loo
 	return l.deliver(ctx, st, out)
 }
 
-func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome) (LoopResult, error) {
+func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out effect.Outcome) (LoopResult, error) {
 	if out.Key.Session != "" && out.Key.Session != rt.Scope() {
 		return LoopResult{Disposition: LoopDropped}, nil
 	}
@@ -332,22 +330,18 @@ func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome) (Loo
 	// Executing under it. An effect nothing is Executing under is stale.
 	var cmd run.AgentCommand
 	var settleErr error
-	var stepID run.StepID
-	var callID run.CallID
 	switch cur := snapshot.State.Current.(type) {
 	case run.ModelStep:
 		if cur.Status != run.ModelExecuting || out.Key.Effect == "" || cur.Effect != out.Key.Effect {
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
-		stepID = cur.RefValue.ID
 		cmd, settleErr = l.modelCompletion(&cur, out)
 	case run.ToolStep:
 		call, ok := executingCall(&cur, out.Key.Effect)
 		if !ok {
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
-		stepID, callID = cur.RefValue.ID, call.CallID
-		cmd = toolCompletion(stepID, callID, call.Effect, out)
+		cmd = toolCompletion(cur.RefValue.ID, call.CallID, call.Effect, out)
 	default:
 		return LoopResult{Disposition: LoopDropped}, nil
 	}

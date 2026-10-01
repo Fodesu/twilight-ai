@@ -18,7 +18,7 @@ import (
 // ctx's error. It exists for the tests of this package.
 func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.RunID) (LoopResult, error) {
 	settleCtx := context.WithoutCancel(ctx)
-	pending := map[AssignmentKey]struct{}{}
+	pending := map[effect.AssignmentKey]struct{}{}
 	cancelled := false
 	for {
 		if len(pending) == 0 {
@@ -36,7 +36,7 @@ func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.Run
 				pending[k] = struct{}{}
 			}
 		}
-		key, out, err := readAny(ctx, settleCtx, l.Executor, pending, &cancelled)
+		key, out, err := readAny(ctx, settleCtx, l.Ports.Execution, pending, &cancelled)
 		if err != nil {
 			return LoopResult{}, err
 		}
@@ -45,7 +45,7 @@ func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.Run
 		if err != nil {
 			if ownershipLost(err) {
 				for k := range pending {
-					_ = l.Executor.Cancel(settleCtx, k)
+					_ = l.Ports.Execution.Cancel(settleCtx, k)
 				}
 			}
 			return res, err
@@ -59,16 +59,16 @@ func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.Run
 // readAny reads the pending keys until one Outcome is readable. When ctx
 // ends it cancels every pending effect once and keeps reading under
 // settleCtx, so each cancelled effect still settles.
-func readAny(ctx, settleCtx context.Context, port Executor, pending map[AssignmentKey]struct{}, cancelled *bool) (AssignmentKey, Outcome, error) {
+func readAny(ctx, settleCtx context.Context, port effect.ExecutionPort, pending map[effect.AssignmentKey]struct{}, cancelled *bool) (effect.AssignmentKey, effect.Outcome, error) {
 	for {
 		for key := range pending {
 			out, err := port.GetOutcome(settleCtx, key)
 			switch {
 			case err == nil:
 				return key, out, nil
-			case errors.Is(err, ErrOutcomeNotReady):
-			case errors.Is(err, ErrExecutionNotFound), errors.Is(err, effect.ErrOutcomeUnavailable):
-				return key, Outcome{}, fmt.Errorf("agent: loop: read outcome: %w", err)
+			case errors.Is(err, effect.ErrOutcomeNotReady):
+			case errors.Is(err, effect.ErrExecutionNotFound), errors.Is(err, effect.ErrOutcomeUnavailable):
+				return key, effect.Outcome{}, fmt.Errorf("agent: loop: read outcome: %w", err)
 			default:
 				// A read failure says nothing about the execution: read again.
 			}

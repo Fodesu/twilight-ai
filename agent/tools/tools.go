@@ -9,11 +9,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/run/effect"
 
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -29,7 +29,7 @@ type Tool interface {
 	// environment.
 	ValidateArguments(run.CanonicalJSON) error
 	// Run executes the call inside env.
-	Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) loop.ToolExecutionOutcome
+	Run(ctx context.Context, env environment.Environment, req *local.ToolExecutionRequest) effect.ToolExecutionOutcome
 }
 
 // Default is the reference agent's workspace tool set.
@@ -42,21 +42,21 @@ func decode[T any](args run.CanonicalJSON, into *T) error {
 	return args.Decode(into)
 }
 
-func succeed(v any) loop.ToolExecutionOutcome {
+func succeed(v any) effect.ToolExecutionOutcome {
 	out, err := run.CanonicalJSONFromValue(v)
 	if err != nil {
 		return fail(run.FailureInternal, err.Error(), run.RetryNever)
 	}
-	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: out}}
+	return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: out}}
 }
 
-func fail(class, message string, retry run.RetryDisposition) loop.ToolExecutionOutcome {
-	return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: class, Message: message}, Retry: retry}
+func fail(class, message string, retry run.RetryDisposition) effect.ToolExecutionOutcome {
+	return effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: class, Message: message}, Retry: retry}
 }
 
 // fsOf returns the environment's FS capability or the failure a tool
 // reports without it.
-func fsOf(env environment.Environment) (fsys environment.FS, failure loop.ToolExecutionOutcome) {
+func fsOf(env environment.Environment) (fsys environment.FS, failure effect.ToolExecutionOutcome) {
 	fs, ok := env.(environment.FS)
 	if !ok {
 		return nil, fail(run.FailureUnavailable, fmt.Sprintf("environment %s exposes no filesystem", env.Ref()), run.RetryNever)
@@ -65,7 +65,7 @@ func fsOf(env environment.Environment) (fsys environment.FS, failure loop.ToolEx
 }
 
 // fsFailure classifies an FS error.
-func fsFailure(op, path string, err error) loop.ToolExecutionOutcome {
+func fsFailure(op, path string, err error) effect.ToolExecutionOutcome {
 	switch {
 	case errors.Is(err, environment.ErrOutsideRoot):
 		return fail(run.FailureInvalidInput, err.Error(), run.RetryNever)

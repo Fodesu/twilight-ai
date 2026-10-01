@@ -14,7 +14,7 @@ func TestModelCompletionWithdrawsOnUnknown(t *testing.T) {
 	step := &run.ModelStep{RefValue: run.StepRef{RunID: "r", ID: "s1"}, Status: run.ModelExecuting, Effect: "e1"}
 	cases := []struct {
 		name string
-		out  OutcomeResult
+		out  effect.OutcomeResult
 		want run.AgentCommand
 	}{
 		{"unknown", effect.Unknown{Message: "disposed"}, run.RecoverModelExecution{StepID: "s1", Effect: "e1"}},
@@ -25,7 +25,7 @@ func TestModelCompletionWithdrawsOnUnknown(t *testing.T) {
 	l := &Loop{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := l.modelCompletion(step, Outcome{Result: tc.out})
+			got, err := l.modelCompletion(step, effect.Outcome{Result: tc.out})
 			if err != nil || got != tc.want {
 				t.Fatalf("completion = %#v, %v, want %#v", got, err, tc.want)
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/run/effect"
 
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/store"
@@ -20,7 +21,7 @@ var ErrEffectNotExecuting = errors.New("agent: loop: effect is not executing")
 // not complete (a crash between the start fact and the call) is completed
 // here. The Executor recognises a replayed Assignment by its key, so a
 // Redispatch of an effect it already holds changes nothing (RUN-EXE-3).
-func (l *Loop) Redispatch(ctx context.Context, rt store.RunStore, key AssignmentKey) error {
+func (l *Loop) Redispatch(ctx context.Context, rt store.RunStore, key effect.AssignmentKey) error {
 	if err := l.checkArgs(ctx, rt, key.RunID); err != nil {
 		return err
 	}
@@ -38,7 +39,7 @@ func (l *Loop) Redispatch(ctx context.Context, rt store.RunStore, key Assignment
 			return ErrEffectNotExecuting
 		}
 		stepID := cur.RefValue.ID
-		target, err := l.targetFor(ctx, EffectContext{Session: scope, RunID: key.RunID, StepID: stepID, Effect: key.Effect, Kind: AssignmentModel})
+		target, err := l.targetFor(ctx, EffectContext{Session: scope, RunID: key.RunID, StepID: stepID, Effect: key.Effect, Kind: effect.AssignmentModel})
 		if err != nil {
 			return err
 		}
@@ -46,20 +47,20 @@ func (l *Loop) Redispatch(ctx context.Context, rt store.RunStore, key Assignment
 		if err != nil {
 			return fmt.Errorf("agent: loop: redispatch: load frozen model request: %w", err)
 		}
-		return l.dispatch(ctx, Assignment{Session: scope, RunID: key.RunID, StepID: stepID, Effect: key.Effect, Target: target,
-			Body: ModelAssignment{Model: cur.Model, RequestDigest: cur.RequestDigest, Request: &request}})
+		return l.dispatch(ctx, effect.Assignment{Session: scope, RunID: key.RunID, StepID: stepID, Effect: key.Effect, Target: target,
+			Body: effect.ModelAssignment{Model: cur.Model, RequestDigest: cur.RequestDigest, Request: &request}})
 	case run.ToolStep:
 		call, ok := executingCall(&cur, key.Effect)
 		if !ok {
 			return ErrEffectNotExecuting
 		}
 		stepID := cur.RefValue.ID
-		target, err := l.targetFor(ctx, EffectContext{Session: scope, RunID: key.RunID, StepID: stepID, CallID: call.CallID, Effect: key.Effect, Kind: AssignmentTool, Tool: call.ToolRef, Placement: call.Placement})
+		target, err := l.targetFor(ctx, EffectContext{Session: scope, RunID: key.RunID, StepID: stepID, CallID: call.CallID, Effect: key.Effect, Kind: effect.AssignmentTool, Tool: call.ToolRef, Placement: call.Placement})
 		if err != nil {
 			return err
 		}
-		return l.dispatch(ctx, Assignment{Session: scope, RunID: key.RunID, StepID: stepID, CallID: call.CallID, Effect: key.Effect, Target: target,
-			Body: ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay, Placement: call.Placement}})
+		return l.dispatch(ctx, effect.Assignment{Session: scope, RunID: key.RunID, StepID: stepID, CallID: call.CallID, Effect: key.Effect, Target: target,
+			Body: effect.ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay, Placement: call.Placement}})
 	default:
 		return ErrEffectNotExecuting
 	}

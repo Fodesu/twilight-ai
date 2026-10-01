@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -35,9 +36,9 @@ func (t *targetTool) ResponsePolicy() run.ResponsePolicy        { return run.Dir
 func (t *targetTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
 func (t *targetTool) Placement() run.ToolPlacement              { return run.PlacementWorkspace }
 func (t *targetTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (t *targetTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (t *targetTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	t.seen <- req.Target
-	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
+	return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }
 
 // appResolver stands for the application's resource layer: it owns the
@@ -63,7 +64,7 @@ func (r *appResolver) ResolveTarget(_ context.Context, ec loop.EffectContext) (*
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seen = append(r.seen, ec)
-	if ec.Kind != loop.AssignmentTool || ec.Placement != run.PlacementWorkspace {
+	if ec.Kind != effect.AssignmentTool || ec.Placement != run.PlacementWorkspace {
 		return nil, nil
 	}
 	ref, ok := r.bindings[session.SessionID(ec.Session)]
@@ -132,12 +133,12 @@ func TestTargetResolverSeam(t *testing.T) {
 					t.Fatalf("effect context %+v lacks its coordinates", ec)
 				}
 				switch ec.Kind {
-				case loop.AssignmentTool:
+				case effect.AssignmentTool:
 					tools++
 					if ec.Tool != "lookup" || ec.CallID == "" || ec.Placement != run.PlacementWorkspace {
 						t.Fatalf("tool effect context %+v, want the frozen workspace placement", ec)
 					}
-				case loop.AssignmentModel:
+				case effect.AssignmentModel:
 					models++
 					if ec.Placement != run.PlacementProcess {
 						t.Fatalf("model effect context %+v carries a placement", ec)

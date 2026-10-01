@@ -11,7 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -100,15 +100,15 @@ func (s *scriptTool) ValidateArguments(run.CanonicalJSON) error {
 	return nil
 }
 
-func (s *scriptTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (s *scriptTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	s.ran.Add(1)
 	if s.unknown {
-		return loop.ToolExecutionUnknown{Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "lost"}}
+		return effect.ToolExecutionUnknown{Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "lost"}}
 	}
 	if s.fail != "" {
-		return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: s.fail, Message: "boom"}}
+		return effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: s.fail, Message: "boom"}}
 	}
-	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
+	return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }
 
 type scriptToolCatalog struct {

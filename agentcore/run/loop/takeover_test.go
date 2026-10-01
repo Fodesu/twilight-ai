@@ -7,6 +7,7 @@ import (
 
 	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/sdk"
@@ -26,10 +27,10 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{}, 1)
 	slow := &fakeTool{ref: "slow", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(ctx context.Context, req local.ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(ctx context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 			started <- struct{}{}
 			<-block
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
+			return effect.ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
 	call := sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: "slow", Input: sdk.ParseToolArguments(`{"x":1}`)}}}

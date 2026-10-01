@@ -2,10 +2,12 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/felinics/twilight/agentcore/decision"
 	run "github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
@@ -19,7 +21,7 @@ type EffectContext struct {
 	StepID  run.StepID
 	CallID  run.CallID
 	Effect  run.EffectID
-	Kind    AssignmentKind
+	Kind    effect.AssignmentKind
 	Tool    run.ToolRef
 	// Placement is the tool's declared placement for a tool effect; a
 	// resolver supplies a workspace target only for PlacementWorkspace.
@@ -87,10 +89,10 @@ type LoopResult struct {
 	// per Executing target. Whether this process awaits their Outcomes or
 	// has to reconcile them with the executor is the host's knowledge, not
 	// the Run's.
-	Executing []AssignmentKey
+	Executing []effect.AssignmentKey
 	Result    *run.RunResult
 	// Dispatched lists the assignments an Advance handed to the Executor.
-	Dispatched []AssignmentKey
+	Dispatched []effect.AssignmentKey
 }
 
 // DispatchPolicy is how a Loop repeats a Dispatch the Executor refused with
@@ -121,3 +123,8 @@ func (p DispatchPolicy) backoff() time.Duration {
 	}
 	return p.Backoff
 }
+
+// ErrModelUnavailable reports a model assignment the executor cannot serve:
+// the pre-start check fails with the step still Prepared and no start or
+// recovery fact.
+var ErrModelUnavailable = errors.New("agent: loop: executor cannot serve the model")

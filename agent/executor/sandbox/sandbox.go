@@ -24,7 +24,6 @@ import (
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -203,26 +202,26 @@ func (a *adapter) Replay() run.ReplayPolicy                    { return a.tool.R
 func (a *adapter) Placement() run.ToolPlacement                { return run.PlacementWorkspace }
 func (a *adapter) ValidateArguments(v run.CanonicalJSON) error { return a.tool.ValidateArguments(v) }
 
-func (a *adapter) Execute(ctx context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome { //nolint:gocritic // hugeParam: local.ExecutableTool.Execute takes the request by value
+func (a *adapter) Execute(ctx context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome { //nolint:gocritic // hugeParam: local.ExecutableTool.Execute takes the request by value
 	if req.Target == nil || req.Target.Kind != workspace.TargetKind || req.Target.ID == "" {
-		return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureInvalidInput, Message: "workspace tool call without a workspace target"}, Retry: run.RetryNever}
+		return effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureInvalidInput, Message: "workspace tool call without a workspace target"}, Retry: run.RetryNever}
 	}
 	env, rematerialized, err := a.envs.attach(ctx, workspace.ID(req.Target.ID))
 	if err != nil {
 		switch {
 		case errors.Is(err, workspace.ErrNotFound):
-			return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureNotFound, Message: err.Error()}, Retry: run.RetryNever}
+			return effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureNotFound, Message: err.Error()}, Retry: run.RetryNever}
 		case errors.Is(err, environment.ErrUnsupported):
-			return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureUnavailable, Message: err.Error()}, Retry: run.RetryNever}
+			return effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureUnavailable, Message: err.Error()}, Retry: run.RetryNever}
 		default:
-			return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureUnavailable, Message: err.Error()}, Retry: run.RetryAllowed}
+			return effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureUnavailable, Message: err.Error()}, Retry: run.RetryAllowed}
 		}
 	}
 	out := a.tool.Run(ctx, env, &req)
 	if rematerialized {
 		out = markRematerialized(out)
 	}
-	if failed, is := out.(loop.ToolExecutionFailed); is && environmentMayBeGone(failed.Failure.Class) {
+	if failed, is := out.(effect.ToolExecutionFailed); is && environmentMayBeGone(failed.Failure.Class) {
 		// The tool is not run again here (its Replay declaration decides
 		// that); the cache is checked so the next call finds a live
 		// environment or rebuilds one.
@@ -245,8 +244,8 @@ func environmentMayBeGone(class string) bool {
 // markRematerialized tells the model, on the first successful call after
 // the workspace's environment was rebuilt, that files written since the
 // last snapshot are gone (APP-WSP-7).
-func markRematerialized(out loop.ToolExecutionOutcome) loop.ToolExecutionOutcome {
-	ok, is := out.(loop.ToolExecutionSucceeded)
+func markRematerialized(out effect.ToolExecutionOutcome) effect.ToolExecutionOutcome {
+	ok, is := out.(effect.ToolExecutionSucceeded)
 	if !is {
 		return out
 	}

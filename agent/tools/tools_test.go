@@ -11,7 +11,7 @@ import (
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
 func newEnv(t *testing.T) environment.Environment {
@@ -27,7 +27,7 @@ func newEnv(t *testing.T) environment.Environment {
 	return env
 }
 
-func runTool(t *testing.T, tool tools.Tool, env environment.Environment, args string) loop.ToolExecutionOutcome {
+func runTool(t *testing.T, tool tools.Tool, env environment.Environment, args string) effect.ToolExecutionOutcome {
 	t.Helper()
 	a := run.MustParseCanonicalJSON(args)
 	if err := tool.ValidateArguments(a); err != nil {
@@ -36,18 +36,18 @@ func runTool(t *testing.T, tool tools.Tool, env environment.Environment, args st
 	return tool.Run(context.Background(), env, &executorlocal.ToolExecutionRequest{RunID: "r", StepID: "s", CallID: "c", ToolRef: tool.Ref(), Arguments: a})
 }
 
-func output(t *testing.T, out loop.ToolExecutionOutcome) string {
+func output(t *testing.T, out effect.ToolExecutionOutcome) string {
 	t.Helper()
-	ok, is := out.(loop.ToolExecutionSucceeded)
+	ok, is := out.(effect.ToolExecutionSucceeded)
 	if !is {
 		t.Fatalf("outcome = %#v, want success", out)
 	}
 	return ok.Result.Output.String()
 }
 
-func failure(t *testing.T, out loop.ToolExecutionOutcome) run.ToolFailure {
+func failure(t *testing.T, out effect.ToolExecutionOutcome) run.ToolFailure {
 	t.Helper()
-	f, is := out.(loop.ToolExecutionFailed)
+	f, is := out.(effect.ToolExecutionFailed)
 	if !is {
 		t.Fatalf("outcome = %#v, want failure", out)
 	}

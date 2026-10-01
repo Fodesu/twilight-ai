@@ -16,7 +16,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session"
@@ -197,10 +197,10 @@ func (t *gateTool) ResponsePolicy() run.ResponsePolicy        { return run.Direc
 func (t *gateTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
 func (t *gateTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
 func (t *gateTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (t *gateTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (t *gateTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 	t.started <- struct{}{}
 	<-t.release
-	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
+	return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }
 
 func messageText(m sdk.Message) string {

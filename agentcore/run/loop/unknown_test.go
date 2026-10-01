@@ -8,7 +8,6 @@ import (
 
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/loop"
 )
 
 func TestUnknownToolOutcomeContinues(t *testing.T) {
@@ -43,9 +42,9 @@ type refusingPort struct {
 	refused int
 }
 
-func (p *refusingPort) Dispatch(ctx context.Context, a loop.Assignment) error {
+func (p *refusingPort) Dispatch(ctx context.Context, a effect.Assignment) error {
 	p.mu.Lock()
-	if a.Kind() == loop.AssignmentTool && p.refused < p.refuse {
+	if a.Kind() == effect.AssignmentTool && p.refused < p.refuse {
 		p.refused++
 		p.mu.Unlock()
 		return fmt.Errorf("%w: store unavailable", effect.ErrDispatchRetryable)

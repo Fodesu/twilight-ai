@@ -10,7 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/sdk"
@@ -57,8 +57,8 @@ func (echoTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectEx
 func (echoTool) Replay() run.ReplayPolicy                  { return run.ReplayAllowed }
 func (echoTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
 func (echoTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (echoTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.ToolExecutionOutcome {
-	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
+func (echoTool) Execute(_ context.Context, req local.ToolExecutionRequest) effect.ToolExecutionOutcome {
+	return effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }
 
 // APP-CKP-1: with an automatic policy, a Turn of several tool steps is

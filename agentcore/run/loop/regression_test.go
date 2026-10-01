@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/sdkconv"
 	. "github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -18,7 +19,7 @@ import (
 func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
-		execute: func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(context.Context, local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 			panic("nil map write")
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
@@ -45,7 +46,7 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("missing ToolCallFailed Unknown with panic")
+		t.Fatal("missing ToolCallFailed effect.Unknown with panic")
 	}
 }
 
@@ -62,9 +63,9 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	spec := ToolSpec{Ref: "fs.read", Name: "read", DefinitionDigest: d, Policy: DirectExecution}
 	executed := atomic.Bool{}
 	tool := &fakeTool{ref: "fs.read", def: def, policy: DirectExecution,
-		execute: func(context.Context, local.ToolExecutionRequest) ToolExecutionOutcome {
+		execute: func(context.Context, local.ToolExecutionRequest) effect.ToolExecutionOutcome {
 			executed.Store(true)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
+			return effect.ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{
 		func() sdk.ModelResult {
