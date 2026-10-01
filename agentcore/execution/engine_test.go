@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/module"
+	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -171,6 +172,8 @@ type sessionSide struct {
 	proj    session.ProjectionReader
 	turns   *turn.Coordinator
 	chat    *chatlog.Commands
+	// presets is the registry the engine under test resolves from.
+	presets preset.Registry
 }
 
 func newSessionSide(t *testing.T) *sessionSide {
@@ -202,14 +205,14 @@ func (s *sessionSide) writer(t *testing.T, sid session.SessionID) writer.Writer 
 }
 
 // startTurn creates sid, submits one input and starts a Turn under the
-// preset registered in x; the Run is Open and undriven.
-func (s *sessionSide) startTurn(t *testing.T, x *engine, sid session.SessionID) (writer.Writer, turn.TurnRef) {
+// preset registered in s; the Run is Open and undriven.
+func (s *sessionSide) startTurn(t *testing.T, sid session.SessionID) (writer.Writer, turn.TurnRef) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := s.store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
-	ref, err := x.presets.Register("p", preset.AgentPreset{Model: "m-1", PromptBuilder: builderRef})
+	ref, err := s.presets.Register("p", preset.AgentPreset{Model: "m-1", PromptBuilder: builderRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,8 +236,12 @@ func newEngine(t *testing.T, cfg Config, s *sessionSide) *engine {
 	if cfg.Decisions == nil {
 		cfg.Decisions = catalog(t)
 	}
+	if cfg.Presets == nil {
+		cfg.Presets = preset.NewMemory()
+	}
 	src := Sources{}
 	if s != nil {
+		s.presets = cfg.Presets
 		src = Sources{Runs: s.runs, Projections: s.proj}
 	}
 	x, err := New(cfg, src)
@@ -264,12 +271,12 @@ func TestComponentFailureReportedOnce(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			calls := 0
-			cfg := Config{}
+			cfg := Config{Progress: observe.NewProgresses()}
 			if tc.withCallback {
 				cfg.Fail = func(session.SessionID, error) { calls++ }
 			}
 			x := newEngine(t, cfg, nil)
-			events := x.progress.Subscribe(ctx, sid)
+			events := cfg.Progress.Subscribe(ctx, sid)
 			x.recovery.report(sid, boom)
 			got := 0
 			timeout := time.After(100 * time.Millisecond)
@@ -318,7 +325,7 @@ func TestReattachedOutcomeNotifiesWithoutDriving(t *testing.T) {
 	port := newScriptedPort(effect.AttachmentActive)
 	notified := make(chan session.SessionID, 4)
 	x := newEngine(t, Config{Executor: effect.PortsOf(port), Notify: func(id session.SessionID) { notified <- id }}, s)
-	w, tref := s.startTurn(t, x, sid)
+	w, tref := s.startTurn(t, sid)
 
 	// One Advance dispatches the model effect and returns: the state an
 	// owner that died mid-flight leaves, an Executing step with its attempt
@@ -384,7 +391,7 @@ func TestDriveAwaitsOutcomeAndNotifies(t *testing.T) {
 	port := newScriptedPort(effect.AttachmentActive)
 	notified := make(chan session.SessionID, 4)
 	x := newEngine(t, Config{Executor: effect.PortsOf(port), Notify: func(id session.SessionID) { notified <- id }}, s)
-	w, tref := s.startTurn(t, x, sid)
+	w, tref := s.startTurn(t, sid)
 
 	step, err := x.Drive(ctx, w, tref.TurnID)
 	if err != nil || step.Dispatched != 1 || step.InFlight != 1 || step.Finished {
@@ -426,7 +433,7 @@ func TestDetachCancelsTheEffectsInFlight(t *testing.T) {
 	port := newScriptedPort(effect.AttachmentActive)
 	notified := make(chan session.SessionID, 4)
 	x := newEngine(t, Config{Executor: effect.PortsOf(port), Notify: func(id session.SessionID) { notified <- id }}, s)
-	w, tref := s.startTurn(t, x, sid)
+	w, tref := s.startTurn(t, sid)
 	if step, err := x.Drive(ctx, w, tref.TurnID); err != nil || step.InFlight != 1 {
 		t.Fatalf("drive = %+v %v, want one effect in flight", step, err)
 	}

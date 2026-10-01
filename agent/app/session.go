@@ -129,7 +129,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
 		return nil, errors.New("app: open session requires a preset ref")
 	}
-	if _, err := app.Execution.Presets().Resolve(opts.Preset); err != nil {
+	if _, err := app.Presets.Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
 	if err := app.Lifecycle.Ensure(ctx, sid); err != nil {
@@ -608,7 +608,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, erro
 		return "", false, err
 	}
 	summary, err := compaction.Summarizer{
-		ResolvePreset: s.app.Execution.Presets().Resolve, Content: s.app.Frozen, Effects: s.app.Execution,
+		ResolvePreset: s.app.Presets.Resolve, Content: s.app.Frozen, Effects: s.app.Execution,
 	}.Summarize(ctx, s.sid, s.opts.Preset, materialized)
 	if err != nil {
 		return "", false, err

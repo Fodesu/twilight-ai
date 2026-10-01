@@ -138,7 +138,12 @@ type Application struct {
 	// them.
 	Owner     *owner.Owner
 	Execution execution.Engine
-	spawn     *spawn.Responder
+	// Presets is the registry of decision identities Turns start under;
+	// Progress is the transient stream of running effects and background
+	// failures. The Engine publishes to both; the application owns them.
+	Presets  preset.Registry
+	Progress *observe.Progresses
+	spawn    *spawn.Responder
 	// warn receives failures of background work.
 	warn       func(error)
 	inbox      inbox.Store
@@ -287,6 +292,13 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 	// (APP-CKP-1, RUN-LOP-10); provisional observations of effects in
 	// flight reach the transient stream (OBS-1). A settlement the Engine
 	// makes on its own wakes the open Session, which advances from it.
+	if c.Execution.Presets == nil {
+		c.Execution.Presets = preset.NewMemory()
+	}
+	if c.Execution.Progress == nil {
+		c.Execution.Progress = observe.NewProgresses()
+	}
+	app.Presets, app.Progress = c.Execution.Presets, c.Execution.Progress
 	c.Execution.Planner = app
 	c.Execution.Responders = responders
 	c.Execution.Fail = app.fail
@@ -340,7 +352,7 @@ func (app *Application) rollback() {
 // report through the same callback.
 func (app *Application) fail(sid session.SessionID, err error) {
 	app.warn(err)
-	app.Execution.Progress().Failed(sid, err)
+	app.Progress.Failed(sid, err)
 }
 
 // wakeAdvance is the Engine's Notify: a settlement it made outside any
@@ -354,7 +366,7 @@ func (app *Application) wakeAdvance(sid session.SessionID) {
 
 // RegisterPreset adds or replaces a decision identity after Build.
 func (app *Application) RegisterPreset(id preset.PresetID, p preset.AgentPreset) (preset.PresetRef, error) {
-	ref, err := app.Execution.Presets().Register(id, p)
+	ref, err := app.Presets.Register(id, p)
 	if err != nil {
 		return preset.PresetRef{}, err
 	}
@@ -380,7 +392,7 @@ func (app *Application) PresetRef(id preset.PresetID) (preset.PresetRef, error) 
 // transient progress and failures. Committed events keep their commit
 // order; transient items may interleave and may be lost.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
-	return mergeEvents(ctx, app.Bus.Subscribe(ctx, sid), app.Execution.Progress().Subscribe(ctx, sid))
+	return mergeEvents(ctx, app.Bus.Subscribe(ctx, sid), app.Progress.Subscribe(ctx, sid))
 }
 
 // EventsFrom is the catch-up form of Events: the Session's committed events
@@ -392,7 +404,7 @@ func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, f
 	if err != nil {
 		return nil, err
 	}
-	return mergeEvents(ctx, committed, app.Execution.Progress().Subscribe(ctx, sid)), nil
+	return mergeEvents(ctx, committed, app.Progress.Subscribe(ctx, sid)), nil
 }
 
 // mergeEvents forwards both observation streams into one channel until ctx

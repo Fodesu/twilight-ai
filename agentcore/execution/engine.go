@@ -47,11 +47,6 @@ type Engine interface {
 	// its Outcome and acknowledges it once read. The key is a's as given, so
 	// a retry under the same key replays. A cancelled ctx cancels the effect.
 	Once(ctx context.Context, a effect.Assignment) (effect.Outcome, error)
-	// Presets is the registry of decision identities Turns start under.
-	Presets() preset.Registry
-	// Progress is the transient stream of the running effects and the
-	// failures reported here.
-	Progress() *observe.Progresses
 	// Close ends the listeners of every Session and the settlement
 	// subscription; every Session was detached before this.
 	Close()
@@ -94,9 +89,13 @@ type Config struct {
 	// Executor is the effect layer (RUN-EXE-3): Execution is required, the
 	// optional capabilities are used when set.
 	Executor effect.Ports
-	// Presets is the registry of decision identities; nil selects an
-	// in-memory registry.
+	// Presets is the registry of decision identities Turns start under:
+	// required, and the host's to register into.
 	Presets preset.Registry
+	// Progress is the transient stream the Engine publishes the frames of
+	// running effects and, without Fail, its background failures to; nil
+	// publishes none.
+	Progress *observe.Progresses
 	// Decisions resolve each preset's PromptBuilderRef (DEC-CAT): required.
 	Decisions *decision.Catalog
 	// Planner, when set, is consulted between the steps of every Run with
@@ -139,11 +138,9 @@ type Config struct {
 // engine is the assembly behind Engine.
 type engine struct {
 	ports    effect.Ports
-	presets  preset.Registry
 	watcher  *watch.Watcher
 	driver   *driver
 	recovery *recovery
-	progress *observe.Progresses
 }
 
 // New assembles an Engine over the Session-side sources of the same
@@ -159,18 +156,18 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 	if cfg.MissingEffects == reconcile.RedispatchMissing && cfg.Redispatches == nil {
 		return nil, errors.New("execution: MissingEffects=redispatch requires a dispatch ledger (Config.Redispatches, RUN-EXE-15)")
 	}
-	presets := cfg.Presets
-	if presets == nil {
-		presets = preset.NewMemory()
+	if cfg.Presets == nil {
+		return nil, errors.New("execution: a preset registry is required (Config.Presets)")
 	}
-	x := &engine{ports: cfg.Executor, presets: presets, progress: observe.NewProgresses()}
+	presets := cfg.Presets
+	x := &engine{ports: cfg.Executor}
 	x.watcher = &watch.Watcher{Port: cfg.Executor.Execution, Settlements: cfg.Executor.Settlements, Recover: cfg.Executor.Recover, Probe: cfg.OrphanProbe}
 	// Failures the components report outside any caller's call reach the
 	// caller's callback, which owns their delivery to the transient stream;
 	// without one they reach the stream directly (OBS-1).
 	report := cfg.Fail
-	if report == nil {
-		report = x.progress.Failed
+	if report == nil && cfg.Progress != nil {
+		report = cfg.Progress.Failed
 	}
 	notify := func(lt *lifetime) {
 		if cfg.Notify != nil {
@@ -180,7 +177,7 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 	lps := &loops{ports: cfg.Executor, presets: presets, decisions: cfg.Decisions, targets: cfg.TargetResolver, dispatch: cfg.Dispatch,
 		sources: decision.Sources{Projections: src.Projections, Content: src.Content}, planner: cfg.Planner}
 	x.recovery = &recovery{runs: src.Runs, ports: cfg.Executor, loops: lps, watcher: x.watcher, fail: report, notify: notify,
-		missingEffects: cfg.MissingEffects, redispatches: cfg.Redispatches, maxRedispatches: cfg.MaxRedispatches, progress: x.progress}
+		missingEffects: cfg.MissingEffects, redispatches: cfg.Redispatches, maxRedispatches: cfg.MaxRedispatches, progress: cfg.Progress}
 	lps.writerOf = x.recovery.writerOf
 	var rs *responders
 	if len(cfg.Responders) > 0 {
@@ -223,9 +220,6 @@ func (x *engine) Once(ctx context.Context, a effect.Assignment) (effect.Outcome,
 	}
 	return out, nil
 }
-
-func (x *engine) Presets() preset.Registry      { return x.presets }
-func (x *engine) Progress() *observe.Progresses { return x.progress }
 
 // Close ends the recovery listeners, then the settlement subscription.
 func (x *engine) Close() {
