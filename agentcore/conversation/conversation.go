@@ -295,11 +295,25 @@ func (r *Controller) active(ctx context.Context) (turn.TurnID, bool, error) {
 	return "", false, nil
 }
 
-// drive steps the Turn once and reads its committed answer.
+// drive steps the Turn's Run once, under the preset the Turn recorded, and
+// reads the Turn's committed answer. Whether to drive is read from the
+// Writer's own projections: a superseded owner plans against its own
+// epoch's view and is fenced at commit instead of adopting the new owner's
+// state.
 func (r *Controller) drive(ctx context.Context, turnID turn.TurnID) (TurnProgress, error) {
-	step, err := r.engine.Drive(ctx, r.w, turnID)
+	surface, err := turn.ReadSurface(ctx, r.w.Projections(), r.sid)
 	if err != nil {
 		return TurnProgress{}, err
+	}
+	view, ok := surface.Turns[turnID]
+	if !ok {
+		return TurnProgress{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, turnID)
+	}
+	var step execution.DriveResult
+	if view.Status == turn.TurnActive {
+		if step, err = r.engine.Drive(ctx, r.w, view.RunID, view.Preset); err != nil {
+			return TurnProgress{}, err
+		}
 	}
 	resp, err := r.turns.Status(ctx, r.ref(turnID))
 	if err != nil {

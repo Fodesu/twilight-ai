@@ -109,6 +109,7 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint run.PromptInput) 
 		InputIDs: ids,
 		Token:    run.PromptToken(fmt.Sprintf("%d", head.Next)),
 		Tools:    specs,
+		Policy:   run.StepPolicy{Scheduling: p.Preset.Scheduling, MalformedRetries: p.Preset.MalformedRetries},
 	}, nil
 }
 

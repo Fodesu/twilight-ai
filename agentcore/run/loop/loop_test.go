@@ -95,8 +95,9 @@ func (c fakeToolCatalog) ResolveTool(ref ToolRef) (local.ExecutableTool, error) 
 
 // staticBuilder freezes one request per Plan call; tools mirror the catalog.
 type staticBuilder struct {
-	model ModelRef
-	specs []ToolSpec
+	model  ModelRef
+	specs  []ToolSpec
+	policy StepPolicy
 }
 
 func (p staticBuilder) Build(_ context.Context, hint PromptInput) (decision.Prompt, error) {
@@ -116,7 +117,7 @@ func (p staticBuilder) Build(_ context.Context, hint PromptInput) (decision.Prom
 	if err != nil {
 		return decision.Prompt{}, err
 	}
-	return decision.Prompt{Model: model, Request: frozen, InputIDs: ids, Tools: p.specs}, nil
+	return decision.Prompt{Model: model, Request: frozen, InputIDs: ids, Tools: p.specs, Policy: p.policy}, nil
 }
 
 // toolDef is the provider definition every test tool shares; ToolSpec keeps
@@ -162,16 +163,6 @@ func mustFreezeResult(t *testing.T, r sdk.ModelResult) model.ModelResult {
 }
 
 // --- tests ---
-
-func TestNewLeavesEmptySchedulingMode(t *testing.T) {
-	loop, err := newLoop(t, fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loop.Settings.Scheduling.Mode != "" {
-		t.Fatalf("scheduling mode = %q, want empty (parallel by default at freeze time)", loop.Settings.Scheduling.Mode)
-	}
-}
 
 // blockingBuilder holds Build until released, so a test parks one step of a
 // Run inside Advance.
@@ -309,7 +300,7 @@ func TestLoopParallelBounded(t *testing.T) {
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2", "c3"), textResult("done")}}
 	rt, w := loopRuntime(t)
 	loop, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
-		staticBuilder{specs: []ToolSpec{spec}}, Settings{Scheduling: ToolScheduling{MaxParallel: 2}}, false)
+		staticBuilder{specs: []ToolSpec{spec}, policy: StepPolicy{Scheduling: ToolScheduling{MaxParallel: 2}}}, Settings{}, false)
 
 	done := make(chan struct{})
 	var res LoopResult
@@ -508,7 +499,7 @@ func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 		Usage:        sdk.Usage{TotalTokens: 1},
 	}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{bad, bad, bad}}
-	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{MalformedRetries: 2}, false)
+	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{policy: StepPolicy{MalformedRetries: 2}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -157,7 +157,7 @@ func loadState(t testing.TB, rt *sessionstore.SessionRunStore, w writer.Writer, 
 
 // newLoop builds a Loop over a local.LocalExecutor for tests; the executor no
 // longer reads frozen bodies (RUN-EXE-7), so the runtime is not wired in.
-func newLoop(t testing.TB, models local.ModelCatalog, tools local.ToolCatalog, builder decision.Builder, settings Settings, streaming bool) (*Loop, error) {
+func newLoop(t testing.TB, models local.ModelCatalog, tools local.ToolCatalog, builder decision.Builder, settings Settings, streaming bool) (*Driven, error) {
 	if models == nil {
 		return nil, errors.New("agent: loop: nil model catalog")
 	}
@@ -173,7 +173,7 @@ func newLoop(t testing.TB, models local.ModelCatalog, tools local.ToolCatalog, b
 	if err != nil {
 		return nil, err
 	}
-	return New(effect.PortsOf(exec), builder, settings)
+	return NewDriven(effect.PortsOf(exec), builder, settings)
 }
 
 // recoverRuns runs the takeover disposition of rec over every active Run of

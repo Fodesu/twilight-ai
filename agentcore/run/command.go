@@ -39,6 +39,9 @@ type PrepareModelRequest struct {
 	InputIDs      []InputID          `json:"inputIds,omitempty"`
 	PromptToken   PromptToken        `json:"promptToken,omitempty"`
 	Tools         []ToolSpec         `json:"tools,omitempty"`
+	// Policy is frozen onto the step: the scheduling of the tool calls it
+	// produces and its malformed-result retries.
+	Policy StepPolicy `json:"policy,omitzero"`
 }
 
 func (PrepareModelRequest) agentCommand() {}
@@ -87,10 +90,9 @@ type SubmitModelResult struct {
 	// ModelStepStarted recorded. A settlement naming any other effect is
 	// stale. It is part of the command digest and the preimage of the
 	// command's identity, so a transport retry must retain it.
-	Effect     EffectID          `json:"effect"`
-	Result     model.ModelResult `json:"result"`
-	Calls      []ToolCallBinding `json:"calls,omitempty"`
-	Scheduling ToolScheduling    `json:"scheduling,omitzero"`
+	Effect EffectID          `json:"effect"`
+	Result model.ModelResult `json:"result"`
+	Calls  []ToolCallBinding `json:"calls,omitempty"`
 }
 
 func (SubmitModelResult) agentCommand() {}
@@ -106,28 +108,16 @@ type SubmitModelFailure struct {
 
 func (SubmitModelFailure) agentCommand() {}
 
-type ModelRejectDisposition uint8
-
-const (
-	// ModelRejectRetry records the malformed result and returns the same frozen
-	// ModelStep to Prepared for another execution attempt.
-	ModelRejectRetry ModelRejectDisposition = iota
-	// ModelRejectFailRun records the malformed result and fails the Run in the
-	// same transition.
-	ModelRejectFailRun
-)
-
 // RejectModelResult records a structurally malformed model result: usage is
-// accumulated, the step's reject counter is incremented, and Disposition
-// decides whether the same frozen request retries or the Run fails. It
-// settles the step's executing model effect.
+// accumulated, the step's reject counter is incremented, and the step's
+// frozen MalformedRetries decides whether the same frozen request retries
+// or the Run fails. It settles the step's executing model effect.
 type RejectModelResult struct {
 	StepID StepID `json:"stepId"`
 	// Effect is the model effect this settlement closes (see SubmitModelResult).
-	Effect      EffectID               `json:"effect"`
-	Usage       model.Usage            `json:"usage"`
-	Failure     StepFailure            `json:"failure"`
-	Disposition ModelRejectDisposition `json:"disposition,omitempty"`
+	Effect  EffectID    `json:"effect"`
+	Usage   model.Usage `json:"usage"`
+	Failure StepFailure `json:"failure"`
 }
 
 func (RejectModelResult) agentCommand() {}

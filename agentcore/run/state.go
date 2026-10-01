@@ -301,6 +301,8 @@ type ModelStep struct {
 	Effect EffectID `json:"effect,omitempty"`
 	// Rejects counts accepted ModelStepRejected facts.
 	Rejects int `json:"rejects,omitempty"`
+	// Policy is the preset's decision for this step, frozen at Prepare.
+	Policy StepPolicy `json:"policy,omitzero"`
 }
 
 func (ModelStep) step()    {}
@@ -452,12 +454,33 @@ const (
 	ToolScheduleSequential ToolScheduleMode = "sequential"
 )
 
+// StepPolicy is what a preset decides for one model step beyond its request
+// and is frozen onto the step at Prepare, so whoever settles the step later
+// reads the policy from the step and never from a preset. Scheduling is how
+// the tool calls the step produces run; MalformedRetries is how many
+// malformed results the step is retried after before the Run fails, zero
+// failing on the first.
+type StepPolicy struct {
+	Scheduling       ToolScheduling `json:"scheduling,omitzero"`
+	MalformedRetries uint8          `json:"malformedRetries,omitempty"`
+}
+
 // ToolScheduling is the durable dispatch constraint for one ToolStep.
 // Empty Mode means parallel. MaxParallel 0 means every Pending call in the
 // current Start batch may run; a positive value caps that batch.
 type ToolScheduling struct {
 	Mode        ToolScheduleMode `json:"mode,omitempty"`
 	MaxParallel int              `json:"maxParallel,omitempty"`
+}
+
+// normalizeStepPolicy validates a step policy; a zero policy is valid.
+func normalizeStepPolicy(p StepPolicy) (StepPolicy, error) {
+	s, err := normalizeToolScheduling(p.Scheduling)
+	if err != nil {
+		return StepPolicy{}, fmt.Errorf("scheduling: %w", err)
+	}
+	p.Scheduling = s
+	return p, nil
 }
 
 func normalizeToolScheduling(s ToolScheduling) (ToolScheduling, error) {

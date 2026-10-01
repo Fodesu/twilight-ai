@@ -25,17 +25,16 @@ import (
 // reconciler compares every Executing effect with the execution store, keeps
 // waiting for attempts that survived, hands missing effects to the Executor
 // again within the redispatch budget or disposes them. Every Outcome, of an
-// effect dispatched here or of a kept attempt, settles through the Loop of
-// the Turn that owns its Run and is reported through notify; nothing here
-// drives the Run on. Stop ends a Session's lifetime; Close ends every one.
+// effect dispatched here or of a kept attempt, settles through the Loop and
+// is reported through notify; nothing here drives the Run on. Stop ends a Session's lifetime; Close ends every one.
 type recovery struct {
 	// runs is the Run module's Session adapter; recovery binds it to the
 	// Writer the Session was opened with.
 	runs  *sessionstore.SessionRunStore
 	ports effect.Ports
-	loops *loops
+	loop  *loop.Loop
 	// watcher is where every Reconciler waits for Outcomes: the settlement
-	// subscription shared with the loops; required.
+	// subscription shared with the Loop; required.
 	watcher *watch.Watcher
 	// fail receives failures of work done outside any caller's call, such as
 	// settling a reattached Outcome; nil discards them.
@@ -152,7 +151,7 @@ func (r *recovery) settled(lt *lifetime) {
 }
 
 // awaitOutcome registers key on the shared Watcher under lt: its Outcome is
-// delivered through the Loop of its Run and reported through notify, a read
+// delivered through the Loop and reported through notify, a read
 // the executor answers definitively is reported as a failure. The effect's
 // progress frames reach the transient stream meanwhile. Nothing is held open
 // for the length of the execution; the lifetime's end drops the wait. The
@@ -180,8 +179,8 @@ func (r *recovery) awaitOutcome(lt *lifetime, key effect.AssignmentKey) {
 	}
 }
 
-// deliver settles out through the Loop of the Turn that owns its Run and
-// reports the settlement through notify; the host advances the Run from
+// deliver settles out through the Loop and reports the settlement through
+// notify; the host advances the Run from
 // there. A settlement the Writer fences means another process owns the
 // Session now: every effect still awaited here is cancelled and the
 // lifetime ends.
@@ -191,12 +190,7 @@ func (r *recovery) deliver(lt *lifetime, out effect.Outcome) {
 		return
 	}
 	sid := w.SessionID()
-	l, _, err := r.loops.ForRun(ctx, w, out.Key.RunID)
-	if err != nil {
-		r.report(sid, fmt.Errorf("execution: outcome for run %s: %w", out.Key.RunID, err))
-		return
-	}
-	res, err := l.Deliver(ctx, r.runs.Bind(w), out)
+	res, err := r.loop.Deliver(ctx, r.runs.Bind(w), out)
 	if err != nil {
 		if ledger.IsOwnershipLost(err) {
 			r.lost(lt)
@@ -347,11 +341,7 @@ func (a *awaiting) reconcile(ctx context.Context, st store.RunStore, snapshot *s
 // Executing effect is rebuilt on the Session's Writer and handed to the
 // Executor again.
 func (r *recovery) redispatch(ctx context.Context, w writer.Writer, key effect.AssignmentKey) error {
-	l, _, err := r.loops.ForRun(ctx, w, key.RunID)
-	if err != nil {
-		return fmt.Errorf("execution: redispatch: %w", err)
-	}
-	return l.Redispatch(ctx, r.runs.Bind(w), key)
+	return r.loop.Redispatch(ctx, r.runs.Bind(w), key)
 }
 
 // Stop ends the Session's lifetime: its listeners stop and the effects it

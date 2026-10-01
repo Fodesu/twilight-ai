@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/decision"
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -13,9 +14,11 @@ import (
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
-func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, snapshot *store.Snapshot, hint run.PromptInput) error {
+// planAndPrepare asks builder for the step's request and commits the Prepare
+// that freezes it, with the policy the builder decided for the step.
+func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, builder decision.Builder, snapshot *store.Snapshot, hint run.PromptInput) error {
 	hint.Scope = rt.Scope()
-	p, err := l.Builder.Build(ctx, hint)
+	p, err := builder.Build(ctx, hint)
 	if err != nil {
 		return err
 	}
@@ -44,6 +47,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, snapshot *
 		InputIDs:      p.InputIDs,
 		PromptToken:   p.Token,
 		Tools:         p.Tools,
+		Policy:        p.Policy,
 	})
 	if err == nil {
 		// ModelStepPrepared carries the frozen request — the most informative
@@ -146,8 +150,8 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, snapshot *
 // (RUN-LOP-3): a cancelled call withdraws the step to Open (the next Advance
 // plans again from the current state); a provider failure is
 // SubmitModelFailure; a result that cannot be bound or frozen is
-// RejectModelResult with the host's disposition; a result binds its tool
-// calls into SubmitModelResult.
+// RejectModelResult, and the step's frozen policy decides whether it
+// retries; a result binds its tool calls into SubmitModelResult.
 //
 // A body the executor reports missing also withdraws the step, but the
 // condition is returned as an error alongside the command: the settlement
@@ -176,7 +180,7 @@ func (l *Loop) modelCompletion(step *run.ModelStep, out effect.Outcome) (run.Age
 			return withdraw, fmt.Errorf("agent: loop: model dispatch: %w: %s", frozen.ErrMissing, r.Message)
 		case effect.FailureMalformedRequest, effect.FailureMalformedResult:
 			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: r.Message}
-			return run.RejectModelResult{StepID: stepID, Effect: step.Effect, Failure: failure, Disposition: l.modelRejectDisposition(step, failure)}, nil
+			return run.RejectModelResult{StepID: stepID, Effect: step.Effect, Failure: failure}, nil
 		case effect.FailureDeadline:
 			return withdraw, nil
 		default:
@@ -188,18 +192,7 @@ func (l *Loop) modelCompletion(step *run.ModelStep, out effect.Outcome) (run.Age
 		return run.SubmitModelFailure{StepID: stepID, Effect: step.Effect, Failure: run.StepFailure{Class: run.FailureProvider, Message: fmt.Sprintf("executor delivered %T for a model step", out.Result)}}, nil
 	}
 	bindings := l.bindToolCalls(&result, step)
-	return run.SubmitModelResult{StepID: stepID, Effect: step.Effect, Result: result, Calls: bindings, Scheduling: l.toolScheduling()}, nil
-}
-
-// modelRejectDisposition applies Settings.MalformedRetries: the step's
-// Rejects counts the malformed results already recorded, so the step is
-// retried while that count is below the bound and fails the Run otherwise.
-// Zero retries fails on the first malformed result.
-func (l *Loop) modelRejectDisposition(step *run.ModelStep, _ run.StepFailure) run.ModelRejectDisposition {
-	if step.Rejects < int(l.Settings.MalformedRetries) {
-		return run.ModelRejectRetry
-	}
-	return run.ModelRejectFailRun
+	return run.SubmitModelResult{StepID: stepID, Effect: step.Effect, Result: result, Calls: bindings}, nil
 }
 
 // bindToolCalls produces bindings from the frozen ToolSpecs (RUN-MCH-2).

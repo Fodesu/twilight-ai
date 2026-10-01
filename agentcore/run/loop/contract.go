@@ -36,13 +36,11 @@ type TargetResolver interface {
 	ResolveTarget(context.Context, EffectContext) (*run.TargetRef, error)
 }
 
-// Settings are the execution parameters the Loop takes from the AgentPreset
-// (RUN-LOP-1). Scheduling is frozen onto each ToolStep; MalformedRetries
-// bounds the retries of one model step after malformed results.
+// Settings are the deployment's parameters of a Loop, the same for every
+// Run it steps. What a preset decides for a step travels in the Prompt the
+// Builder returns and is frozen onto the step.
 type Settings struct {
-	Scheduling       run.ToolScheduling
-	MalformedRetries uint8
-	TargetResolver   TargetResolver
+	TargetResolver TargetResolver
 	// BeforePrepare runs each time the Run is Open and about to plan a model
 	// request, before the PromptBuilder reads the context (RUN-LOP-10). It
 	// is the application's seam for reshaping that context between steps,

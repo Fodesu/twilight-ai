@@ -107,7 +107,7 @@ type Feature struct {
 	// inject dispatch answers between the Loop and the Worker.
 	wrapPort func(effect.ExecutionPort) effect.ExecutionPort
 	builder  *scriptBuilder
-	loop     *loop.Loop
+	loop     *loop.Driven
 	seq      int
 
 	modelStepID run.StepID
@@ -382,7 +382,7 @@ func (f *Feature) ensureLoop() {
 	if f.wrapPort != nil {
 		port = f.wrapPort(port)
 	}
-	l, err := loop.New(effect.PortsOf(port), f.builder, loop.Settings{})
+	l, err := loop.NewDriven(effect.PortsOf(port), f.builder, loop.Settings{})
 	if err != nil {
 		f.t.Fatal(err)
 	}

@@ -205,8 +205,9 @@ func (s *sessionSide) writer(t *testing.T, sid session.SessionID) writer.Writer 
 }
 
 // startTurn creates sid, submits one input and starts a Turn under the
-// preset registered in s; the Run is Open and undriven.
-func (s *sessionSide) startTurn(t *testing.T, sid session.SessionID) (writer.Writer, turn.TurnRef) {
+// preset registered in s; the Run is Open and undriven. It returns the
+// Writer, the Turn and what a drive of the Turn needs: its Run and preset.
+func (s *sessionSide) startTurn(t *testing.T, sid session.SessionID) (writer.Writer, turn.TurnRef, run.RunID, preset.PresetRef) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := s.store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
@@ -222,10 +223,11 @@ func (s *sessionSide) startTurn(t *testing.T, sid session.SessionID) (writer.Wri
 		t.Fatal(err)
 	}
 	tref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	if _, err := s.turns.Start(ctx, w, turn.StartRequest{Ref: tref, Inputs: []run.AgentInput{in}, Preset: ref}); err != nil {
+	started, err := s.turns.Start(ctx, w, turn.StartRequest{Ref: tref, Inputs: []run.AgentInput{in}, Preset: ref})
+	if err != nil {
 		t.Fatal(err)
 	}
-	return w, tref
+	return w, tref, started.RunID, ref
 }
 
 func newEngine(t *testing.T, cfg Config, s *sessionSide) *engine {
@@ -307,8 +309,8 @@ func TestPoliciesReachComponents(t *testing.T) {
 	if x.recovery.maxRedispatches != 7 {
 		t.Fatalf("recovery.maxRedispatches = %d, want 7", x.recovery.maxRedispatches)
 	}
-	if x.recovery.loops.dispatch != policy {
-		t.Fatalf("loops.dispatch = %+v, want %+v", x.recovery.loops.dispatch, policy)
+	if x.recovery.loop.Settings.Dispatch != policy {
+		t.Fatalf("loop.Settings.Dispatch = %+v, want %+v", x.recovery.loop.Settings.Dispatch, policy)
 	}
 }
 
@@ -325,7 +327,7 @@ func TestReattachedOutcomeNotifiesWithoutDriving(t *testing.T) {
 	port := newScriptedPort(effect.AttachmentActive)
 	notified := make(chan session.SessionID, 4)
 	x := newEngine(t, Config{Executor: effect.PortsOf(port), Notify: func(id session.SessionID) { notified <- id }}, s)
-	w, tref := s.startTurn(t, sid)
+	w, tref, _, _ := s.startTurn(t, sid)
 
 	// One Advance dispatches the model effect and returns: the state an
 	// owner that died mid-flight leaves, an Executing step with its attempt
@@ -335,11 +337,11 @@ func TestReattachedOutcomeNotifiesWithoutDriving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := x.driver.loops.For(surface.Turns[tref.TurnID].Preset)
+	builder, err := x.driver.builders.For(surface.Turns[tref.TurnID].Preset)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := l.Advance(ctx, s.runs.Bind(w), surface.Turns[tref.TurnID].RunID)
+	res, err := x.driver.loop.Advance(ctx, s.runs.Bind(w), builder, surface.Turns[tref.TurnID].RunID)
 	if err != nil || len(res.Dispatched) != 1 {
 		t.Fatalf("advance = %+v %v, want one dispatch", res, err)
 	}
@@ -391,9 +393,9 @@ func TestDriveAwaitsOutcomeAndNotifies(t *testing.T) {
 	port := newScriptedPort(effect.AttachmentActive)
 	notified := make(chan session.SessionID, 4)
 	x := newEngine(t, Config{Executor: effect.PortsOf(port), Notify: func(id session.SessionID) { notified <- id }}, s)
-	w, tref := s.startTurn(t, sid)
+	w, _, runID, ref := s.startTurn(t, sid)
 
-	step, err := x.Drive(ctx, w, tref.TurnID)
+	step, err := x.Drive(ctx, w, runID, ref)
 	if err != nil || step.Dispatched != 1 || step.InFlight != 1 || step.Finished {
 		t.Fatalf("first drive = %+v %v, want one effect dispatched and in flight", step, err)
 	}
@@ -407,7 +409,7 @@ func TestDriveAwaitsOutcomeAndNotifies(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("no Notify after the Outcome settled")
 	}
-	step, err = x.Drive(ctx, w, tref.TurnID)
+	step, err = x.Drive(ctx, w, runID, ref)
 	if err != nil || !step.Finished {
 		t.Fatalf("drive after the settlement = %+v %v, want finished", step, err)
 	}
@@ -433,8 +435,8 @@ func TestDetachCancelsTheEffectsInFlight(t *testing.T) {
 	port := newScriptedPort(effect.AttachmentActive)
 	notified := make(chan session.SessionID, 4)
 	x := newEngine(t, Config{Executor: effect.PortsOf(port), Notify: func(id session.SessionID) { notified <- id }}, s)
-	w, tref := s.startTurn(t, sid)
-	if step, err := x.Drive(ctx, w, tref.TurnID); err != nil || step.InFlight != 1 {
+	w, tref, runID, ref := s.startTurn(t, sid)
+	if step, err := x.Drive(ctx, w, runID, ref); err != nil || step.InFlight != 1 {
 		t.Fatalf("drive = %+v %v, want one effect in flight", step, err)
 	}
 	key := port.dispatched[0].Key()

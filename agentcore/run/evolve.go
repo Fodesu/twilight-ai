@@ -77,6 +77,7 @@ func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineStat
 		Model:         fact.Model,
 		Tools:         fact.Tools,
 		Status:        ModelPrepared,
+		Policy:        fact.Policy,
 	}
 	s.ModelSteps++
 	s.PendingInputs = nil
@@ -379,6 +380,9 @@ func (m StateMachine) guardModelStepPrepared(s *MachineState, fact *ModelStepPre
 	}
 	if fact.StepID == "" || fact.Model == "" || fact.RequestDigest == "" {
 		return errors.New("agent: evolve: model step prepared is missing identity or digest")
+	}
+	if _, err := normalizeStepPolicy(fact.Policy); err != nil {
+		return fmt.Errorf("agent: evolve: model step prepared policy: %w", err)
 	}
 	// v1 preparation is the atomic consumption boundary for pending inputs.
 	// A persisted fact must name every pending input exactly once, in queue

@@ -241,6 +241,16 @@ func advanceToExecuting(t *testing.T, s run.MachineState, req sdk.Request, specs
 	return s, prep.StepID
 }
 
+// advanceToExecutingWith is advanceToExecuting under a frozen step policy.
+func advanceToExecutingWith(t *testing.T, s run.MachineState, req sdk.Request, specs []run.ToolSpec, policy run.StepPolicy) (run.MachineState, run.StepID) {
+	t.Helper()
+	prep, _ := buildPrepare(t, s, req, specs)
+	prep.Policy = policy
+	s = fold(t, s, mustDecide(t, s, prep))
+	s = fold(t, s, mustDecide(t, s, startModel(s, prep.StepID)))
+	return s, prep.StepID
+}
+
 // --- tests ---
 
 func TestInitializeRunIsMinimal(t *testing.T) {
@@ -397,12 +407,10 @@ func TestToolSchedulingFrozenOnToolStepOpened(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, run.DirectExecution)
 	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(def), []run.ToolSpec{spec})
+	s, stepID := advanceToExecutingWith(t, s, testRequest(def), []run.ToolSpec{spec},
+		run.StepPolicy{Scheduling: run.ToolScheduling{Mode: run.ToolScheduleSequential, MaxParallel: 1}})
 	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
-	facts := mustDecide(t, s, run.SubmitModelResult{
-		StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b},
-		Scheduling: run.ToolScheduling{Mode: run.ToolScheduleSequential, MaxParallel: 1},
-	})
+	facts := mustDecide(t, s, run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
 	s = fold(t, s, facts)
 	ts := s.Current.(run.ToolStep)
 	if ts.Scheduling.Mode != run.ToolScheduleSequential || ts.Scheduling.MaxParallel != 1 {
@@ -414,14 +422,14 @@ func TestToolSchedulingRejectsUnknownMode(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, run.DirectExecution)
 	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(def), []run.ToolSpec{spec})
-	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
-	_, err := schema.Machine().Decide(s, settling(s, run.SubmitModelResult{
-		StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b},
-		Scheduling: run.ToolScheduling{Mode: "round-robin"},
-	}))
-	if err == nil {
-		t.Fatal("unknown scheduling mode accepted")
+	prep, _ := buildPrepare(t, s, testRequest(def), []run.ToolSpec{spec})
+	prep.Policy.Scheduling.Mode = "round-robin"
+	if _, err := schema.Machine().Decide(s, prep); err == nil {
+		t.Fatal("unknown scheduling mode accepted at prepare")
+	}
+	prepared := run.ModelStepPrepared{StepID: prep.StepID, Model: prep.Model, RequestDigest: prep.RequestDigest, InputIDs: prep.InputIDs, Tools: prep.Tools, Policy: prep.Policy}
+	if _, err := schema.Machine().Evolve(s, prepared); err == nil {
+		t.Fatal("unknown scheduling mode folded")
 	}
 }
 
@@ -555,9 +563,9 @@ func TestUnknownToolFailureSettlesOnlyThatCall(t *testing.T) {
 	}
 }
 
-func TestRejectModelResultDispositionRetriesThenFails(t *testing.T) {
+func TestRejectModelResultRetriesWithinFrozenBudgetThenFails(t *testing.T) {
 	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
+	s, stepID := advanceToExecutingWith(t, s, testRequest(), nil, run.StepPolicy{MalformedRetries: 2})
 
 	usage := model.Usage{TotalTokens: 3}
 	// Reject 1: back to Prepared.
@@ -573,16 +581,16 @@ func TestRejectModelResultDispositionRetriesThenFails(t *testing.T) {
 		t.Fatal("usage not accumulated on reject")
 	}
 
-	// Start again, reject 2: host policy still chooses retry.
+	// Start again, reject 2: the frozen budget allows one more.
 	s = fold(t, s, mustDecide(t, s, startModel(s, stepID)))
 	s = fold(t, s, mustDecide(t, s, run.RejectModelResult{StepID: stepID, Usage: usage, Failure: run.StepFailure{Class: run.FailureMalformedModel}}))
 	if ms := s.Current.(run.ModelStep); ms.Rejects != 2 {
 		t.Fatalf("rejects = %d", ms.Rejects)
 	}
 
-	// Third reject: host policy chooses fail-run disposition.
+	// Third reject: the budget is spent and the Run fails.
 	s = fold(t, s, mustDecide(t, s, startModel(s, stepID)))
-	facts = mustDecide(t, s, run.RejectModelResult{StepID: stepID, Usage: usage, Failure: run.StepFailure{Class: run.FailureMalformedModel}, Disposition: run.ModelRejectFailRun})
+	facts = mustDecide(t, s, run.RejectModelResult{StepID: stepID, Usage: usage, Failure: run.StepFailure{Class: run.FailureMalformedModel}})
 	if len(facts) != 2 {
 		t.Fatalf("facts = %d, want [rejected, ended]", len(facts))
 	}
@@ -833,8 +841,8 @@ func TestSettlementNamesExecutingEffect(t *testing.T) {
 		{"model result of another effect", model, run.SubmitModelResult{StepID: modelStep, Effect: otherModel, Result: text}, "not the step's executing effect"},
 		{"model failure without effect", model, run.SubmitModelFailure{StepID: modelStep, Failure: failure}, "missing effect"},
 		{"model failure of another effect", model, run.SubmitModelFailure{StepID: modelStep, Effect: otherModel, Failure: failure}, "not the step's executing effect"},
-		{"reject without effect", model, run.RejectModelResult{StepID: modelStep, Failure: failure, Disposition: run.ModelRejectRetry}, "missing effect"},
-		{"reject of another effect", model, run.RejectModelResult{StepID: modelStep, Effect: otherModel, Failure: failure, Disposition: run.ModelRejectRetry}, "not the step's executing effect"},
+		{"reject without effect", model, run.RejectModelResult{StepID: modelStep, Failure: failure}, "missing effect"},
+		{"reject of another effect", model, run.RejectModelResult{StepID: modelStep, Effect: otherModel, Failure: failure}, "not the step's executing effect"},
 		{"tool result without effect", tool, run.SubmitToolResult{StepID: toolStep, CallID: cA, Result: output}, "missing effect"},
 		{"tool result of another effect", tool, run.SubmitToolResult{StepID: toolStep, CallID: cA, Effect: otherTool, Result: output}, "not the executing effect"},
 		{"tool failure without effect", tool, run.SubmitToolFailure{StepID: toolStep, CallID: cA, Failure: toolFailure, Outcome: run.ToolOutcomeKnown}, "missing effect"},

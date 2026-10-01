@@ -213,7 +213,7 @@ func TestTargetResolvedPerEffect(t *testing.T) {
 	exec := newRecordingExecutor()
 	resolver := &recordingTargetResolver{}
 	spec := toolSpec(t, "echo", DirectExecution)
-	l, err := New(effect.PortsOf(exec), staticBuilder{specs: []ToolSpec{spec}}, Settings{TargetResolver: resolver})
+	l, err := NewDriven(effect.PortsOf(exec), staticBuilder{specs: []ToolSpec{spec}}, Settings{TargetResolver: resolver})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestTargetResolvedPerEffect(t *testing.T) {
 func TestAdvanceCopiesOpaqueTargetIntoAssignment(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
-	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{TargetResolver: fixedTargetResolver{target: TargetRef{Kind: "workspace", ID: "ws-1"}}})
+	l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{TargetResolver: fixedTargetResolver{target: TargetRef{Kind: "workspace", ID: "ws-1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestAdvanceCopiesOpaqueTargetIntoAssignment(t *testing.T) {
 func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
-	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
+	l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func (e *failingOutcomeReader) GetOutcome(ctx context.Context, key effect.Assign
 func TestOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := &failingOutcomeReader{recordingExecutor: newRecordingExecutor(), readErr: errors.New("temporary transport error"), failed: make(chan struct{}), ready: make(chan struct{})}
-	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
+	l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 func TestDeliverDropsStaleOutcome(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
-	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
+	l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
 	exec := newRecordingExecutor()
-	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
+	l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	// attempt (the same recording executor answers true).
 	stack.open(t)
 	exec.attachReply = true
-	newLoop, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
+	newLoop, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
 	exec := newRecordingExecutor()
-	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
+	l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +579,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 func TestDeliverCancelledModelRecovers(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
-	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
+	l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +606,7 @@ func TestDeliverCancelledModelRecovers(t *testing.T) {
 func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
-	l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
+	l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,7 +664,7 @@ func TestDriveStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rt, w := loopRuntime(t)
-			l, err := New(effect.PortsOf(tc.exec(t, rt.Bind(w))), staticBuilder{}, Settings{})
+			l, err := NewDriven(effect.PortsOf(tc.exec(t, rt.Bind(w))), staticBuilder{}, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}

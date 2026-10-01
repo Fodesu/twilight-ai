@@ -5,6 +5,7 @@ package execution
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/felinics/twilight/agentcore/chatlog"
@@ -20,20 +21,21 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
-// Engine is what a host advances Sessions with. Every method returns once
-// the step it was asked for is committed; nothing in it waits on an effect.
-// The Outcomes of the effects a step dispatched, the Outcomes of attempts a
+// Engine is what a host advances Runs with. Every method returns once the
+// step it was asked for is committed; nothing in it waits on an effect. The
+// Outcomes of the effects a step dispatched, the Outcomes of attempts a
 // takeover kept and the answers a Responder gives are settled by the Engine
 // on its own and reported through Config.Notify, and the host advances the
-// Session again from there.
+// Session again from there. Which Run a host drives, and under which preset,
+// is the host's reading of its own facts; the Engine knows Runs.
 type Engine interface {
-	// Drive advances the Turn by one step through the caller's Writer: the
-	// Run's next transitions are committed and the effects they request are
-	// dispatched and awaited. The result says what the step left behind.
-	Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (DriveResult, error)
+	// Drive advances the Run by one step through the caller's Writer, under
+	// the Builder of the preset ref names: the Run's next transitions are
+	// committed and the effects they request are dispatched and awaited. The
+	// result says what the step left behind.
+	Drive(ctx context.Context, w writer.Writer, runID run.RunID, ref preset.PresetRef) (DriveResult, error)
 	// Takeover runs the takeover disposition for a Session whose Writer was
 	// just acquired and returns the recovery commands it issued.
 	Takeover(ctx context.Context, w writer.Writer) (recovered int, err error)
@@ -54,20 +56,20 @@ type Engine interface {
 
 // DriveResult is what one Drive reports. Exactly one of Dispatched > 0,
 // Waiting and Finished describes the step; InFlight says whether this
-// process carries the Turn on from here.
+// process carries the Run on from here.
 type DriveResult struct {
 	// Dispatched is the number of effects the step handed to the executor.
 	Dispatched int
 	// InFlight is the number of effects of the Run whose Outcomes this
 	// process awaits after the step, the dispatched ones included, and the
 	// waits a Responder is answering; each settles in the background and
-	// reaches the host as Notify. A Turn still active with none in flight
+	// reaches the host as Notify. A Run still active with none in flight
 	// waits on something this process does not carry: a response, or an
 	// execution left to the control plane.
 	InFlight int
 	// Waiting reports a Run with no executable action.
 	Waiting bool
-	// Finished reports a Turn that is no longer active.
+	// Finished reports a Run that is terminal.
 	Finished bool
 }
 
@@ -89,7 +91,7 @@ type Config struct {
 	// Executor is the effect layer (RUN-EXE-3): Execution is required, the
 	// optional capabilities are used when set.
 	Executor effect.Ports
-	// Presets is the registry of decision identities Turns start under:
+	// Presets is the registry of decision identities Runs are driven under:
 	// required, and the host's to register into.
 	Presets preset.Registry
 	// Progress is the transient stream the Engine publishes the frames of
@@ -174,21 +176,36 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 			cfg.Notify(lt.w.SessionID())
 		}
 	}
-	lps := &loops{ports: cfg.Executor, presets: presets, decisions: cfg.Decisions, targets: cfg.TargetResolver, dispatch: cfg.Dispatch,
-		sources: decision.Sources{Projections: src.Projections, Content: src.Content}, planner: cfg.Planner}
-	x.recovery = &recovery{runs: src.Runs, ports: cfg.Executor, loops: lps, watcher: x.watcher, fail: report, notify: notify,
+	// One Loop steps every Run: what differs per Run is its preset's Builder,
+	// resolved per drive. The Planner runs with the Writer of the Session
+	// being driven, found among the lifetimes this process owns.
+	settings := loop.Settings{TargetResolver: cfg.TargetResolver, Dispatch: cfg.Dispatch}
+	if planner := cfg.Planner; planner != nil {
+		settings.BeforePrepare = func(ctx context.Context, scope run.Scope, input run.PromptInput) error {
+			w, ok := x.recovery.writerOf(session.SessionID(scope))
+			if !ok {
+				return fmt.Errorf("execution: planner: session %s is not open in this process", scope)
+			}
+			return planner.BeforePrepare(ctx, w, input)
+		}
+	}
+	lp, err := loop.New(cfg.Executor, settings)
+	if err != nil {
+		return nil, err
+	}
+	bs := &builders{presets: presets, decisions: cfg.Decisions, sources: decision.Sources{Projections: src.Projections, Content: src.Content}}
+	x.recovery = &recovery{runs: src.Runs, ports: cfg.Executor, loop: lp, watcher: x.watcher, fail: report, notify: notify,
 		missingEffects: cfg.MissingEffects, redispatches: cfg.Redispatches, maxRedispatches: cfg.MaxRedispatches, progress: cfg.Progress}
-	lps.writerOf = x.recovery.writerOf
 	var rs *responders
 	if len(cfg.Responders) > 0 {
 		rs = &responders{runs: src.Runs, tools: cfg.Responders, fail: report}
 	}
-	x.driver = &driver{runs: src.Runs, loops: lps, recovery: x.recovery, responders: rs}
+	x.driver = &driver{runs: src.Runs, loop: lp, builders: bs, recovery: x.recovery, responders: rs}
 	return x, nil
 }
 
-func (x *engine) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (DriveResult, error) {
-	return x.driver.Drive(ctx, w, turnID)
+func (x *engine) Drive(ctx context.Context, w writer.Writer, runID run.RunID, ref preset.PresetRef) (DriveResult, error) {
+	return x.driver.Drive(ctx, w, runID, ref)
 }
 
 func (x *engine) Takeover(ctx context.Context, w writer.Writer) (int, error) {

@@ -183,11 +183,28 @@ func factCodecs(name string, older map[module.PayloadVersion]module.PayloadCodec
 	return codecs, current
 }
 
-// olderFactCodecs is the superseded payload versions of one fact type. No
-// fact type has changed wire shape since it was first written, so every
-// type is at version 1 with no history; the first change adds the codec of
-// the shape it replaces here, under version 1, and keeps it for good.
-func olderFactCodecs(string) map[module.PayloadVersion]module.PayloadCodec { return nil }
+// olderFactCodecs is the superseded payload versions of one fact type: the
+// codec of each shape the type wrote before its current one, under the
+// version it wrote it at, kept for good.
+func olderFactCodecs(name string) map[module.PayloadVersion]module.PayloadCodec {
+	if name == "model_step_prepared" {
+		// Version 1 wrote the step without its policy; the current decoder
+		// reads that shape and the absent policy is the zero policy.
+		return map[module.PayloadVersion]module.PayloadCodec{1: superseded{factCodec{local: name, wire: wire.Facts{}}}}
+	}
+	return nil
+}
+
+// superseded is the codec of a shape a fact type no longer writes: it
+// decodes that shape through the current decoder, which accepts it as a
+// subset of the current shape, and encodes nothing.
+type superseded struct{ current factCodec }
+
+func (superseded) Validate(any) error { return errors.New("superseded payload version") }
+func (superseded) Encode(any) (jsonstable.Value, error) {
+	return jsonstable.Value{}, errors.New("superseded payload version")
+}
+func (c superseded) Decode(w jsonstable.Value) (any, error) { return c.current.Decode(w) }
 
 // eventDefinition is the EventDefinition of one fact type over its codec
 // history.

@@ -6,18 +6,43 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/ledger"
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
+// Driven is a Loop with the Builder its tests step under: what a host holds
+// per preset, folded into one value so a test reads like a drive.
+type Driven struct {
+	*Loop
+	Builder decision.Builder
+}
+
+// NewDriven is New with the Builder every Advance of the result uses.
+func NewDriven(ports effect.Ports, builder decision.Builder, settings Settings) (*Driven, error) {
+	if builder == nil {
+		return nil, errors.New("agent: loop: nil builder")
+	}
+	l, err := New(ports, settings)
+	if err != nil {
+		return nil, err
+	}
+	return &Driven{Loop: l, Builder: builder}, nil
+}
+
+// Advance is Loop.Advance under the Builder.
+func (d *Driven) Advance(ctx context.Context, rt store.RunStore, runID run.RunID) (LoopResult, error) {
+	return d.Loop.Advance(ctx, rt, d.Builder, runID)
+}
+
 // DriveForTest steps one Run the way a host does, on the caller's goroutine:
 // Advance, read the Outcomes of what it dispatched, Deliver, repeat, until
 // the Run finishes, waits, or a step fails. A ctx that ends cancels the
 // effects in flight once and still delivers their Outcomes, then reports
 // ctx's error. It exists for the tests of this package.
-func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.RunID) (LoopResult, error) {
+func DriveForTest(ctx context.Context, d *Driven, rt store.RunStore, runID run.RunID) (LoopResult, error) {
 	settleCtx := context.WithoutCancel(ctx)
 	pending := map[effect.AssignmentKey]struct{}{}
 	cancelled := false
@@ -26,7 +51,7 @@ func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.Run
 			if cancelled {
 				return LoopResult{}, ctx.Err()
 			}
-			res, err := l.Advance(ctx, rt, runID)
+			res, err := d.Advance(ctx, rt, runID)
 			if err != nil {
 				return LoopResult{}, err
 			}
@@ -37,16 +62,16 @@ func DriveForTest(ctx context.Context, l *Loop, rt store.RunStore, runID run.Run
 				pending[k] = struct{}{}
 			}
 		}
-		key, out, err := readAny(ctx, settleCtx, l.Ports.Execution, pending, &cancelled)
+		key, out, err := readAny(ctx, settleCtx, d.Ports.Execution, pending, &cancelled)
 		if err != nil {
 			return LoopResult{}, err
 		}
 		delete(pending, key)
-		res, err := l.Deliver(settleCtx, rt, out)
+		res, err := d.Deliver(settleCtx, rt, out)
 		if err != nil {
 			if ledger.IsOwnershipLost(err) {
 				for k := range pending {
-					_ = l.Ports.Execution.Cancel(settleCtx, k)
+					_ = d.Ports.Execution.Cancel(settleCtx, k)
 				}
 			}
 			return res, err

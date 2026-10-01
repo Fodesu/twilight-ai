@@ -96,10 +96,10 @@ func TestLoopReleasesSlots(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
 		name  string
-		drive func(t *testing.T) *Loop
+		drive func(t *testing.T) *Driven
 	}{
-		{"advance", func(t *testing.T) *Loop {
-			l, err := New(effect.PortsOf(newRecordingExecutor()), staticBuilder{}, Settings{})
+		{"advance", func(t *testing.T) *Driven {
+			l, err := NewDriven(effect.PortsOf(newRecordingExecutor()), staticBuilder{}, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,10 +109,10 @@ func TestLoopReleasesSlots(t *testing.T) {
 			}
 			return l
 		}},
-		{"deliver", func(t *testing.T) *Loop {
+		{"deliver", func(t *testing.T) *Driven {
 			rt, w := loopRuntime(t)
 			exec := newRecordingExecutor()
-			l, err := New(effect.PortsOf(exec), staticBuilder{}, Settings{})
+			l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -125,7 +125,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 			}
 			return l
 		}},
-		{"run", func(t *testing.T) *Loop {
+		{"run", func(t *testing.T) *Driven {
 			invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("done")}}
 			l, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 			if err != nil {

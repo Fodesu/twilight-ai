@@ -39,6 +39,9 @@ type ModelStepPrepared struct {
 	RequestDigest Digest     `json:"requestDigest"`
 	InputIDs      []InputID  `json:"inputIds,omitempty"`
 	Tools         []ToolSpec `json:"tools,omitempty"`
+	// Policy is the step's frozen policy; absent on wire written before it
+	// was recorded, which reads as the zero policy.
+	Policy StepPolicy `json:"policy,omitzero"`
 }
 
 func (ModelStepPrepared) fact() {}

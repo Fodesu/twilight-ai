@@ -114,7 +114,7 @@ type Application struct {
 	// them.
 	Owner     *owner.Owner
 	Execution execution.Engine
-	// Presets is the registry of decision identities Turns start under;
+	// Presets is the registry of decision identities Runs are driven under;
 	// Progress is the transient stream of running effects and background
 	// failures. The Engine publishes to both; the application owns them.
 	Presets  preset.Registry

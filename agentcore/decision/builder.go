@@ -23,13 +23,15 @@ type Builder interface {
 
 // Prompt is one built model input: the model to call, the frozen request
 // (messages and tool definitions), the inputs it consumed, the freshness
-// token of the context it was built from, and the frozen tool specs.
+// token of the context it was built from, the frozen tool specs and the
+// policy the step is frozen under, which the preset decides.
 type Prompt struct {
 	Model    run.ModelRef
 	Request  model.ModelRequest
 	InputIDs []run.InputID
 	Token    run.PromptToken
 	Tools    []run.ToolSpec
+	Policy   run.StepPolicy
 }
 
 // ToolSpecs splits the preset's tool contracts into what each side of the

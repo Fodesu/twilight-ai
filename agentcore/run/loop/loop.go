@@ -16,7 +16,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
-// Loop is the decision interpreter of one Run (RUN-LOP-2). It holds no
+// Loop is the decision interpreter of Runs (RUN-LOP-2). It holds no
 // authoritative state: every step starts from RunStore.Load, derives the next
 // action with plan.Next, records the protocol transition and, for a start,
 // hands the requested effect to the Executor as an Assignment keyed by its
@@ -25,11 +25,15 @@ import (
 // Advance returns with the keys it dispatched, and whoever hosts the Run
 // reads their Outcomes and delivers them. It never learns which attempt the
 // Executor made for an effect.
+//
+// One Loop serves every Run of a deployment: the decision that differs per
+// Run, the Builder of its preset, is Advance's argument, and everything a
+// settlement needs is read from the step the Run froze. Deliver and
+// Redispatch therefore need no preset at all.
 type Loop struct {
 	// Ports is the effect layer the Loop dispatches through; of the optional
 	// capabilities it uses only Ack, to acknowledge a settled effect.
 	Ports    effect.Ports
-	Builder  decision.Builder
 	Settings Settings
 
 	mu    sync.Mutex
@@ -45,30 +49,12 @@ type runSlot struct {
 	refs int
 }
 
-// New validates the settings (RUN-LOP-1) and binds the effect ports and the
-// prompt builder.
-func New(ports effect.Ports, builder decision.Builder, settings Settings) (*Loop, error) {
+// New binds the effect ports and the deployment's settings.
+func New(ports effect.Ports, settings Settings) (*Loop, error) {
 	if ports.Execution == nil {
 		return nil, errors.New("agent: loop: nil executor")
 	}
-	if builder == nil {
-		return nil, errors.New("agent: loop: nil builder")
-	}
-	if m := settings.Scheduling.Mode; m != "" && m != run.ToolScheduleParallel && m != run.ToolScheduleSequential {
-		return nil, fmt.Errorf("agent: loop: unknown scheduling mode %q", m)
-	}
-	if settings.Scheduling.MaxParallel < 0 {
-		return nil, errors.New("agent: loop: negative MaxParallel")
-	}
-	return &Loop{Ports: ports, Builder: builder, Settings: settings, slots: make(map[run.RunID]*runSlot)}, nil
-}
-
-func (l *Loop) toolScheduling() run.ToolScheduling {
-	s := l.Settings.Scheduling
-	if s.Mode == "" {
-		s.Mode = run.ToolScheduleParallel
-	}
-	return s
+	return &Loop{Ports: ports, Settings: settings, slots: make(map[run.RunID]*runSlot)}, nil
 }
 
 // targetFor resolves the opaque target of the effect ec describes
@@ -170,28 +156,33 @@ func (l *Loop) checkArgs(ctx context.Context, st store.RunStore, runID run.RunID
 // Advance moves the Run to its next quiescent point without waiting on any
 // effect (RUN-LOP-2): it records protocol transitions (prepare, withdraw,
 // start barriers) and dispatches Assignments, then returns LoopDispatched,
-// LoopWaiting or LoopFinished. The caller reads each returned key through
+// LoopWaiting or LoopFinished. builder is the Run's preset's decision: it
+// is asked for the next model request when the Run is Open, and the policy
+// it returns is frozen onto the step. The caller reads each returned key through
 // the executor and passes its Outcome to Deliver. One Run takes one step at
 // a time: a concurrent Advance or Deliver of the same Run waits for the
 // step in progress and then takes its own, from the state that step left.
 // store is the RunStore bound to the caller's write capability: every
 // commit of the step goes through it (OWN-HDL-2).
-func (l *Loop) Advance(ctx context.Context, st store.RunStore, runID run.RunID) (LoopResult, error) {
+func (l *Loop) Advance(ctx context.Context, st store.RunStore, builder decision.Builder, runID run.RunID) (LoopResult, error) {
 	if err := l.checkArgs(ctx, st, runID); err != nil {
 		return LoopResult{}, err
+	}
+	if builder == nil {
+		return LoopResult{}, errors.New("agent: loop: nil builder")
 	}
 	s := l.acquire(runID)
 	defer l.release(runID)
 	s.step.Lock()
 	defer s.step.Unlock()
-	return l.advance(ctx, st, runID)
+	return l.advance(ctx, st, builder, runID)
 }
 
 // advance is the body of Advance. It only dispatches assignments and returns
 // their keys; outcome retrieval is a separate message-shaped operation through
 // Executor.GetOutcome. This keeps the Executor boundary usable across process
 // boundaries.
-func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID) (LoopResult, error) {
+func (l *Loop) advance(ctx context.Context, rt store.RunStore, builder decision.Builder, runID run.RunID) (LoopResult, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return LoopResult{}, err
@@ -222,7 +213,7 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID) 
 					return LoopResult{}, err
 				}
 			}
-			if err := l.planAndPrepare(ctx, rt, &snapshot, act.Hint); err != nil {
+			if err := l.planAndPrepare(ctx, rt, builder, &snapshot, act.Hint); err != nil {
 				return LoopResult{}, err
 			}
 		case plan.WithdrawPrepared:

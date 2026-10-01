@@ -120,12 +120,17 @@ func (m StateMachine) decidePrepareModelRequest(s *MachineState, cmd *PrepareMod
 	if cmd.RequestDigest != wantReq {
 		return nil, rejectionf("prepare: request digest mismatch")
 	}
+	policy, err := normalizeStepPolicy(cmd.Policy)
+	if err != nil {
+		return nil, rejectionf("prepare: policy: %v", err)
+	}
 	return []Fact{ModelStepPrepared{
 		StepID:        cmd.StepID,
 		Model:         cmd.Model,
 		RequestDigest: cmd.RequestDigest,
 		InputIDs:      cmd.InputIDs,
 		Tools:         cmd.Tools,
+		Policy:        policy,
 	}}, nil
 }
 
@@ -246,7 +251,7 @@ func (m StateMachine) decideSubmitModelResult(s *MachineState, cmd *SubmitModelR
 	if err != nil {
 		return nil, err
 	}
-	opened, err := m.openToolStep(s.RunID, cmd.StepID, bindings, cmd.Scheduling)
+	opened, err := m.openToolStep(s.RunID, cmd.StepID, bindings, ms.Policy.Scheduling)
 	if err != nil {
 		return nil, err
 	}
@@ -391,17 +396,16 @@ func decideRejectModelResult(s *MachineState, cmd *RejectModelResult) ([]Fact, e
 		return nil, err
 	}
 	rejected := ModelStepRejected{StepID: cmd.StepID, Effect: cmd.Effect, Usage: cmd.Usage, Failure: cmd.Failure}
-	switch cmd.Disposition {
-	case ModelRejectRetry:
+	// The step's frozen policy decides: Rejects counts the malformed
+	// results already recorded, so the step is retried while that count is
+	// below the bound and the Run fails otherwise.
+	if ms.Rejects < int(ms.Policy.MalformedRetries) {
 		return []Fact{rejected}, nil
-	case ModelRejectFailRun:
-		return []Fact{rejected, RunEnded{End: RunFailedEnd{
-			Reason:  ReasonMalformedModel,
-			Failure: RunFailure{Class: FailureMalformedModel, Message: cmd.Failure.Message},
-		}}}, nil
-	default:
-		return nil, rejectionf("reject model result: unknown disposition %d", cmd.Disposition)
 	}
+	return []Fact{rejected, RunEnded{End: RunFailedEnd{
+		Reason:  ReasonMalformedModel,
+		Failure: RunFailure{Class: FailureMalformedModel, Message: cmd.Failure.Message},
+	}}}, nil
 }
 
 // --- rules 6-8: tool call lifecycle ---

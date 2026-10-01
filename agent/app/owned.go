@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -53,9 +55,19 @@ func (o *Owned) Drive(ctx context.Context, turnID turn.TurnID) (turn.TurnResult,
 	events := o.app.Events(subCtx, o.Handle.ID())
 	ref := turn.TurnRef{SessionID: o.Handle.ID(), TurnID: turnID}
 	for {
-		step, err := o.app.Execution.Drive(ctx, o.Handle.Writer(), turnID)
+		surface, err := turn.ReadSurface(ctx, o.Handle.Writer().Projections(), ref.SessionID)
 		if err != nil {
 			return turn.TurnResult{}, err
+		}
+		view, ok := surface.Turns[turnID]
+		if !ok {
+			return turn.TurnResult{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, turnID)
+		}
+		var step execution.DriveResult
+		if view.Status == turn.TurnActive {
+			if step, err = o.app.Execution.Drive(ctx, o.Handle.Writer(), view.RunID, view.Preset); err != nil {
+				return turn.TurnResult{}, err
+			}
 		}
 		res, err := o.app.Turns.Status(ctx, ref)
 		if err != nil {

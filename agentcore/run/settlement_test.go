@@ -51,7 +51,7 @@ func TestEveryEffectEndsUnderItsOwnSettlement(t *testing.T) {
 		fold(t, model, facts)
 	})
 	t.Run("rejection names the effect", func(t *testing.T) {
-		facts := mustDecide(t, model, run.RejectModelResult{StepID: stepID, Effect: eff, Failure: failure, Disposition: run.ModelRejectRetry})
+		facts := mustDecide(t, model, run.RejectModelResult{StepID: stepID, Effect: eff, Failure: failure})
 		if rejected, ok := facts[0].(run.ModelStepRejected); !ok || rejected.Effect != eff {
 			t.Fatalf("facts[0] = %+v", facts[0])
 		}
