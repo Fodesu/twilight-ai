@@ -47,7 +47,7 @@ type Watcher struct {
 	Probe time.Duration
 
 	mu      sync.Mutex
-	keys    map[AssignmentKey]*watch
+	keys    map[AssignmentKey]*waiting
 	running bool
 	// wake asks the loop to read every registered key now: a key was just
 	// registered or the stream told us something.
@@ -70,12 +70,20 @@ const DefaultWatchReconnect = time.Second
 // DefaultWatchProbe is how long a key waits before the Watcher attaches it.
 const DefaultWatchProbe = 15 * time.Second
 
+// watch is one registration on a key.
 type watch struct {
 	deliver func(Outcome)
 	// fail receives a read the port answers definitively: nothing will ever
 	// be read for this key. The registration is dropped afterwards.
 	fail func(error)
-	// since is when the key was registered; probed when it was last
+}
+
+// waiting is everything registered on one key and the probe state the
+// registrations share: a key is read and probed once however many wait on
+// it, and every one of them receives what the read settles.
+type waiting struct {
+	watchers map[*watch]struct{}
+	// since is when the key was first registered; probed when it was last
 	// attached by the probe.
 	since  time.Time
 	probed time.Time
@@ -89,15 +97,21 @@ type watch struct {
 // registration is dropped. fail, when set, receives a definitive read error
 // (ErrExecutionNotFound, ErrOutcomeUnavailable, ErrOutcomeCollected,
 // ErrExecutionAborted) and the registration is dropped too; nil discards
-// it. Registering a key already registered replaces its callbacks. The
-// returned cancel drops the registration without delivering.
+// it. A key registered more than once is read once and every registration
+// receives the answer. The returned cancel drops this registration without
+// delivering.
 func (w *Watcher) Watch(ctx context.Context, key AssignmentKey, deliver func(Outcome), fail func(error)) (cancel func()) {
 	w.mu.Lock()
 	if w.keys == nil {
-		w.keys = make(map[AssignmentKey]*watch)
+		w.keys = make(map[AssignmentKey]*waiting)
 	}
-	entry := &watch{deliver: deliver, fail: fail, since: time.Now()}
-	w.keys[key] = entry
+	ks := w.keys[key]
+	if ks == nil {
+		ks = &waiting{watchers: make(map[*watch]struct{}), since: time.Now()}
+		w.keys[key] = ks
+	}
+	entry := &watch{deliver: deliver, fail: fail}
+	ks.watchers[entry] = struct{}{}
 	if !w.running {
 		w.running = true
 		if w.Settlements == nil && w.Recover == nil {
@@ -117,8 +131,11 @@ func (w *Watcher) Watch(ctx context.Context, key AssignmentKey, deliver func(Out
 	}
 	return func() {
 		w.mu.Lock()
-		if w.keys[key] == entry {
-			delete(w.keys, key)
+		if ks := w.keys[key]; ks != nil {
+			delete(ks.watchers, entry)
+			if len(ks.watchers) == 0 {
+				delete(w.keys, key)
+			}
 		}
 		w.mu.Unlock()
 	}
@@ -216,13 +233,13 @@ func (w *Watcher) probeStale(probe time.Duration) {
 	now := time.Now()
 	w.mu.Lock()
 	var due []AssignmentKey
-	for key, entry := range w.keys {
-		last := entry.probed
+	for key, ks := range w.keys {
+		last := ks.probed
 		if last.IsZero() {
-			last = entry.since
+			last = ks.since
 		}
 		if now.Sub(last) >= probe {
-			entry.probed = now
+			ks.probed = now
 			due = append(due, key)
 		}
 	}
@@ -236,14 +253,14 @@ func (w *Watcher) probeStale(probe time.Duration) {
 			continue
 		}
 		w.mu.Lock()
-		entry, ok := w.keys[key]
+		ks, ok := w.keys[key]
 		ask := false
 		if ok {
 			switch att.State {
 			case AttachmentOrphaned:
-				ask, entry.asked = !entry.asked, true
+				ask, ks.asked = !ks.asked, true
 			case AttachmentActive:
-				entry.asked = false
+				ks.asked = false
 			}
 		}
 		w.mu.Unlock()
@@ -327,10 +344,11 @@ func (w *Watcher) readAll() {
 	}
 }
 
-// read reads one key and settles its registration when the answer is final.
+// read reads one key and settles its registrations when the answer is
+// final.
 func (w *Watcher) read(key AssignmentKey) {
 	w.mu.Lock()
-	entry, ok := w.keys[key]
+	ks, ok := w.keys[key]
 	w.mu.Unlock()
 	if !ok {
 		return
@@ -347,22 +365,28 @@ func (w *Watcher) read(key AssignmentKey) {
 		return
 	}
 	w.mu.Lock()
-	if w.keys[key] != entry {
+	if w.keys[key] != ks {
 		w.mu.Unlock()
 		return
 	}
 	delete(w.keys, key)
+	watchers := make([]*watch, 0, len(ks.watchers))
+	for entry := range ks.watchers {
+		watchers = append(watchers, entry)
+	}
 	w.mu.Unlock()
 	if w.ctx.Err() != nil {
 		return
 	}
-	if err != nil {
-		if entry.fail != nil {
-			entry.fail(err)
+	for _, entry := range watchers {
+		if err != nil {
+			if entry.fail != nil {
+				entry.fail(err)
+			}
+			continue
 		}
-		return
+		entry.deliver(out)
 	}
-	entry.deliver(out)
 }
 
 // definitiveRead reports a read error the port will answer the same way for
