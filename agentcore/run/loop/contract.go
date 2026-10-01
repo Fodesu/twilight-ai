@@ -8,7 +8,6 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/store"
 )
 
 // EffectContext identifies the effect a target is resolved for: the Run's
@@ -48,19 +47,18 @@ type Settings struct {
 	// BeforePrepare runs each time the Run is Open and about to plan a model
 	// request, before the PromptBuilder reads the context (RUN-LOP-10). It
 	// is the application's seam for reshaping that context between steps,
-	// such as an in-turn checkpoint (APP-CKP-1); it commits through the
-	// Writer the store is bound to. An error stops the drive with no fact
-	// written; nil is no hook.
+	// such as an in-turn checkpoint (APP-CKP-1); what it commits goes
+	// through the host's own capability over the Scope. An error stops the
+	// drive with no fact written; nil is no hook.
 	BeforePrepare PrepareHook
 	// Dispatch bounds the re-offers of an Assignment the Executor refused
 	// as retryable (RUN-EXE-3); the zero value selects the defaults.
 	Dispatch DispatchPolicy
 }
 
-// PrepareHook is Settings.BeforePrepare: the store is the Loop's own bound
-// RunStore and input the PromptInput the plan is about to hand the
-// PromptBuilder.
-type PrepareHook func(ctx context.Context, store store.RunStore, input decision.Input) error
+// PrepareHook is Settings.BeforePrepare: scope is the Run's Scope and input
+// the PromptInput the plan is about to hand the PromptBuilder.
+type PrepareHook func(ctx context.Context, scope run.Scope, input decision.Input) error
 
 type LoopDisposition uint8
 

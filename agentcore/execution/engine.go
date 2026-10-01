@@ -181,6 +181,7 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 		sources: decision.Sources{Projections: src.Projections, Content: src.Content}, planner: cfg.Planner}
 	x.recovery = &recovery{runs: src.Runs, ports: cfg.Executor, loops: lps, watcher: x.watcher, fail: report, notify: notify,
 		missingEffects: cfg.MissingEffects, redispatches: cfg.Redispatches, maxRedispatches: cfg.MaxRedispatches, progress: x.progress}
+	lps.writerOf = x.recovery.writerOf
 	var rs *responders
 	if len(cfg.Responders) > 0 {
 		rs = &responders{runs: src.Runs, tools: cfg.Responders, fail: report}

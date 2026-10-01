@@ -217,7 +217,7 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID) 
 			// the context (RUN-LOP-10); what it commits moves no Run fact,
 			// so the snapshot's Position stays valid for the Prepare.
 			if hook := l.Settings.BeforePrepare; hook != nil {
-				if err := hook(ctx, rt, act.Hint); err != nil {
+				if err := hook(ctx, rt.Scope(), act.Hint); err != nil {
 					return LoopResult{}, err
 				}
 			}

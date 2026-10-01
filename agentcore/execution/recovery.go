@@ -245,6 +245,18 @@ func (r *recovery) installLocked(w writer.Writer, parent context.Context) *lifet
 	return lt
 }
 
+// writerOf is the Writer of the Session this process owns under sid, if
+// any: the one every step of the Session here commits through.
+func (r *recovery) writerOf(sid session.SessionID) (writer.Writer, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	lt, ok := r.lifetimes[sid]
+	if !ok {
+		return nil, false
+	}
+	return lt.w, true
+}
+
 // lifetimeOf returns the Session's lifetime, installing a detached one when
 // absent. Open replaces it instead: a takeover supersedes the previous
 // owner's listeners.

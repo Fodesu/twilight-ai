@@ -10,7 +10,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
-	"github.com/felinics/twilight/agentcore/run/store"
+	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 )
@@ -40,9 +40,11 @@ type loops struct {
 	// refusal; the zero value selects loop's defaults.
 	dispatch loop.DispatchPolicy
 	// planner, when set, is consulted through every Loop's BeforePrepare:
-	// the between-steps context policy, given the Writer the drive commits
-	// through.
-	planner Planner
+	// the between-steps context policy, given the Writer of the Session
+	// being driven. writerOf finds that Writer by the Run's Scope among the
+	// Sessions this process owns; required with planner.
+	planner  Planner
+	writerOf func(session.SessionID) (writer.Writer, bool)
 
 	mu    sync.Mutex
 	loops map[preset.PresetRef]*loop.Loop
@@ -101,12 +103,12 @@ func (l *loops) ForRun(ctx context.Context, w writer.Writer, runID run.RunID) (*
 	return lp, turnID, nil
 }
 
-// beforePrepare hands the Loop's hook to the Planner with the Writer the
-// bound store commits through.
-func (l *loops) beforePrepare(ctx context.Context, st store.RunStore, input decision.Input) error {
-	owned, ok := st.(interface{ Writer() writer.Writer })
+// beforePrepare hands the Loop's hook to the Planner with the Writer of
+// the Session the Run belongs to.
+func (l *loops) beforePrepare(ctx context.Context, scope run.Scope, input decision.Input) error {
+	w, ok := l.writerOf(session.SessionID(scope))
 	if !ok {
-		return fmt.Errorf("execution: run store %T exposes no writer for the planner", st)
+		return fmt.Errorf("execution: planner: session %s is not open in this process", scope)
 	}
-	return l.planner.BeforePrepare(ctx, owned.Writer(), input)
+	return l.planner.BeforePrepare(ctx, w, input)
 }
