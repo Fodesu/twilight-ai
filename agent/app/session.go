@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/conversation"
+	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
@@ -313,7 +314,7 @@ func awaitProgress(ctx context.Context, events <-chan Event, runID run.RunID, tu
 			if !ok {
 				return errors.New("app: the session's event stream ended")
 			}
-			if e.Err != nil {
+			if e.Kind == observe.EventFailed {
 				return nil
 			}
 			switch v := e.Value.(type) {

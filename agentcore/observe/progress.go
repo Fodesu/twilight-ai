@@ -26,13 +26,13 @@ func NewProgresses() *Progresses {
 // Publish delivers one transient progress observation to the Session's
 // subscribers.
 func (p *Progresses) Publish(sid session.SessionID, pr Progress) {
-	p.publish(sid, Event{Session: sid, Progress: &pr})
+	p.publish(sid, Event{Kind: EventProgress, Session: sid, Progress: &pr})
 }
 
 // Failed reports a failure of background work (a drive that errored) to the
 // Session's subscribers.
 func (p *Progresses) Failed(sid session.SessionID, err error) {
-	p.publish(sid, Event{Session: sid, Err: err})
+	p.publish(sid, Event{Kind: EventFailed, Session: sid, Err: err})
 }
 
 func (p *Progresses) publish(sid session.SessionID, events ...Event) {

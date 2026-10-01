@@ -21,16 +21,28 @@ import (
 	"sync"
 )
 
-// Event is one item of a Session's observation stream, in either of two
-// shapes. A committed Event carries one event decoded from the applied
-// commits through the Registry: Module, Version and Value are the decoded
-// payload, Unknown reports a type or version this process has no codec for
-// (the event is still delivered) and Err reports the decode or history-read
-// failure. A transient Event has a zero Row: Progress carries what the
-// executor reported of an effect while it ran, or Err alone carries a
-// failure of background work; neither is a fact, either may be lost, and
-// the committed result that follows replaces it.
+// EventKind is the shape of an Event: which of its fields are set.
+type EventKind string
+
+const (
+	// EventCommitted: one event of an applied commit. Position and Row are
+	// set; Module, Version and Value are the decoded payload, Unknown reports
+	// a type or version this process has no codec for (the event is still
+	// delivered) and Err reports the decode or history-read failure.
+	EventCommitted EventKind = "committed"
+	// EventProgress: a transient observation of an effect in flight.
+	// Progress is set and Row is zero; it is not a fact, may be lost, and the
+	// committed result that follows replaces it.
+	EventProgress EventKind = "progress"
+	// EventFailed: a failure of background work. Err alone is set; it is not
+	// a fact and may be lost.
+	EventFailed EventKind = "failed"
+)
+
+// Event is one item of a Session's observation stream; Kind says which
+// shape it has and which fields are set.
 type Event struct {
+	Kind    EventKind
 	Session session.SessionID
 	// Position is the event's place in the Session's ledger: the commit's
 	// Seq and the event's index within the commit. It is what a consumer
@@ -100,7 +112,7 @@ func (b *Bus) decode(sid session.SessionID, commit *ledger.Commit) []Event {
 	index := uint32(0)
 	for _, batch := range commit.Batches {
 		for _, row := range batch.Events {
-			e := Event{Session: sid, Position: ledger.Position{Commit: commit.Seq, Index: index}, Row: row}
+			e := Event{Kind: EventCommitted, Session: sid, Position: ledger.Position{Commit: commit.Seq, Index: index}, Row: row}
 			index++
 			decoded, err := b.registry.Decode(row)
 			if err != nil {

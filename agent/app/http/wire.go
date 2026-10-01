@@ -117,6 +117,7 @@ type ForkRequest struct {
 // its ledger position and decoded value, a transient progress observation,
 // or a stream failure.
 type Event struct {
+	Kind     observe.EventKind     `json:"kind"`
 	Session  session.SessionID     `json:"session"`
 	Position ledger.Position       `json:"position"`
 	Type     ledger.EventType      `json:"type,omitempty"`
@@ -130,7 +131,7 @@ type Event struct {
 
 // EventOf renders an observe.Event.
 func EventOf(e *observe.Event) Event {
-	out := Event{Session: e.Session, Position: e.Position, Type: e.Row.Type, Module: e.Module, Version: e.Version, Unknown: e.Unknown, Progress: e.Progress}
+	out := Event{Kind: e.Kind, Session: e.Session, Position: e.Position, Type: e.Row.Type, Module: e.Module, Version: e.Version, Unknown: e.Unknown, Progress: e.Progress}
 	if e.Err != nil {
 		out.Error = e.Err.Error()
 	}
