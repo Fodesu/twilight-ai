@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/observe"
+	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/lifecycle"
@@ -70,6 +71,32 @@ func NewRegistry(extensions []module.ModuleDescriptor) (*module.Registry, error)
 		[]module.ModuleDescriptor{chatlog.Module, sessionstore.Module, turn.Module}, extensions)
 }
 
+// SessionServices are the Session-side services composed over one Store:
+// what every command commits through and every read folds through.
+type SessionServices struct {
+	Store    session.Stores
+	Writers  writer.Writers
+	Registry *module.Registry
+	// Runs is the Run module's Session adapter: the Run core's store bound
+	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
+	Runs *sessionstore.SessionRunStore
+	// Turns commits the Turn protocol and reads Turn status.
+	Turns *turn.Coordinator
+	// Bus is the committed event stream, decoded, in commit order. It
+	// carries facts only; transient observations are not part of it.
+	Bus    *observe.Bus
+	Frozen frozen.Store
+	// Projections reads every projection without ownership.
+	Projections session.ProjectionReader
+	// Content materializes the frozen bodies projections name.
+	Content chatlog.ContentResolver
+	// Chatlog commits the chatlog's own facts.
+	Chatlog *chatlog.Commands
+	// Lifecycle creates, forks and reclaims Sessions over the Store.
+	Lifecycle lifecycle.Lifecycle
+	Clock     func() time.Time
+}
+
 // composeSessions fills the Session-side services from their ports.
 func (app *Application) composeSessions(p SessionPorts) error { //nolint:gocritic // hugeParam: SessionPorts is a by-value options struct read once
 	if p.Store == nil {
@@ -126,14 +153,18 @@ func (app *Application) composeSessions(p SessionPorts) error { //nolint:gocriti
 	// Session takes no ownership. The Writer keeps its own transactional
 	// projections for the commit critical section.
 	projections := session.NewProjectionReader(store, registry, cache)
-	app.Store, app.Writers, app.Registry, app.Runs = store, writers, registry, runs
-	app.Turns = &turn.Coordinator{Projections: projections, Runs: runs, Now: now}
-	app.Bus, app.Frozen, app.Projections = bus, fz, projections
-	app.Content = sessionstore.NewContent(fz)
-	app.Chatlog = &chatlog.Commands{Now: now}
-	app.Lifecycle = lifecycle.Lifecycle{Store: store, Registry: registry, Admission: admission, Clock: now}
+	app.SessionServices = SessionServices{
+		Store: store, Writers: writers, Registry: registry, Runs: runs,
+		Turns:       &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
+		Bus:         bus,
+		Frozen:      fz,
+		Projections: projections,
+		Content:     sessionstore.NewContent(fz),
+		Chatlog:     &chatlog.Commands{Now: now},
+		Lifecycle:   lifecycle.Lifecycle{Store: store, Registry: registry, Admission: admission, Clock: now},
+		Clock:       now,
+	}
 	app.history = turn.History{Store: store, Registry: registry, Projections: projections}
-	app.Clock = now
 	return nil
 }
 

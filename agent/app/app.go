@@ -14,7 +14,6 @@ import (
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/workspace"
-	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/execution"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/ledger"
@@ -23,14 +22,11 @@ import (
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/frozen"
-	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/lifecycle"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 	"sync"
-	"time"
 )
 
 // Preset is an authority-side decision identity to register during Build.
@@ -106,33 +102,13 @@ const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 // Worker and the other deployment components around the effect port close
 // at the composition root, after this.
 type Application struct {
-	// The Session-side services this application composed; every command
-	// commits through their Writers and every read folds through their
-	// Projections.
-	Store    session.Stores
-	Writers  writer.Writers
-	Registry *module.Registry
-	// Runs is the Run module's Session adapter: the Run core's store bound
-	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
-	Runs *sessionstore.SessionRunStore
-	// Turns commits the Turn protocol and reads Turn status.
-	Turns *turn.Coordinator
-	// Bus is the committed event stream, decoded, in commit order. It
-	// carries facts only; transient observations are not part of it.
-	Bus    *observe.Bus
-	Frozen frozen.Store
-	// Projections reads every projection without ownership.
-	Projections session.ProjectionReader
-	// Content materializes the frozen bodies projections name.
-	Content chatlog.ContentResolver
-	// Chatlog commits the chatlog's own facts.
-	Chatlog *chatlog.Commands
-	// Lifecycle creates, forks and reclaims Sessions over the Store.
-	Lifecycle lifecycle.Lifecycle
+	// SessionServices are the Session-side services this application
+	// composed over one Store; every command commits through their Writers
+	// and every read folds through their Projections.
+	SessionServices
 	// history answers the Turn-level questions a fork asks of a Session's
 	// committed stream: the fork points and the quiescence precondition.
 	history turn.History
-	Clock   func() time.Time
 
 	// Owner holds the Sessions this process owns; Execution is what advances
 	// them.
