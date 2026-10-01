@@ -1,4 +1,4 @@
-package lifecycle
+package turn
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // History reads a Session's committed stream for boundary questions.
@@ -17,18 +16,27 @@ type History struct {
 	Projections session.ProjectionReader
 }
 
-// StartCommit finds the commit of sid's ledger that carries turnID's
-// started fact. It errors when the Turn is not found.
-func (h History) StartCommit(ctx context.Context, sid session.SessionID, turnID turn.TurnID) (ledger.CommitSeq, error) {
-	return h.scanBoundary(ctx, sid, turnID, false)
+// BeforeStart is the fork point that excludes turnID and everything after
+// it: the commit just before the Turn's started fact, with the Turn's
+// inputs still submitted and undelivered. It errors when the Turn is not
+// found or opens the history.
+func (h History) BeforeStart(ctx context.Context, sid session.SessionID, turnID TurnID) (ledger.CommitSeq, error) {
+	seq, err := h.scanBoundary(ctx, sid, turnID, false)
+	if err != nil {
+		return 0, err
+	}
+	if seq == 0 {
+		return 0, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: sid,
+			Detail: fmt.Sprintf("turn %s started in the first commit of %s; there is no prefix to fork", turnID, sid)}
+	}
+	return seq - 1, nil
 }
 
-// PrefixCommit finds the last commit of sid's history that precedes turnID
-// and its inputs: the fork point that excludes the whole Turn, so a child
-// rooted there sees the conversation as it stood before the Turn opened,
-// without the Turn's submitted inputs. It errors when the Turn opens the
-// history.
-func (h History) PrefixCommit(ctx context.Context, sid session.SessionID, turnID turn.TurnID) (ledger.CommitSeq, error) {
+// BeforeInputs is the fork point that excludes turnID and its inputs: the
+// last commit before the earliest of the Turn's inputs was submitted, so a
+// child rooted there sees the conversation as it stood before the Turn was
+// asked. It errors when the Turn opens the history.
+func (h History) BeforeInputs(ctx context.Context, sid session.SessionID, turnID TurnID) (ledger.CommitSeq, error) {
 	at, err := h.scanBoundary(ctx, sid, turnID, true)
 	if err != nil {
 		return 0, err
@@ -44,16 +52,16 @@ func (h History) PrefixCommit(ctx context.Context, sid session.SessionID, turnID
 // boundary is the turn's started commit; with inputs it is the earliest
 // commit that submitted one of the Turn's inputs, which always precedes the
 // started commit.
-func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID turn.TurnID, includeInputs bool) (ledger.CommitSeq, error) {
+func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID TurnID, includeInputs bool) (ledger.CommitSeq, error) {
 	var inputIDs map[chatlog.InputID]struct{}
 	if includeInputs {
-		surface, err := turn.ReadSurface(ctx, h.Projections, sid)
+		surface, err := ReadSurface(ctx, h.Projections, sid)
 		if err != nil {
 			return 0, err
 		}
 		view, ok := surface.Turns[turnID]
 		if !ok {
-			return 0, fmt.Errorf("%w: turn %s not found in %s", turn.ErrConflict, turnID, sid)
+			return 0, fmt.Errorf("%w: turn %s not found in %s", ErrConflict, turnID, sid)
 		}
 		inputIDs = make(map[chatlog.InputID]struct{}, len(view.InputIDs))
 		for _, id := range view.InputIDs {
@@ -72,7 +80,7 @@ func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID
 			for _, b := range c.Batches {
 				for _, e := range b.Events {
 					switch e.Type {
-					case turn.TypeStarted:
+					case TypeStarted:
 						if hasStarted {
 							continue
 						}
@@ -80,7 +88,7 @@ func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID
 						if err != nil || decoded.Unknown {
 							continue
 						}
-						if p, ok := decoded.Value.(turn.StartedPayload); ok && p.TurnID == turnID {
+						if p, ok := decoded.Value.(StartedPayload); ok && p.TurnID == turnID {
 							started, hasStarted = c.Seq, true
 						}
 					case chatlog.TypeInputSubmitted:
@@ -102,7 +110,7 @@ func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID
 		}
 		if !page.HasMore || len(page.Commits) == 0 {
 			if !hasStarted {
-				return 0, fmt.Errorf("%w: turn %s not found in %s", turn.ErrConflict, turnID, sid)
+				return 0, fmt.Errorf("%w: turn %s not found in %s", ErrConflict, turnID, sid)
 			}
 			boundary := started
 			if hasFirstInput && firstInput < boundary {
@@ -118,8 +126,8 @@ func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID
 // (inclusive): the turn surface folded over commits [0, at]. A fork at such
 // a point would hand the child a Turn whose execution belongs to the
 // parent, so callers refuse it.
-func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at ledger.CommitSeq) (turn.TurnID, bool, error) {
-	scope, err := h.Registry.ScopeFor(turn.SurfaceProjectionID, turn.SurfaceProjection.Version)
+func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at ledger.CommitSeq) (TurnID, bool, error) {
+	scope, err := h.Registry.ScopeFor(SurfaceProjectionID, SurfaceProjection.Version)
 	if err != nil {
 		return "", false, err
 	}
@@ -148,7 +156,7 @@ func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at ledger.
 		}
 		from = page.Commits[len(page.Commits)-1].Seq + 1
 	}
-	surface, ok := state.(turn.TurnSurface)
+	surface, ok := state.(TurnSurface)
 	if !ok {
 		return "", false, fmt.Errorf("history: surface projection is %T", state)
 	}
@@ -156,4 +164,19 @@ func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at ledger.
 		return active.TurnID, true, nil
 	}
 	return "", false, nil
+}
+
+// RequireNoActiveTurnAt is the fork precondition over history: a fork point
+// inside a Turn would hand the child a Turn whose Run is the parent's
+// execution, so semantic history branches only at quiescent points.
+func (h History) RequireNoActiveTurnAt(ctx context.Context, sid session.SessionID, at ledger.CommitSeq) error {
+	active, ok, err := h.ActiveAt(ctx, sid, at)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: sid,
+			Detail: fmt.Sprintf("turn %s of %s is active at commit %d; fork at a quiescent point", active, sid, at)}
+	}
+	return nil
 }

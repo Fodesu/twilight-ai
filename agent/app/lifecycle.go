@@ -21,14 +21,23 @@ import (
 // --- session lifecycle, forwarded from the Authority ---------------------------------
 
 // Fork creates a child session from a parent's ledger prefix (OWN-FRK-1).
+// The prefix must end at a quiescent point: a fork inside a Turn would hand
+// the child a Turn whose Run is the parent's execution.
 func (app *Application) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
+	if err := app.history.RequireNoActiveTurnAt(ctx, req.Parent, req.At); err != nil {
+		return session.SegmentHeader{}, err
+	}
 	return app.Lifecycle.Fork(ctx, req)
 }
 
 // ForkBeforeTurn forks a session at the commit before the named turn started
 // (OWN-FRK-2), so the turn's inputs can be regenerated or edited in the child.
 func (app *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
-	return app.Lifecycle.ForkBeforeTurn(ctx, parent, turnID, child)
+	at, err := app.history.BeforeStart(ctx, parent, turnID)
+	if err != nil {
+		return session.SegmentHeader{}, err
+	}
+	return app.Fork(ctx, ForkRequest{Parent: parent, At: at, Child: child})
 }
 
 // DeleteSession tombstones a session and reclaims along its path (OWN-FRK-3).

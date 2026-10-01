@@ -33,7 +33,11 @@ func (c children) Create(ctx context.Context, sid session.SessionID, ext module.
 // inputs: the conversation as it stood before that Turn was asked, under
 // the same quiescence guard every fork passes.
 func (c children) ForkBeforeInputs(ctx context.Context, parent session.SessionID, turnID turn.TurnID, sid session.SessionID, ext module.Extensions) error {
-	_, err := c.app.Lifecycle.ForkBeforeInputs(ctx, parent, turnID, sid, ext)
+	at, err := c.app.history.BeforeInputs(ctx, parent, turnID)
+	if err != nil {
+		return err
+	}
+	_, err = c.app.Fork(ctx, ForkRequest{Parent: parent, At: at, Child: sid, Ext: ext})
 	return err
 }
 

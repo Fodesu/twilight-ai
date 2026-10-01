@@ -129,7 +129,10 @@ type Application struct {
 	Chatlog *chatlog.Commands
 	// Lifecycle creates, forks and reclaims Sessions over the Store.
 	Lifecycle lifecycle.Lifecycle
-	Clock     func() time.Time
+	// history answers the Turn-level questions a fork asks of a Session's
+	// committed stream: the fork points and the quiescence precondition.
+	history turn.History
+	Clock   func() time.Time
 
 	// Owner holds the Sessions this process owns; Execution is what advances
 	// them.

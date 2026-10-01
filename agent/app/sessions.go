@@ -131,8 +131,8 @@ func (app *Application) composeSessions(p SessionPorts) error { //nolint:gocriti
 	app.Bus, app.Frozen, app.Projections = bus, fz, projections
 	app.Content = sessionstore.NewContent(fz)
 	app.Chatlog = &chatlog.Commands{Now: now}
-	app.Lifecycle = lifecycle.Lifecycle{Store: store, Registry: registry, Admission: admission, Clock: now,
-		History: lifecycle.History{Store: store, Registry: registry, Projections: projections}}
+	app.Lifecycle = lifecycle.Lifecycle{Store: store, Registry: registry, Admission: admission, Clock: now}
+	app.history = turn.History{Store: store, Registry: registry, Projections: projections}
 	app.Clock = now
 	return nil
 }
