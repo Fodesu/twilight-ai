@@ -51,7 +51,7 @@ func spawnOutput(t *testing.T, h *localagent.Agent, sid session.SessionID) (spaw
 		}
 		tr, _ := chat.ToolResults.Get(chatlog.ToolResultID(e.ID))
 		entry := chatlog.Entry{Kind: chatlog.EntryToolResult, ID: e.ID, Digest: tr.Digest, ToolResult: &tr}
-		m, err := chatlog.NewMaterializer(h.Content).Entry(ctx, &entry)
+		m, err := h.Materialize(ctx, &entry)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
-	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
@@ -57,27 +57,22 @@ func Example_recoverableTurn() {
 	if err := p1.CreateSession(ctx, sid); err != nil {
 		panic(err)
 	}
-	owned1, err := p1.Acquire(ctx, sid)
-	if err != nil {
-		panic(err)
-	}
 	profile1, err := p1.RegisterPreset("weather-agent", preset)
 	if err != nil {
 		panic(err)
 	}
-	input, err := p1.Chatlog.Submit(ctx, owned1.Handle.Writer(), "in-1", agentinput.Text("what is the weather?"))
+	s1, err := p1.OpenSession(ctx, sid, app.SessionOptions{Preset: profile1, NewTurnID: func() turn.TurnID { return "turn-1" }})
 	if err != nil {
 		panic(err)
 	}
-	ref1 := turn.TurnRef{SessionID: sid, TurnID: "turn-1"}
+	ref1, err := s1.SubmitInput(ctx, "in-1", "what is the weather?")
+	if err != nil {
+		panic(err)
+	}
 	startDone := make(chan error, 1)
 	go func() {
-		_, err := p1.Turns.Start(ctx, owned1.Handle.Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
-			Preset: profile1})
-		if err == nil {
-			// The Coordinator only commits; the host drives (DRV-1).
-			_, err = owned1.Drive(ctx, ref1.TurnID)
-		}
+		// SubmitInput committed the route; Settle drives the Turn to its end.
+		_, err := s1.Settle(ctx, ref1.TurnID)
 		startDone <- err
 	}()
 	runID := waitForExecutingCall(ctx, p1, sid, ref1.TurnID)
@@ -105,13 +100,13 @@ func Example_recoverableTurn() {
 	if _, err := owned.Drive(ctx, ref1.TurnID); err != nil {
 		panic(err)
 	}
-	resp, err := p2.Turns.Status(ctx, ref1)
+	resp, err := p2.TurnStatus(ctx, ref1)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("process 2: turn %s, disposition %s\n", resp.Status, resp.Disposition)
 
-	record, err := p2.Runs.Record(ctx, sid, runID)
+	record, err := p2.RunRecord(ctx, sid, runID)
 	if err != nil {
 		panic(err)
 	}
@@ -123,7 +118,7 @@ func Example_recoverableTurn() {
 	close(tool.block)
 	err = <-startDone
 	fmt.Printf("process 1: %v\n", errorsIsOwnershipLost(err))
-	after, _ := p2.Runs.Record(ctx, sid, runID)
+	after, _ := p2.RunRecord(ctx, sid, runID)
 	fmt.Printf("stream unchanged by the fenced worker: %v\n", len(after.Facts) == len(record.Facts))
 
 	// Output:

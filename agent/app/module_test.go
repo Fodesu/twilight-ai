@@ -4,12 +4,12 @@ import (
 	"context"
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
-	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 	"strings"
@@ -73,7 +73,8 @@ var auditModule = module.ModuleDescriptor{
 // EXT-PRJ-2).
 func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	ctx := context.Background()
-	h := newHost(t, app.Config{Sessions: app.SessionPorts{Modules: []module.ModuleDescriptor{auditModule}}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
+	store := filestoretest.Store(t)
+	h := newHost(t, app.Config{Sessions: app.SessionPorts{Store: store, Modules: []module.ModuleDescriptor{auditModule}}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})
 	const sid session.SessionID = "s-app"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
@@ -83,17 +84,13 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The app module commits its own event through the Session's Writer,
+	// held through Acquire; the conversation then runs over the same ledger.
 	owned, err := h.Acquire(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := owned.Handle.Writer()
-	in, err := h.Chatlog.Submit(ctx, w, "in-1", agentinput.Text("hello"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The app module commits its own event through the same Writer.
-	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
+	res, err := owned.Handle.Writer().Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 		return &writer.SemanticGroup{CommitID: "audit/n1",
 			Batches: []writer.TypedBatch{{Domain: ledger.Domain{Name: "audit"}, Events: []writer.TypedEvent{{
 				Type: auditNoteType, RecordedAtUnixMilli: 1, Value: auditNote{InputID: "in-1", Text: "flagged"},
@@ -102,11 +99,17 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
-	if _, err := h.Turns.Start(ctx, w, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
-		Inputs: []run.AgentInput{in}, Preset: preset}); err != nil {
+	if err := owned.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owned.Drive(ctx, "t1"); err != nil {
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { return "t1" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SubmitInput(ctx, "in-1", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Settle(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -137,7 +140,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	}
 
 	// Both sources coexist in one commit ledger.
-	page, err := h.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
+	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
 	if err != nil {
 		t.Fatal(err)
 	}

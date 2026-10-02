@@ -80,7 +80,7 @@ func durablePorts(t testing.TB, cfg app.Config) localagent.Config {
 // runState reads a Run's committed state by SessionID: the lease-free read
 // (OWN-HDL-2), so a test observes without owning.
 func runState(a *localagent.Agent, sid session.SessionID, runID run.RunID) (store.Snapshot, error) {
-	record, err := a.Runs.Record(context.Background(), sid, runID)
+	record, err := a.RunRecord(context.Background(), sid, runID)
 	if err != nil {
 		return store.Snapshot{}, err
 	}

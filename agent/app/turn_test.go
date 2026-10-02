@@ -10,7 +10,6 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/component/localagent"
 	"github.com/felinics/twilight/agent/executor/local"
-	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/conversation"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -39,7 +38,7 @@ func setup(t *testing.T, model local.ModelInvoker, tool *gateTool, opts app.Sess
 		t.Fatal(err)
 	}
 	opts.Preset = pref
-	next := 2
+	next := 1
 	if opts.NewTurnID == nil {
 		opts.NewTurnID = func() turn.TurnID { id := turn.TurnID("t" + string(rune('0'+next))); next++; return id }
 	}
@@ -57,21 +56,20 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	h, pref, sid, s := setup(t, model, tool, app.SessionOptions{})
+	h, _, sid, s := setup(t, model, tool, app.SessionOptions{})
 
-	first, err := h.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("what is the weather?"))
+	ref1, err := s.SubmitInput(ctx, "in-1", "what is the weather?")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan turn.TurnResult, 1)
 	go func() {
-		resp, err := h.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref})
+		// SubmitInput committed the route and advances in the background;
+		// Settle waits for the Turn to end, then its status is read.
+		var resp turn.TurnResult
+		_, err := s.Settle(ctx, ref1.TurnID)
 		if err == nil {
-			// The Coordinator only commits; the host drives (DRV-1).
-			if _, err = s.Settle(ctx, ref1.TurnID); err == nil {
-				resp, err = h.Turns.Status(ctx, ref1)
-			}
+			resp, err = h.TurnStatus(ctx, ref1)
 		}
 		if err != nil {
 			t.Error(err)
@@ -143,21 +141,21 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	h, pref, sid, s := setup(t, model, tool, app.SessionOptions{})
-	first, _ := h.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("hello"))
-	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
+	h, _, sid, s := setup(t, model, tool, app.SessionOptions{})
+	ref1, err := s.SubmitInput(ctx, "in-1", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := h.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref}); err == nil {
-			_, _ = s.Settle(ctx, ref1.TurnID)
-		}
+		_, _ = s.Settle(ctx, ref1.TurnID)
 	}()
 	<-tool.started
 
-	resp, err := h.Turns.Stop(ctx, s.Handle().Writer(), turn.StopRequest{Ref: ref1, Reason: "user"})
-	if err != nil {
-		t.Fatal(err)
+	resp, ok, err := s.Stop(ctx, "user")
+	if err != nil || !ok {
+		t.Fatalf("stop = %+v ok=%v err=%v", resp, ok, err)
 	}
 	if resp.Status != turn.TurnStopped || resp.Disposition != turn.ResumeFinished || resp.End == nil {
 		t.Fatalf("stop response = %+v", resp)
@@ -169,7 +167,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	<-done
 
 	// The abandoned worker's settlement was rejected; the Run is terminal.
-	record, err := h.Runs.Record(ctx, sid, resp.RunID)
+	record, err := h.RunRecord(ctx, sid, resp.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,16 +218,16 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	const sid session.SessionID = "s-stop-mixed"
-	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref, NewTurnID: func() turn.TurnID { return "t2" }})
+	next := 1
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref, NewTurnID: func() turn.TurnID { id := turn.TurnID("t" + string(rune('0'+next))); next++; return id }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := h.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("hello"))
+	ref, err := s.SubmitInput(ctx, "in-1", "hello")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	started, err := h.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: pref})
+	started, err := h.TurnStatus(ctx, ref)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,10 +246,10 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if calls[0].Status != run.ToolExecuting || calls[1].Status != run.ToolPending || calls[2].Status != run.ToolWaiting {
 		t.Fatalf("calls before stop = %+v", calls)
 	}
-	if _, err := h.Turns.Stop(ctx, s.Handle().Writer(), turn.StopRequest{Ref: ref}); err != nil {
-		t.Fatal(err)
+	if _, ok, err := s.Stop(ctx, ""); err != nil || !ok {
+		t.Fatalf("stop: ok=%v err=%v", ok, err)
 	}
-	record, err := h.Runs.Record(ctx, sid, started.RunID)
+	record, err := h.RunRecord(ctx, sid, started.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}

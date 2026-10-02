@@ -324,7 +324,7 @@ func TestForkPoliciesRestoreCloneAllocateNone(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, in := range chat.SubmittedInputs() {
-			if err := w.h.Chatlog.Withdraw(ctx, s.Handle().Writer(), run.InputID(in.ID), "fork"); err != nil {
+			if err := s.Withdraw(ctx, run.InputID(in.ID), "fork"); err != nil {
 				t.Fatal(err)
 			}
 		}

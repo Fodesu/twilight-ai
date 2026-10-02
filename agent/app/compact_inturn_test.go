@@ -8,7 +8,6 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/executor/local"
-	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -97,7 +96,7 @@ func TestCompactionRunsBetweenStepsOfATurn(t *testing.T) {
 			t.Fatalf("request %d messages = %v, want summary then a closed tool pair", i+2, texts)
 		}
 	}
-	surface, err := chatlog.ReadSurface(ctx, h.Projections, "s-steps")
+	surface, err := h.ChatlogSurface(ctx, "s-steps")
 	if err != nil {
 		t.Fatal(err)
 	}

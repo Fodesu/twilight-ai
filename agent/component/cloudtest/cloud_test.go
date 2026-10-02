@@ -345,7 +345,7 @@ func (c *cluster) modelEffectKey(comp *ownerservice.Component, sid session.Sessi
 		if view.RunID == "" {
 			return false
 		}
-		rec, err := comp.App.Runs.Record(c.ctx, sid, view.RunID)
+		rec, err := comp.App.RunRecord(c.ctx, sid, view.RunID)
 		if err != nil {
 			return false
 		}

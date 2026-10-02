@@ -3,7 +3,6 @@ package app_test
 import (
 	"context"
 	"github.com/felinics/twilight/agent/app"
-	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
@@ -56,15 +55,20 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cache := newCountingCache()
 			h := newHost(t, app.Config{Sessions: app.SessionPorts{Cache: cache, CacheEvery: tc.every}}, nil)
+			var s *app.Session
+			pref, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
+			if err != nil {
+				t.Fatal(err)
+			}
 			const sid session.SessionID = "s-interval"
 			if err := h.EnsureSession(ctx, sid); err != nil {
 				t.Fatal(err)
 			}
-			owned, err := h.Acquire(ctx, sid)
+			s, err = h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.Chatlog.Submit(ctx, owned.Handle.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+			if _, err := s.Queue(ctx, "in-1", "hello"); err != nil {
 				t.Fatal(err)
 			}
 			if got := cache.count() > 0; got != tc.wantBefore {
@@ -90,15 +94,20 @@ func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	ctx := context.Background()
 	cache := newCountingCache()
 	h := newHost(t, app.Config{Sessions: app.SessionPorts{Cache: cache, CacheEvery: 1}}, nil)
+	var s *app.Session
+	pref, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
 	const sid session.SessionID = "s-machine"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
-	owned, err := h.Acquire(ctx, sid)
+	s, err = h.OpenSession(ctx, sid, app.SessionOptions{Preset: pref})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Chatlog.Submit(ctx, owned.Handle.Writer(), "in-1", agentinput.Text("hello")); err != nil {
+	if _, err := s.Queue(ctx, "in-1", "hello"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Close(ctx); err != nil {

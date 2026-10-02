@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor/local"
-	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
@@ -88,7 +87,7 @@ func Example_jsonlPrototype() {
 	fmt.Printf("steer: in-2 %s to turn-1 while its tool call executes\n", steered.Status)
 
 	// Queue: in-3 is only submitted; nothing delivers it into the running Turn.
-	if _, err := p1.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", agentinput.Text("book a table")); err != nil {
+	if _, err := s1.Queue(ctx, "in-3", "book a table"); err != nil {
 		panic(err)
 	}
 	chat, _ = p1.ChatlogSurface(ctx, sid)
@@ -133,7 +132,7 @@ func Example_jsonlPrototype() {
 	if _, err := owned.Drive(ctx, "turn-2"); err != nil {
 		panic(err)
 	}
-	resp2, err := p2.Turns.Status(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
+	resp2, err := p2.TurnStatus(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
 	if err != nil {
 		panic(err)
 	}

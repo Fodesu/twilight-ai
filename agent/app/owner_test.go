@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -163,7 +164,10 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fz := h.Frozen
+	fz, err := sessionstore.FrozenValues(content, cfg.Sessions.Artifacts.Bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
 	presetRef, err := h.RegisterPreset("remote", mustPreset("m-remote", nil, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)

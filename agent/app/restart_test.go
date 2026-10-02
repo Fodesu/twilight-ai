@@ -463,7 +463,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 
 func mustRecord(t *testing.T, h *localagent.Agent, sid session.SessionID, runID run.RunID) sessionstore.Record {
 	t.Helper()
-	rec, err := h.Runs.Record(context.Background(), sid, runID)
+	rec, err := h.RunRecord(context.Background(), sid, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
