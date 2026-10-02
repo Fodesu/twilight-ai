@@ -6,7 +6,6 @@ import (
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -72,6 +71,17 @@ func TestFactCodecHistoryDecodesEveryVersion(t *testing.T) {
 	}
 }
 
+// The production module has no history yet: every fact type is at version 1
+// with one codec. A fact whose wire shape changes must add its previous
+// codec to olderFactCodecs rather than edit the current one in place.
+func TestEveryFactIsAtVersionOne(t *testing.T) {
+	for _, def := range Module.Events {
+		if def.Version != 1 || len(def.Codecs) != 1 || def.Codecs[1] == nil {
+			t.Fatalf("%s: version %d with %d codecs, want version 1 with one codec", def.Type, def.Version, len(def.Codecs))
+		}
+	}
+}
+
 // A history with a gap is caught when the module is built.
 func TestFactCodecHistoryMustBeContiguous(t *testing.T) {
 	defer func() {
@@ -80,35 +90,4 @@ func TestFactCodecHistoryMustBeContiguous(t *testing.T) {
 		}
 	}()
 	factCodecs("model_step_withdrawn", map[module.PayloadVersion]module.PayloadCodec{2: withdrawnV1{}})
-}
-
-// Every fact type is at version 1 with one codec, except model_step_prepared,
-// whose shape gained the step policy: it writes version 2 and keeps the
-// codec of version 1, which reads the policy-less shape as the zero policy.
-// A fact whose wire shape changes adds its previous codec to
-// olderFactCodecs rather than editing the current one in place.
-func TestFactVersionHistory(t *testing.T) {
-	prepared := Type("model_step_prepared")
-	for _, def := range Module.Events {
-		want := module.PayloadVersion(1)
-		if def.Type == prepared {
-			want = 2
-		}
-		if def.Version != want || len(def.Codecs) != int(want) || def.Codecs[want] == nil {
-			t.Fatalf("%s: version %d with %d codecs, want version %d with as many codecs", def.Type, def.Version, len(def.Codecs), want)
-		}
-	}
-	reg, err := module.BuildRegistry(Module)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := Event{RunID: "r1", Fact: run.ModelStepPrepared{StepID: "s1", Model: "m", RequestDigest: "sha256:req"}}
-	d, err := reg.Decode(ledger.Event{Type: prepared, Payload: jsonstable.MustParse(`{"model":"m","requestDigest":"sha256:req","runId":"r1","stepId":"s1","v":1}`)})
-	if err != nil || d.Unknown || d.Version != 1 || !reflect.DeepEqual(d.Value, want) {
-		t.Fatalf("decode of the version 1 shape = %+v %v, want %+v at version 1", d, err, want)
-	}
-	wire, err := reg.Encode(prepared, want)
-	if err != nil || !strings.Contains(wire.String(), `"v":2`) {
-		t.Fatalf("encode = %s %v, want the current version 2", wire, err)
-	}
 }
