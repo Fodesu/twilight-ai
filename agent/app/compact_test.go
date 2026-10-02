@@ -217,7 +217,6 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	cfg := durablePorts(t, app.Config{Sessions: app.SessionPorts{Store: store, Content: content,
 		Ownership: session.OpenOptions{Takeover: true}}})
 	cfg.Port = worker
-	cfg.Executions = records
 	h, err := localagent.Compose(cfg)
 	if err != nil {
 		t.Fatal(err)

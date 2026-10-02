@@ -24,7 +24,8 @@ import (
 // Config composes the local agent: the product assembly (Sessions, Execution
 // policies, presets, inbox, activation, workspaces) plus this deployment's
 // choices -- the effect implementation, the Worker over it and the sandbox
-// backend.
+// backend. The effect port the application drives is this package's
+// decision: Config.Execution.Executor must be left empty.
 type Config struct {
 	app.Config
 
@@ -40,9 +41,10 @@ type Config struct {
 
 	// Executions is the execution record store of the Worker (RUN-EXE-8):
 	// required whenever a Worker is composed (always with a LocalExecutor;
-	// with a Port when the Sandbox adds a route). Like every store it is
-	// durable (OWN-PRT-3); a record that did not survive a restart would
-	// let the Owner dispose an execution that is still running.
+	// with a Port when the Sandbox adds a route) and refused otherwise, so
+	// a store nothing reads is not mistaken for one in use. Like every store
+	// it is durable (OWN-PRT-3); a record that did not survive a restart
+	// would let the Owner dispose an execution that is still running.
 	Executions executionstore.Store
 	// Worker tunes the composed Worker (lease, id, reconcile loop, clock).
 	Worker executor.WorkerOptions
@@ -71,64 +73,84 @@ func (c *SandboxConfig) tools() []tools.Tool {
 }
 
 // Agent is the composed local agent: the application plus the deployment
-// components around it.
+// components around it. Close releases all of them; the application's own
+// Close is not enough, since the Worker and the sandbox backend outlive it
+// by design (RUN-EXE-8).
 type Agent struct {
 	*app.Application
-	// Worker owns the execution records of the effects dispatched here.
+	// Worker owns the execution records of the effects dispatched here; nil
+	// when the Port is driven directly.
 	Worker *executor.Worker
 	// sandbox is the composed workspace backend, if any.
 	sandbox *sandbox.Backend
 }
 
 // Compose builds the local agent: the sandbox backend and the Worker when
-// they apply, then the application over the decided effect port.
+// they apply, then the application over the decided effect port. c is read,
+// never written: a Config composed twice yields two independent agents.
 func Compose(c Config) (*Agent, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
-	// One progress hub serves the Worker and every backend it routes to
-	// (RUN-EXE-12).
-	if c.Worker.Progress == nil {
-		c.Worker.Progress = executor.NewProgressHub(0)
+	if c.Execution.Executor.Execution != nil {
+		return nil, errors.New("localagent: Config.Execution.Executor is composed here; set Port instead")
 	}
-	var routes []executor.Route
+	// One progress hub serves the Worker and every backend it routes to
+	// (RUN-EXE-12); a Port driven directly relays its own.
+	progress := c.Worker.Progress
+	if progress == nil {
+		progress = executor.NewProgressHub(0)
+	}
 	ag := &Agent{}
+	var routes []executor.Route
 	if c.Sandbox != nil {
 		if c.Workspaces == nil || c.Workspaces.Store == nil {
 			return nil, errors.New("localagent: Sandbox requires Config.Workspaces with a Store")
 		}
 		backend, err := sandbox.New(sandbox.Options{Workspaces: c.Workspaces.Store, Provider: c.Sandbox.Provider,
-			Backend: c.Sandbox.Backend, Tools: c.Sandbox.tools(), Progress: c.Worker.Progress})
+			Backend: c.Sandbox.Backend, Tools: c.Sandbox.tools(), Progress: progress})
 		if err != nil {
 			return nil, err
 		}
 		ag.sandbox = backend
 		routes = append(routes, sandbox.Route(backend))
 		if c.Workspaces.Snapshots == nil {
-			c.Workspaces.Snapshots = backend
+			// The caller's WorkspaceConfig is theirs: the backend joins a
+			// copy the application reads.
+			workspaces := *c.Workspaces
+			workspaces.Snapshots = backend
+			c.Workspaces = &workspaces
 		}
 	}
-	port := c.Port
-	if port == nil {
+	switch {
+	case c.Port == nil:
 		catalog, err := local.NewCatalog(c.Models, c.Tools...)
 		if err != nil {
 			ag.closeBackends()
 			return nil, err
 		}
-		backend, err := local.NewLocalExecutor(catalog, catalog, c.Worker.Progress, true)
+		backend, err := local.NewLocalExecutor(catalog, catalog, progress, true)
 		if err != nil {
 			ag.closeBackends()
 			return nil, err
 		}
 		routes = append(routes, local.Route(backend))
-	} else if len(routes) == 0 {
-		c.Execution.Executor = effect.PortsOf(port)
+	case len(routes) > 0:
+		// The Port answers what no other route claims.
+		routes = append(routes, executor.Default("port", executor.PortBackend(c.Port)))
 	}
-	if c.Execution.Executor.Execution == nil {
-		// A Worker owns the execution records (RUN-EXE-8): the local
-		// executor always, a Port with routes beside it.
+	if len(routes) == 0 {
+		// A Port alone is driven directly; nothing here owns records.
+		if c.Executions != nil {
+			return nil, errors.New("localagent: Config.Executions is set but no Worker is composed: a Port without a Sandbox is driven directly")
+		}
+		c.Execution.Executor = effect.PortsOf(c.Port)
+	} else {
+		// A Worker owns the execution records (RUN-EXE-8).
 		if c.Executions == nil {
 			ag.closeBackends()
 			return nil, errors.New("localagent: an execution record store (Config.Executions) is required when a Worker is composed")
 		}
-		w, err := executor.NewWorker(context.Background(), c.Executions, routes, c.Worker)
+		options := c.Worker
+		options.Progress = progress
+		w, err := executor.NewWorker(context.Background(), c.Executions, routes, options)
 		if err != nil {
 			ag.closeBackends()
 			return nil, err

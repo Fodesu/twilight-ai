@@ -80,10 +80,9 @@ type Config struct {
 type WorkspaceConfig struct {
 	// Store holds the Workspace records and RuntimeBindings (required).
 	Store workspace.Store
-	// Snapshots takes the Snapshots (APP-WSP-7): the composition root that
-	// runs the sandbox backend composes it and leaves this nil; a process
-	// without the backend (the cloud owner) hands in the tool backend's
-	// client (agent/workspace/http.Client).
+	// Snapshots takes the Snapshots (APP-WSP-7). It is composed by whoever
+	// runs the sandbox backend or reaches one remotely; nil disables
+	// snapshots, which SnapshotAfterTurn refuses.
 	Snapshots workspace.Snapshotter
 	// SnapshotAfterTurn takes a Snapshot of a Session's bound Workspace
 	// after every quiescent settlement and records it on the
@@ -194,9 +193,8 @@ func (app *Application) untrack(s *Session) {
 }
 
 // New assembles the application from its product dependencies. The effect
-// port -- the deployment decision -- arrives in c.Execution.Executor; the
-// root that composed it (a local agent component, a cloud owner service)
-// closes it and whatever it stands on after this Application.
+// port -- the deployment decision -- arrives in c.Execution.Executor; its
+// composer closes it, and whatever it stands on, after this Application.
 func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
 	if c.Execution.Executor.Execution == nil {
 		return nil, errors.New("app: an effect port is required (Config.Execution.Executor); composing it is the deployment root's act")
