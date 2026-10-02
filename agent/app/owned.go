@@ -25,13 +25,13 @@ type Owned struct {
 // the waits a previous owner left are answered in the background and
 // reported through the engine's notice. Close releases it.
 func (app *Application) Acquire(ctx context.Context, sid session.SessionID) (*Owned, error) {
-	h, err := app.Owner.Open(ctx, sid)
+	h, err := app.owner.Open(ctx, sid)
 	if err != nil {
 		return nil, err
 	}
-	n, err := app.Execution.Takeover(ctx, h.Writer())
+	n, err := app.engine.Takeover(ctx, h.Writer())
 	if err != nil {
-		app.Execution.Detach(sid)
+		app.engine.Detach(sid)
 		_ = h.Close(context.WithoutCancel(ctx))
 		return nil, err
 	}
@@ -42,7 +42,7 @@ func (app *Application) Acquire(ctx context.Context, sid session.SessionID) (*Ow
 // open. It runs after the Session is reachable by the notice its answers
 // send.
 func (o *Owned) resumeWaiting(ctx context.Context) {
-	o.app.Execution.ResumeWaiting(ctx, o.Handle.Writer())
+	o.app.engine.ResumeWaiting(ctx, o.Handle.Writer())
 }
 
 // Drive steps the Turn on until it ends or waits on something this process
@@ -65,11 +65,11 @@ func (o *Owned) Drive(ctx context.Context, turnID turn.TurnID) (turn.TurnResult,
 		}
 		var step execution.DriveResult
 		if view.Status == turn.TurnActive {
-			if step, err = o.app.Execution.Drive(ctx, o.Handle.Writer(), view.RunID, view.Preset); err != nil {
+			if step, err = o.app.engine.Drive(ctx, o.Handle.Writer(), view.RunID, view.Preset); err != nil {
 				return turn.TurnResult{}, err
 			}
 		}
-		res, err := o.app.Turns.Status(ctx, ref)
+		res, err := o.app.svc.Turns.Status(ctx, ref)
 		if err != nil {
 			return turn.TurnResult{}, err
 		}
@@ -85,6 +85,6 @@ func (o *Owned) Drive(ctx context.Context, turnID turn.TurnID) (turn.TurnResult,
 // Close ends the engine's listeners for the Session and releases the
 // ownership.
 func (o *Owned) Close(ctx context.Context) error {
-	o.app.Execution.Detach(o.Handle.ID())
+	o.app.engine.Detach(o.Handle.ID())
 	return o.Handle.Close(ctx)
 }

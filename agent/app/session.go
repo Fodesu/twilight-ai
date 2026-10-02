@@ -129,10 +129,10 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
 		return nil, errors.New("app: open session requires a preset ref")
 	}
-	if _, err := app.Presets.Resolve(opts.Preset); err != nil {
+	if _, err := app.presets.Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
-	if err := app.Lifecycle.Ensure(ctx, sid); err != nil {
+	if err := app.svc.Lifecycle.Ensure(ctx, sid); err != nil {
 		return nil, err
 	}
 	return app.openOwned(ctx, sid, opts)
@@ -150,7 +150,7 @@ func (app *Application) openOwned(ctx context.Context, sid session.SessionID, op
 	h := owned.Handle
 	s := &Session{Recovered: owned.Recovered, app: app, h: h, sid: sid, opts: opts}
 	s.ctrl, err = conversation.New(conversation.Config{
-		Writer: h.Writer(), Engine: app.Execution, Turns: app.Turns, Chatlog: app.Chatlog, Projections: app.Projections,
+		Writer: h.Writer(), Engine: app.engine, Turns: app.svc.Turns, Chatlog: app.svc.Chatlog, Projections: app.svc.Projections,
 		Preset: opts.Preset, NewTurnID: opts.NewTurnID,
 		RouteRetries: opts.RouteRetries, TurnBudget: opts.TurnBudget,
 	})
@@ -185,9 +185,6 @@ func (app *Application) openOwned(ctx context.Context, sid session.SessionID, op
 // ID is the Session's identity.
 func (s *Session) ID() session.SessionID { return s.sid }
 
-// Handle is the ownership capability the conversation runs under.
-func (s *Session) Handle() *owner.Handle { return s.h }
-
 func (s *Session) ref(turnID turn.TurnID) turn.TurnRef {
 	return turn.TurnRef{SessionID: s.sid, TurnID: turnID}
 }
@@ -202,7 +199,7 @@ func (s *Session) Wait(ctx context.Context) error {
 		if err := s.host.wait(ctx); err != nil {
 			return err
 		}
-		surface, err := turn.ReadSurface(ctx, s.app.Projections, s.sid)
+		surface, err := turn.ReadSurface(ctx, s.app.svc.Projections, s.sid)
 		if err != nil {
 			return err
 		}
@@ -222,7 +219,7 @@ func (s *Session) Wait(ctx context.Context) error {
 
 // Status reports the active Turn and the Turns awaiting Retry or Settle.
 func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
-	surface, err := turn.ReadSurface(ctx, s.app.Projections, s.sid)
+	surface, err := turn.ReadSurface(ctx, s.app.svc.Projections, s.sid)
 	if err != nil {
 		return SessionStatus{}, err
 	}
@@ -254,7 +251,7 @@ func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 		return nil, err
 	}
 	if sub.Absorbed {
-		res, _ := s.app.Turns.Status(ctx, sub.Ref)
+		res, _ := s.app.svc.Turns.Status(ctx, sub.Ref)
 		standing := conversation.Carried
 		if res.Status != "" && res.Status != turn.TurnActive {
 			standing = conversation.Ended
@@ -340,6 +337,13 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 	return s.SubmitInput(ctx, chatlog.NewInputID(), text)
 }
 
+// Queue submits text under the caller's InputID without routing it: the
+// input stays submitted until the next Turn starts from the submitted
+// inputs, at the quiescent settlement of the running Turn or on Resume.
+func (s *Session) Queue(ctx context.Context, id run.InputID, text string) (run.AgentInput, error) {
+	return s.app.svc.Chatlog.Submit(ctx, s.h.Writer(), id, input.Text(text))
+}
+
 // SubmitInput submits text under the caller's InputID, commits its route
 // and returns the Turn it landed in without waiting. The InputID is the
 // idempotency key: a retried submission replays. The Turn is advanced to
@@ -365,6 +369,11 @@ func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) 
 		}
 	})
 	return sub.Ref, nil
+}
+
+// Withdraw withdraws a submitted, undelivered input with the given reason.
+func (s *Session) Withdraw(ctx context.Context, id run.InputID, reason string) error {
+	return s.app.svc.Chatlog.Withdraw(ctx, s.h.Writer(), id, reason)
 }
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
@@ -603,17 +612,17 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, erro
 	if withinWindow {
 		return "", false, nil
 	}
-	materialized, err := chatlog.NewMaterializer(s.app.Content).Entries(ctx, cctx.Entries)
+	materialized, err := chatlog.NewMaterializer(s.app.svc.Content).Entries(ctx, cctx.Entries)
 	if err != nil {
 		return "", false, err
 	}
 	summary, err := compaction.Summarizer{
-		ResolvePreset: s.app.Presets.Resolve, Content: s.app.Frozen, Effects: s.app.Execution,
+		ResolvePreset: s.app.presets.Resolve, Content: s.app.svc.Frozen, Effects: s.app.engine,
 	}.Summarize(ctx, s.sid, s.opts.Preset, materialized)
 	if err != nil {
 		return "", false, err
 	}
-	id, err := s.app.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, turn.RequireQuiescentRun)
+	id, err := s.app.svc.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, turn.RequireQuiescentRun)
 	if err != nil {
 		return "", false, err
 	}
@@ -647,6 +656,6 @@ func (s *Session) maybeCompact(ctx context.Context) {
 func (s *Session) Close(ctx context.Context) error {
 	s.app.untrack(s)
 	s.host.close()
-	s.app.Execution.Detach(s.sid)
+	s.app.engine.Detach(s.sid)
 	return s.h.Close(ctx)
 }

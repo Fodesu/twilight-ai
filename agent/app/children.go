@@ -26,7 +26,7 @@ func (c children) Open(ctx context.Context, sid session.SessionID, pref preset.P
 }
 
 func (c children) Create(ctx context.Context, sid session.SessionID, ext module.Extensions) error {
-	return c.app.Lifecycle.Create(ctx, sid, ext)
+	return c.app.svc.Lifecycle.Create(ctx, sid, ext)
 }
 
 // ForkBeforeInputs forks parent at the last commit before turnID and its
@@ -42,7 +42,7 @@ func (c children) ForkBeforeInputs(ctx context.Context, parent session.SessionID
 }
 
 func (c children) Header(ctx context.Context, sid session.SessionID) (session.SegmentHeader, error) {
-	return c.app.Store.Header(ctx, sid)
+	return c.app.svc.Store.Header(ctx, sid)
 }
 
 func (c children) TurnSurface(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error) {
@@ -52,7 +52,7 @@ func (c children) TurnSurface(ctx context.Context, sid session.SessionID) (turn.
 // AwaitingRecovery reads the Turn's disposition: a Run Executing with no
 // Session of this host carrying it waits for the takeover disposition.
 func (c children) AwaitingRecovery(ctx context.Context, ref turn.TurnRef) (bool, error) {
-	res, err := c.app.Turns.Status(ctx, ref)
+	res, err := c.app.svc.Turns.Status(ctx, ref)
 	if err != nil {
 		return false, err
 	}

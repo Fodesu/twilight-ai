@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/turn"
 )
@@ -27,7 +28,7 @@ func (app *Application) Fork(ctx context.Context, req ForkRequest) (session.Segm
 	if err := app.history.RequireNoActiveTurnAt(ctx, req.Parent, req.At); err != nil {
 		return session.SegmentHeader{}, err
 	}
-	return app.Lifecycle.Fork(ctx, req)
+	return app.svc.Lifecycle.Fork(ctx, req)
 }
 
 // ForkBeforeTurn forks a session at the commit before the named turn started
@@ -59,44 +60,62 @@ func (app *Application) DeleteSession(ctx context.Context, sid session.SessionID
 	if err := owned.Close(ctx); err != nil {
 		return err
 	}
-	return app.Lifecycle.Delete(ctx, sid)
+	return app.svc.Lifecycle.Delete(ctx, sid)
 }
 
 // Collect reclaims segments no live path still names, and truncates the rest to the greatest remaining span (SES-GC-2).
 func (app *Application) Collect(ctx context.Context) (session.CollectReport, error) {
-	return app.Lifecycle.Collect(ctx)
+	return app.svc.Lifecycle.Collect(ctx)
 }
 
 // ChatlogSurface reads the chatlog surface of a Session.
 func (app *Application) ChatlogSurface(ctx context.Context, sid session.SessionID) (chatlog.Surface, error) {
-	return chatlog.ReadSurface(ctx, app.Projections, sid)
+	return chatlog.ReadSurface(ctx, app.svc.Projections, sid)
 }
 
 // TurnSurface reads the turn surface of a Session.
 func (app *Application) TurnSurface(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error) {
-	return turn.ReadSurface(ctx, app.Projections, sid)
+	return turn.ReadSurface(ctx, app.svc.Projections, sid)
+}
+
+// TurnStatus reads one Turn's status and where its Run stands; it needs no
+// ownership.
+func (app *Application) TurnStatus(ctx context.Context, ref turn.TurnRef) (turn.TurnResult, error) {
+	return app.svc.Turns.Status(ctx, ref)
+}
+
+// RunRecord is one verified read of a Run by SessionID: every fact of the
+// Run in stream order, folded and compared with the projection. It needs
+// no ownership.
+func (app *Application) RunRecord(ctx context.Context, sid session.SessionID, runID run.RunID) (sessionstore.Record, error) {
+	return app.svc.Runs.Record(ctx, sid, runID)
 }
 
 // Projection reads any registered projection of a Session (APP-MEM-1).
 func (app *Application) Projection(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
-	return app.Projections.Load(ctx, sid, id, v)
+	return app.svc.Projections.Load(ctx, sid, id, v)
 }
 
 // CreateSession creates the Session.
 func (app *Application) CreateSession(ctx context.Context, sid session.SessionID) error {
-	return app.Lifecycle.Create(ctx, sid, nil)
+	return app.svc.Lifecycle.Create(ctx, sid, nil)
 }
 
 // EnsureSession creates the stream when it does not exist yet.
 func (app *Application) EnsureSession(ctx context.Context, sid session.SessionID) error {
-	return app.Lifecycle.Ensure(ctx, sid)
+	return app.svc.Lifecycle.Ensure(ctx, sid)
 }
 
 // Reply is the settled Turn's last assistant text (CHT-MAT-1): the
 // conversation's reply, empty when the Turn produced none. That a reply is
 // the last assistant text is this agent's convention, not a kernel fact.
 func (app *Application) Reply(ctx context.Context, ref turn.TurnRef) (string, error) {
-	return chatlog.LastAssistantText(ctx, app.Projections, app.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
+	return chatlog.LastAssistantText(ctx, app.svc.Projections, app.svc.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
+}
+
+// Materialize resolves the frozen body a chatlog entry names.
+func (app *Application) Materialize(ctx context.Context, entry *chatlog.Entry) (chatlog.Materialized, error) {
+	return chatlog.NewMaterializer(app.svc.Content).Entry(ctx, entry)
 }
 
 // --- workspaces ---------------------------------------------------------------------
@@ -124,7 +143,7 @@ func (app *Application) Workspace(ctx context.Context, sid session.SessionID) (w
 	if app.workspaces == nil {
 		return workspace.Binding{}, ErrNoWorkspaces
 	}
-	return workspace.Read(ctx, app.Projections, sid)
+	return workspace.Read(ctx, app.svc.Projections, sid)
 }
 
 // --- presets ------------------------------------------------------------------------

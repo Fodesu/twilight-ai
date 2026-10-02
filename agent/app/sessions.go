@@ -71,9 +71,9 @@ func NewRegistry(extensions []module.ModuleDescriptor) (*module.Registry, error)
 		[]module.ModuleDescriptor{chatlog.Module, sessionstore.Module, turn.Module}, extensions)
 }
 
-// SessionServices are the Session-side services composed over one Store:
+// sessionServices are the Session-side services composed over one Store:
 // what every command commits through and every read folds through.
-type SessionServices struct {
+type sessionServices struct {
 	Store    session.Stores
 	Writers  writer.Writers
 	Registry *module.Registry
@@ -153,7 +153,7 @@ func (app *Application) composeSessions(p SessionPorts) error { //nolint:gocriti
 	// Session takes no ownership. The Writer keeps its own transactional
 	// projections for the commit critical section.
 	projections := session.NewProjectionReader(store, registry, cache)
-	app.SessionServices = SessionServices{
+	app.svc = sessionServices{
 		Store: store, Writers: writers, Registry: registry, Runs: runs,
 		Turns:       &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
 		Bus:         bus,
@@ -171,8 +171,8 @@ func (app *Application) composeSessions(p SessionPorts) error { //nolint:gocriti
 // closeSessions ends the Writers: the lease-free readers of other processes
 // keep working; the execution side closes before this.
 func (app *Application) closeSessions(ctx context.Context) error {
-	if app.Writers == nil {
+	if app.svc.Writers == nil {
 		return nil
 	}
-	return writer.CloseWriters(ctx, app.Writers)
+	return writer.CloseWriters(ctx, app.svc.Writers)
 }

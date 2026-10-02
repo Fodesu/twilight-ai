@@ -101,23 +101,25 @@ const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 // Worker and the other deployment components around the effect port close
 // at the composition root, after this.
 type Application struct {
-	// SessionServices are the Session-side services this application
-	// composed over one Store; every command commits through their Writers
-	// and every read folds through their Projections.
-	SessionServices
+	// svc are the Session-side services this application composed over one
+	// Store; every command commits through their Writers and every read
+	// folds through their Projections. They stay inside: what the
+	// application admits is what its methods admit, with the guards those
+	// methods apply.
+	svc sessionServices
 	// history answers the Turn-level questions a fork asks of a Session's
 	// committed stream: the fork points and the quiescence precondition.
 	history turn.History
 
-	// Owner holds the Sessions this process owns; Execution is what advances
+	// owner holds the Sessions this process owns; engine is what advances
 	// them.
-	Owner     *owner.Owner
-	Execution execution.Engine
-	// Presets is the registry of decision identities Runs are driven under;
-	// Progress is the transient stream of running effects and background
-	// failures. The Engine publishes to both; the application owns them.
-	Presets  preset.Registry
-	Progress *observe.Progresses
+	owner  *owner.Owner
+	engine execution.Engine
+	// presets is the registry of decision identities Runs are driven under;
+	// progress is the transient stream of running effects and background
+	// failures. The engine publishes to both; the application owns them.
+	presets  preset.Registry
+	progress *observe.Progresses
 	spawn    *spawn.Responder
 	// warn receives failures of background work.
 	warn       func(error)
@@ -175,7 +177,7 @@ func (app *Application) Opened(sid session.SessionID) (*Session, bool) {
 // Lease is the Session's current writer lease, read without ownership
 // (SES-OWN-5): what a gateway routes by and a controller judges expiry by.
 func (app *Application) Lease(ctx context.Context, sid session.SessionID) (session.Lease, bool, error) {
-	return app.Store.LeaseOf(ctx, sid)
+	return app.svc.Store.LeaseOf(ctx, sid)
 }
 
 func (app *Application) track(s *Session) {
@@ -272,21 +274,21 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 	if c.Execution.Progress == nil {
 		c.Execution.Progress = observe.NewProgresses()
 	}
-	app.Presets, app.Progress = c.Execution.Presets, c.Execution.Progress
+	app.presets, app.progress = c.Execution.Presets, c.Execution.Progress
 	c.Execution.Planner = app
 	c.Execution.Responders = responders
 	c.Execution.Fail = app.fail
 	c.Execution.Notify = app.wakeAdvance
 	exec, err := execution.New(c.Execution, execution.Sources{
-		Runs: app.Runs, Projections: app.Projections, Content: app.Content,
+		Runs: app.svc.Runs, Projections: app.svc.Projections, Content: app.svc.Content,
 	})
 	if err != nil {
 		return nil, err
 	}
-	app.Execution = exec
-	app.Owner = owner.New(app.Writers)
+	app.engine = exec
+	app.owner = owner.New(app.svc.Writers)
 	if resolver != nil {
-		resolver.Projections = app.Projections
+		resolver.Projections = app.svc.Projections
 	}
 	if app.spawn != nil {
 		app.spawn.Bind(children{app})
@@ -314,8 +316,8 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 // whatever the root composed around it are the root's to release.
 func (app *Application) rollback() {
 	app.bgCancel()
-	if app.Execution != nil {
-		app.Execution.Close()
+	if app.engine != nil {
+		app.engine.Close()
 	}
 	_ = app.closeSessions(context.Background())
 }
@@ -326,7 +328,7 @@ func (app *Application) rollback() {
 // report through the same callback.
 func (app *Application) fail(sid session.SessionID, err error) {
 	app.warn(err)
-	app.Progress.Failed(sid, err)
+	app.progress.Failed(sid, err)
 }
 
 // wakeAdvance is the Engine's Notify: a settlement it made outside any
@@ -340,7 +342,7 @@ func (app *Application) wakeAdvance(sid session.SessionID) {
 
 // RegisterPreset adds or replaces a decision identity after Build.
 func (app *Application) RegisterPreset(id preset.PresetID, p preset.AgentPreset) (preset.PresetRef, error) {
-	ref, err := app.Presets.Register(id, p)
+	ref, err := app.presets.Register(id, p)
 	if err != nil {
 		return preset.PresetRef{}, err
 	}
@@ -366,7 +368,7 @@ func (app *Application) PresetRef(id preset.PresetID) (preset.PresetRef, error) 
 // transient progress and failures. Committed events keep their commit
 // order; transient items may interleave and may be lost.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
-	return mergeEvents(ctx, app.Bus.Subscribe(ctx, sid), app.Progress.Subscribe(ctx, sid))
+	return mergeEvents(ctx, app.svc.Bus.Subscribe(ctx, sid), app.progress.Subscribe(ctx, sid))
 }
 
 // EventsFrom is the catch-up form of Events: the Session's committed events
@@ -374,11 +376,11 @@ func (app *Application) Events(ctx context.Context, sid session.SessionID) <-cha
 // from now on. A client that keeps the last Position it handled resumes
 // here after a disconnect without a gap.
 func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, from ledger.CommitSeq) (<-chan Event, error) {
-	committed, err := app.Bus.SubscribeFrom(ctx, sid, from)
+	committed, err := app.svc.Bus.SubscribeFrom(ctx, sid, from)
 	if err != nil {
 		return nil, err
 	}
-	return mergeEvents(ctx, committed, app.Progress.Subscribe(ctx, sid)), nil
+	return mergeEvents(ctx, committed, app.progress.Subscribe(ctx, sid)), nil
 }
 
 // mergeEvents forwards both observation streams into one channel until ctx
@@ -447,11 +449,11 @@ func (app *Application) Close(ctx context.Context) error {
 	// Records keep their leases until they expire and the next incarnation
 	// adopts them. The effect port and the deployment components around it
 	// close at the outer root, after this.
-	if oerr := app.Owner.Close(ctx); oerr != nil && err == nil {
+	if oerr := app.owner.Close(ctx); oerr != nil && err == nil {
 		err = oerr
 	}
-	if app.Execution != nil {
-		app.Execution.Close()
+	if app.engine != nil {
+		app.engine.Close()
 	}
 	if cerr := app.closeSessions(ctx); cerr != nil && err == nil {
 		err = cerr
