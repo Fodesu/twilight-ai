@@ -2,9 +2,9 @@
 //
 // A Feature owns one in-process Runtime (a Memory Session with the run module
 // and its SessionRunStore) and, when Run is called, one Loop, stepped the way
-// a host steps it (loop.DriveForTest). Tests name protocol features and
-// speak in Tool/Model/Run/RunError/Approve/Require*. Digest, envelope,
-// revision, and derived effects stay inside the driver.
+// a host steps it: Advance, await each Outcome, Deliver. Tests name protocol
+// features and speak in Tool/Model/Run/RunError/Approve/Require*. Digest,
+// envelope, revision, and derived effects stay inside the driver.
 
 package loop_test
 
@@ -21,6 +21,7 @@ import (
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/effect/watch"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
@@ -32,6 +33,7 @@ import (
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 	"testing"
+	"time"
 )
 
 const (
@@ -107,7 +109,8 @@ type Feature struct {
 	// inject dispatch answers between the Loop and the Worker.
 	wrapPort func(effect.ExecutionPort) effect.ExecutionPort
 	builder  *scriptBuilder
-	loop     *loop.Driven
+	loop     *loop.Loop
+	watcher  *watch.Watcher
 	seq      int
 
 	modelStepID run.StepID
@@ -213,12 +216,31 @@ func (f *Feature) RunError(want error) *Feature {
 	return f
 }
 
+// drive steps the Run the way a host does, on the caller's goroutine:
+// Advance, await each dispatched effect's Outcome through a watch over the
+// Loop's port, Deliver it, and again until the Run finishes, waits, or a
+// step fails. The last result is kept for the assertions.
 func (f *Feature) drive() error {
 	f.t.Helper()
 	f.ensureLoop()
-	res, err := loop.DriveForTest(f.runCtx, f.loop, f.rt, f.runID)
-	f.last = res
-	return err
+	for {
+		res, err := f.loop.Advance(f.runCtx, f.rt, f.builder, f.runID)
+		f.last = res
+		if err != nil || res.Disposition != loop.LoopDispatched {
+			return err
+		}
+		for _, key := range res.Dispatched {
+			out, err := f.watcher.Await(f.runCtx, key)
+			if err != nil {
+				return err
+			}
+			res, err = f.loop.Deliver(f.runCtx, f.rt, out)
+			f.last = res
+			if err != nil || res.Disposition == loop.LoopFinished {
+				return err
+			}
+		}
+	}
 }
 
 // Waiting returns the current ResponseRequest. Tests that submit a
@@ -382,11 +404,14 @@ func (f *Feature) ensureLoop() {
 	if f.wrapPort != nil {
 		port = f.wrapPort(port)
 	}
-	l, err := loop.NewDriven(effect.PortsOf(port), f.builder, loop.Settings{})
+	ports := effect.PortsOf(port)
+	l, err := loop.New(ports, loop.Settings{})
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.loop = l
+	f.watcher = &watch.Watcher{Port: port, Settlements: ports.Settlements, Poll: 5 * time.Millisecond, Reconnect: 5 * time.Millisecond, Probe: -1}
+	f.t.Cleanup(f.watcher.Close)
 }
 
 func (f *Feature) load() store.Snapshot {

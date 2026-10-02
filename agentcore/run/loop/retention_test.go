@@ -96,27 +96,28 @@ func TestLoopReleasesSlots(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
 		name  string
-		drive func(t *testing.T) *Driven
+		drive func(t *testing.T) *Loop
 	}{
-		{"advance", func(t *testing.T) *Driven {
-			l, err := NewDriven(effect.PortsOf(newRecordingExecutor()), staticBuilder{}, Settings{})
+		{"advance", func(t *testing.T) *Loop {
+			builder := staticBuilder{}
+			l, err := New(effect.PortsOf(newRecordingExecutor()), Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			rt, w := loopRuntime(t)
-			if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
+			if _, err := l.Advance(ctx, rt.Bind(w), builder, "run-1"); err != nil {
 				t.Fatal(err)
 			}
 			return l
 		}},
-		{"deliver", func(t *testing.T) *Driven {
+		{"deliver", func(t *testing.T) *Loop {
 			rt, w := loopRuntime(t)
 			exec := newRecordingExecutor()
-			l, err := NewDriven(effect.PortsOf(exec), staticBuilder{}, Settings{})
+			l, err := New(effect.PortsOf(exec), Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := l.Advance(ctx, rt.Bind(w), "run-1"); err != nil {
+			if _, err := l.Advance(ctx, rt.Bind(w), staticBuilder{}, "run-1"); err != nil {
 				t.Fatal(err)
 			}
 			result := mustFreezeResult(t, textResult("done"))
@@ -125,14 +126,14 @@ func TestLoopReleasesSlots(t *testing.T) {
 			}
 			return l
 		}},
-		{"run", func(t *testing.T) *Driven {
+		{"settle", func(t *testing.T) *Loop {
 			invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("done")}}
-			l, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+			l, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, Settings{}, false)
 			if err != nil {
 				t.Fatal(err)
 			}
 			rt, w := loopRuntime(t)
-			res, err := DriveForTest(ctx, l, rt.Bind(w), "run-1")
+			res, err := settle(ctx, l, awaiting(t, l), rt.Bind(w), staticBuilder{}, "run-1")
 			if err != nil || res.Result == nil || res.Result.Status != RunCompleted {
 				t.Fatalf("run = %+v %v", res, err)
 			}

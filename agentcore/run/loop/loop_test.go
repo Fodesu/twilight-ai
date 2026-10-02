@@ -185,13 +185,13 @@ func (b *blockingBuilder) Build(ctx context.Context, hint PromptInput) (decision
 func TestLoopSerializesConcurrentAdvancesOfOneRun(t *testing.T) {
 	rt, w := loopRuntime(t)
 	builder := &blockingBuilder{started: make(chan struct{}), release: make(chan struct{})}
-	loop, err := newLoop(t, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{}, builder, Settings{}, false)
+	loop, err := newLoop(t, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first := make(chan LoopResult, 1)
 	go func() {
-		res, err := loop.Advance(context.Background(), rt.Bind(w), "run-1")
+		res, err := loop.Advance(context.Background(), rt.Bind(w), builder, "run-1")
 		if err != nil {
 			t.Error(err)
 		}
@@ -200,7 +200,7 @@ func TestLoopSerializesConcurrentAdvancesOfOneRun(t *testing.T) {
 	<-builder.started
 	second := make(chan LoopResult, 1)
 	go func() {
-		res, err := loop.Advance(context.Background(), rt.Bind(w), "run-1")
+		res, err := loop.Advance(context.Background(), rt.Bind(w), builder, "run-1")
 		if err != nil {
 			t.Error(err)
 		}
@@ -228,11 +228,13 @@ func (c errCatalog) ResolveModel(ModelRef) (local.ModelInvoker, error) { return 
 func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	rt, w := loopRuntime(t)
 	missing := errors.New("missing provider")
-	broken, err := newLoop(t, errCatalog{missing}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	broken, err := newLoop(t, errCatalog{missing}, fakeToolCatalog{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = DriveForTest(context.Background(), broken, rt.Bind(w), "run-1")
+	// The pre-start check fails inside the first step: no effect is
+	// dispatched, so there is nothing to await or deliver.
+	_, err = broken.Advance(context.Background(), rt.Bind(w), staticBuilder{}, "run-1")
 	if !errors.Is(err, ErrModelUnavailable) || !strings.Contains(err.Error(), missing.Error()) {
 		t.Fatalf("err = %v, want ErrModelUnavailable carrying %q", err, missing)
 	}
@@ -258,11 +260,11 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	}
 
 	invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
-	ready, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	ready, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := DriveForTest(context.Background(), ready, rt.Bind(w), "run-1")
+	res, err := settle(context.Background(), ready, awaiting(t, ready), rt.Bind(w), staticBuilder{}, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,14 +301,15 @@ func TestLoopParallelBounded(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2", "c3"), textResult("done")}}
 	rt, w := loopRuntime(t)
-	loop, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
-		staticBuilder{specs: []ToolSpec{spec}, policy: StepPolicy{Scheduling: ToolScheduling{MaxParallel: 2}}}, Settings{}, false)
+	builder := staticBuilder{specs: []ToolSpec{spec}, policy: StepPolicy{Scheduling: ToolScheduling{MaxParallel: 2}}}
+	loop, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}}, Settings{}, false)
+	watcher := awaiting(t, loop)
 
 	done := make(chan struct{})
 	var res LoopResult
 	var runErr error
 	go func() {
-		res, runErr = DriveForTest(context.Background(), loop, rt.Bind(w), "run-1")
+		res, runErr = settle(context.Background(), loop, watcher, rt.Bind(w), builder, "run-1")
 		close(done)
 	}()
 
@@ -346,7 +349,7 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 			return effect.ToolExecutionSucceeded{Result: ToolExecutionResult{Output: args}}
 		}}
 	loop, err := newLoop(t, fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
-		staticBuilder{}, Settings{}, false)
+		Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,12 +423,15 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	rt, w := newResponseLossRuntime(t)
 	rt.loseModelStart = true
 	invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("recovered")}}
-	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1"); err == nil {
-		t.Fatal("first run unexpectedly completed after lost start responses")
+	watcher := awaiting(t, loop)
+	// The start barrier's commit answers are lost twice (the commit and its
+	// one-shot replay), so the first step fails before any dispatch.
+	if _, err := loop.Advance(context.Background(), rt.Bind(w), staticBuilder{}, "run-1"); err == nil {
+		t.Fatal("first step unexpectedly succeeded after lost start responses")
 	}
 	snapshot, err := rt.Bind(w).Load(context.Background(), "run-1")
 	if err != nil {
@@ -437,9 +443,9 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	if current, ok := snapshot.State.Current.(ModelStep); !ok || current.Status != ModelExecuting {
 		t.Fatalf("current = %#v, want Executing ModelStep", snapshot.State.Current)
 	}
-	res, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1")
+	res, err := loop.Advance(context.Background(), rt.Bind(w), staticBuilder{}, "run-1")
 	if err != nil || res.Disposition != LoopWaiting || len(res.Executing) == 0 {
-		t.Fatalf("run with an orphaned Executing step = %+v %v, want waiting for recovery", res, err)
+		t.Fatalf("step with an orphaned Executing step = %+v %v, want waiting for recovery", res, err)
 	}
 	// The owner's takeover disposition withdraws the orphaned step; the next
 	// Run plans again and calls the model exactly once (RUN-CMT-7).
@@ -447,7 +453,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 		t.Fatalf("takeover = %d %v", n, err)
 	}
 	rt.loseModelStart = false // the transport is healthy again
-	if _, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1"); err != nil {
+	if _, err := settle(context.Background(), loop, watcher, rt.Bind(w), staticBuilder{}, "run-1"); err != nil {
 		t.Fatal(err)
 	}
 	if invoker.calls.Load() != 1 {
@@ -465,18 +471,21 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 			return effect.ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
-	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
-		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
+	builder := staticBuilder{specs: []ToolSpec{spec}}
+	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1"); err == nil {
-		t.Fatal("first run unexpectedly completed after lost settlement responses")
+	watcher := awaiting(t, loop)
+	// The tool settlement's commit answers are lost twice: the settlement
+	// landed, the step reports an error, and nothing is executed again.
+	if _, err := settle(context.Background(), loop, watcher, rt.Bind(w), builder, "run-1"); err == nil {
+		t.Fatal("first drive unexpectedly completed after lost settlement responses")
 	}
 	if executions.Load() != 1 {
 		t.Fatalf("tool executions = %d, want 1", executions.Load())
 	}
-	res, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1")
+	res, err := settle(context.Background(), loop, watcher, rt.Bind(w), builder, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,11 +508,11 @@ func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 		Usage:        sdk.Usage{TotalTokens: 1},
 	}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{bad, bad, bad}}
-	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{policy: StepPolicy{MalformedRetries: 2}}, Settings{}, false)
+	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := DriveForTest(context.Background(), loop, rt.Bind(w), "run-1")
+	res, err := settle(context.Background(), loop, awaiting(t, loop), rt.Bind(w), staticBuilder{policy: StepPolicy{MalformedRetries: 2}}, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,11 +538,26 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	invoker := &cancellingInvoker{cancel: cancel}
 	rt, w := loopRuntime(t)
-	loop, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	loop, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{}, Settings{}, false)
 
-	_, err := DriveForTest(ctx, loop, rt.Bind(w), "run-1")
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want context.Canceled", err)
+	res, err := loop.Advance(ctx, rt.Bind(w), staticBuilder{}, "run-1")
+	if err != nil || len(res.Dispatched) != 1 {
+		t.Fatalf("advance = %+v %v, want one dispatch", res, err)
+	}
+	// The shutdown arrives while the model call is in flight. The host
+	// cancels the effect and still delivers its Outcome, under a context of
+	// its own, so the cancelled step settles.
+	<-ctx.Done()
+	settleCtx := context.Background()
+	if err := loop.Ports.Execution.Cancel(settleCtx, res.Dispatched[0]); err != nil {
+		t.Fatal(err)
+	}
+	out, err := awaiting(t, loop).Await(settleCtx, res.Dispatched[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loop.Deliver(settleCtx, rt.Bind(w), out); err != nil {
+		t.Fatal(err)
 	}
 	// The model step is withdrawn via RecoverModelExecution: the Run is Open,
 	// still active, and the aborted step is not counted (RUN-LOP-3).
@@ -556,8 +580,8 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 
 	// A fresh Loop plans a new step; the cancelled one left no count behind.
 	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
-	loop2, _ := newLoop(t, fakeCatalog{invoker2}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
-	res, err := DriveForTest(context.Background(), loop2, rt.Bind(w), "run-1")
+	loop2, _ := newLoop(t, fakeCatalog{invoker2}, fakeToolCatalog{}, Settings{}, false)
+	res, err = settle(context.Background(), loop2, awaiting(t, loop2), rt.Bind(w), staticBuilder{}, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}

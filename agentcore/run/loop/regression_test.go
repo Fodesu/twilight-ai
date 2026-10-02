@@ -24,10 +24,9 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
 	rt, w := loopRuntime(t)
-	interpreter, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}},
-		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
+	interpreter, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"echo": echo}}, Settings{}, false)
 
-	res, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1")
+	res, err := settle(context.Background(), interpreter, awaiting(t, interpreter), rt.Bind(w), staticBuilder{specs: []ToolSpec{spec}}, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,10 +75,9 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 		textResult("done"),
 	}}
 	rt, w := loopRuntime(t)
-	interpreter, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"fs.read": tool}},
-		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
+	interpreter, _ := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]local.ExecutableTool{"fs.read": tool}}, Settings{}, false)
 
-	res, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1")
+	res, err := settle(context.Background(), interpreter, awaiting(t, interpreter), rt.Bind(w), staticBuilder{specs: []ToolSpec{spec}}, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,8 +91,8 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 
 func TestRegressionStreamNilResult(t *testing.T) {
 	rt, w := loopRuntime(t)
-	interpreter, _ := newLoop(t, fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticBuilder{}, Settings{}, true)
-	res, err := DriveForTest(context.Background(), interpreter, rt.Bind(w), "run-1")
+	interpreter, _ := newLoop(t, fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, Settings{}, true)
+	res, err := settle(context.Background(), interpreter, awaiting(t, interpreter), rt.Bind(w), staticBuilder{}, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}

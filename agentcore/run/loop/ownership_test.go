@@ -38,13 +38,14 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	oldRuntime := &commitLog{RunStore: stack.runtime.Bind(oldWriter)}
 
 	invoker := &blockingInvoker{started: make(chan struct{}), release: make(chan struct{})}
-	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{nil}, staticBuilder{}, Settings{}, false)
+	loop, err := newLoop(t, fakeCatalog{invoker}, fakeToolCatalog{nil}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
+	watcher := awaiting(t, loop)
 	done := make(chan error, 1)
 	go func() {
-		_, err := DriveForTest(context.Background(), loop, oldRuntime, "run-1")
+		_, err := settle(context.Background(), loop, watcher, oldRuntime, staticBuilder{}, "run-1")
 		done <- err
 	}()
 	<-invoker.started

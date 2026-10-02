@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agentcore/module"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/effect/watch"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
@@ -157,7 +158,7 @@ func loadState(t testing.TB, rt *sessionstore.SessionRunStore, w writer.Writer, 
 
 // newLoop builds a Loop over a local.LocalExecutor for tests; the executor no
 // longer reads frozen bodies (RUN-EXE-7), so the runtime is not wired in.
-func newLoop(t testing.TB, models local.ModelCatalog, tools local.ToolCatalog, builder decision.Builder, settings Settings, streaming bool) (*Driven, error) {
+func newLoop(t testing.TB, models local.ModelCatalog, tools local.ToolCatalog, settings Settings, streaming bool) (*Loop, error) {
 	if models == nil {
 		return nil, errors.New("agent: loop: nil model catalog")
 	}
@@ -173,7 +174,39 @@ func newLoop(t testing.TB, models local.ModelCatalog, tools local.ToolCatalog, b
 	if err != nil {
 		return nil, err
 	}
-	return NewDriven(effect.PortsOf(exec), builder, settings)
+	return New(effect.PortsOf(exec), settings)
+}
+
+// awaiting is the Watcher a test waits for Outcomes with over the Loop's
+// port: the port's settlement stream when it offers one, a fast poll
+// otherwise, and no orphan probing. It closes with the test.
+func awaiting(t testing.TB, l *Loop) *watch.Watcher {
+	t.Helper()
+	w := &watch.Watcher{Port: l.Ports.Execution, Settlements: l.Ports.Settlements, Poll: 5 * time.Millisecond, Reconnect: 5 * time.Millisecond, Probe: -1}
+	t.Cleanup(w.Close)
+	return w
+}
+
+// settle steps one Run the way a host does, on the caller's goroutine:
+// Advance, await the Outcome of each effect it dispatched, Deliver it, and
+// again, until the Run finishes, waits, or a step fails. Each step is the
+// Loop's own; the wait is the Watcher's.
+func settle(ctx context.Context, l *Loop, watcher *watch.Watcher, rt store.RunStore, builder decision.Builder, runID RunID) (LoopResult, error) {
+	for {
+		res, err := l.Advance(ctx, rt, builder, runID)
+		if err != nil || res.Disposition != LoopDispatched {
+			return res, err
+		}
+		for _, key := range res.Dispatched {
+			out, err := watcher.Await(ctx, key)
+			if err != nil {
+				return LoopResult{}, err
+			}
+			if res, err = l.Deliver(ctx, rt, out); err != nil || res.Disposition == LoopFinished {
+				return res, err
+			}
+		}
+	}
 }
 
 // recoverRuns runs the takeover disposition of rec over every active Run of
