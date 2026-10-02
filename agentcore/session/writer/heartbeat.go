@@ -31,7 +31,7 @@ func startHeartbeat(h session.Handle, lease time.Duration, lost func(error)) *he
 			case <-hb.stopped:
 				return
 			case <-t.C:
-				if err := h.Renew(context.Background()); err != nil && session.IsCode(err, session.ErrOwnershipLost) {
+				if err := h.Renew(context.Background()); err != nil && session.IsOwnershipLost(err) {
 					lost(err)
 					return
 				}

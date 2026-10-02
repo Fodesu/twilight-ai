@@ -208,10 +208,10 @@ func (p *projector) detached(id module.ProjectionID, ver module.ProjectionVersio
 	k := projectionKey{id, ver}
 	state, ok := p.states[k]
 	if !ok {
-		return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("unknown projection %q v%d", id, ver)}
+		return nil, ledger.NewInvalid("", fmt.Sprintf("unknown projection %q v%d", id, ver))
 	}
 	if err, down := p.unhealthy[k]; down {
-		return nil, &ledger.Error{Code: ledger.CodeProjectionUnhealthy, Detail: fmt.Sprintf("projection %q v%d: %v", id, ver, err)}
+		return nil, fmt.Errorf("%w: projection %q v%d: %w", ErrProjectionUnhealthy, id, ver, err)
 	}
 	codec := p.scopes[k].Def.StateCodec
 	encoded, err := codec.Encode(state)
@@ -263,7 +263,7 @@ type memoryReader struct{ w *sessionWriter }
 
 func (r memoryReader) Load(_ context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
 	if sid != r.w.kernel.SessionID() {
-		return nil, ledger.Head{}, &ledger.Error{Code: ledger.CodeInvalid, Detail: "writer projections are session-local"}
+		return nil, ledger.Head{}, ledger.NewInvalid("", "writer projections are session-local")
 	}
 	r.w.mu.Lock()
 	defer r.w.mu.Unlock()

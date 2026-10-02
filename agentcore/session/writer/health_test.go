@@ -86,7 +86,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	if res, err := commit("c2", "boom", ""); err != nil || res.Outcome != CommitApplied {
 		t.Fatalf("commit with a failing derived projection = %+v %v, want applied", res, err)
 	}
-	if _, _, err := w.Projections().Load(ctx, "s", "h/derived", 1); !errors.Is(err, &ledger.Error{Code: ledger.CodeProjectionUnhealthy}) {
+	if _, _, err := w.Projections().Load(ctx, "s", "h/derived", 1); !errors.Is(err, ErrProjectionUnhealthy) {
 		t.Fatalf("derived read = %v, want unhealthy", err)
 	}
 	if _, _, err := w.Projections().Load(ctx, "s", "h/authoritative", 1); err != nil {
@@ -147,7 +147,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen with a failing derived projection: %v", err)
 	}
-	if _, _, err := w.Projections().Load(ctx, "s", "h/derived", 1); !errors.Is(err, &ledger.Error{Code: ledger.CodeProjectionUnhealthy}) {
+	if _, _, err := w.Projections().Load(ctx, "s", "h/derived", 1); !errors.Is(err, ErrProjectionUnhealthy) {
 		t.Fatalf("derived after reopen = %v, want unhealthy", err)
 	}
 	if _, head, err := w.Projections().Load(ctx, "s", "h/authoritative", 1); err != nil || head.Next != 3 {

@@ -46,7 +46,7 @@ func testFork(t *testing.T, f Fixture) {
 		if _, err := forkAt(t, store, tc.sid, tc.parent, tc.seq); !session.IsCode(err, tc.code) {
 			t.Fatalf("%s: err = %v, want %s", tc.name, err, tc.code)
 		}
-		if _, err := store.Header(ctx, tc.sid); !session.IsCode(err, session.ErrNotFound) {
+		if _, err := store.Header(ctx, tc.sid); !session.IsNotFound(err) {
 			t.Fatalf("%s: a rejected fork left a header: %v", tc.name, err)
 		}
 	}
@@ -65,7 +65,7 @@ func testFork(t *testing.T, f Fixture) {
 	if again, err := forkAt(t, store, "child", "parent", c1.Seq); err != nil || again.ID != child.ID {
 		t.Fatalf("repeat fork = %+v %v", again, err)
 	}
-	if _, err := forkAt(t, store, "child", "parent", c0.Seq); !session.IsCode(err, session.ErrConflict) {
+	if _, err := forkAt(t, store, "child", "parent", c0.Seq); !session.IsConflict(err) {
 		t.Fatalf("conflicting fork = %v", err)
 	}
 
@@ -97,7 +97,7 @@ func testFork(t *testing.T, f Fixture) {
 	if err != nil || !ok || got.CommitID != c1.CommitID || got.Seq != c1.Seq {
 		t.Fatalf("lookup inherited = %+v %v %v", got, ok, err)
 	}
-	if _, err := cw.Append(ctx, ledger.Proposal{CommitID: "c0", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{"dup":true}`)}}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := cw.Append(ctx, ledger.Proposal{CommitID: "c0", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{"dup":true}`)}}); !session.IsConflict(err) {
 		t.Fatalf("append of an inherited CommitID = %v, want conflict", err)
 	}
 	c3 := appendCommit(t, cw, "c3", batch(chatStream(), "twilight/x/a", `{"n":3}`), batch(runStream("r1"), "twilight/x/r", `{"n":3}`))

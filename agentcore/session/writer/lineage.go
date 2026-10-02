@@ -20,7 +20,7 @@ func Delete(ctx context.Context, store session.Maintenance, admission Admission,
 	}
 	report, err := store.Delete(ctx, sid)
 	if err != nil {
-		if session.IsCode(err, session.ErrNotFound) {
+		if session.IsNotFound(err) {
 			return nil
 		}
 		return err

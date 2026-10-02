@@ -2,13 +2,14 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session/writer"
 )
 
@@ -67,7 +68,7 @@ func (d *driver) Drive(ctx context.Context, w writer.Writer, runID run.RunID, re
 		for _, key := range res.Executing {
 			if !lt.awaiting(key) {
 				if _, err := d.recovery.Recover(context.WithoutCancel(ctx), w); err != nil {
-					if ledger.IsOwnershipLost(err) {
+					if errors.Is(err, store.ErrOwnershipLost) {
 						d.recovery.lost(lt)
 						return DriveResult{}, err
 					}

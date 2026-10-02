@@ -112,7 +112,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			}
 			assertClaim(tc.beforeOpen)
 			if tc.mode != "invalid" {
-				if _, err := artifact.Reconcile(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(tipSegment(t, f.store, "s"))}, w); !errors.Is(err, &ledger.Error{Code: ledger.CodeUnknownOutcome}) {
+				if _, err := artifact.Reconcile(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(tipSegment(t, f.store, "s"))}, w); !errors.Is(err, ErrUnknownOutcome) {
 					t.Fatalf("reconcile against failed writer = %v, want unknown_outcome", err)
 				}
 				assertClaim(artifact.ClaimActive)
@@ -161,7 +161,7 @@ func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 		}
 		return w
 	}
-	unknown := &ledger.Error{Code: ledger.CodeUnknownOutcome}
+	unknown := ErrUnknownOutcome
 
 	w1 := open(false)
 	if res, err := w1.Commit(ctx, noteGroup("c1", "one")); err != nil || res.Outcome != CommitApplied {

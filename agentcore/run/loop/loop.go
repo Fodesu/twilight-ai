@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/decision"
-	"github.com/felinics/twilight/agentcore/ledger"
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
@@ -369,7 +368,7 @@ func (l *Loop) commit(ctx context.Context, rt store.RunStore, runID run.RunID, i
 	}
 	req := store.CommitRequest{Base: base, Command: env}
 	res, err := rt.Commit(ctx, req)
-	if err != nil && !retriable(err) && !ledger.IsOwnershipLost(err) {
+	if err != nil && !retriable(err) && !errors.Is(err, store.ErrOwnershipLost) {
 		res, err = rt.Commit(ctx, req)
 	}
 	return res, err

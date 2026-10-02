@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
@@ -202,7 +201,7 @@ func (rs *responders) respond(ctx context.Context, w writer.Writer, a *answer) (
 		return false, nil // the drive was cancelled: the wait stays for the next one
 	}
 	if err := rs.settleResponse(ctx, w, a, payload, rerr); err != nil {
-		if ledger.IsOwnershipLost(err) {
+		if errors.Is(err, store.ErrOwnershipLost) {
 			return false, err
 		}
 		rs.report(w.SessionID(), fmt.Errorf("execution: settle response of run %s call %s: %w", a.call.Request.RunID, a.call.Request.CallID, err))

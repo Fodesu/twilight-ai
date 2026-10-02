@@ -26,8 +26,7 @@ func (h History) BeforeStart(ctx context.Context, sid session.SessionID, turnID 
 		return 0, err
 	}
 	if seq == 0 {
-		return 0, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: sid,
-			Detail: fmt.Sprintf("turn %s started in the first commit of %s; there is no prefix to fork", turnID, sid)}
+		return 0, fmt.Errorf("%w: turn %s started in the first commit of %s; there is no prefix to fork", ErrNoForkPoint, turnID, sid)
 	}
 	return seq - 1, nil
 }
@@ -42,8 +41,7 @@ func (h History) BeforeInputs(ctx context.Context, sid session.SessionID, turnID
 		return 0, err
 	}
 	if at == 0 {
-		return 0, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: sid,
-			Detail: fmt.Sprintf("turn %s opens the history of %s; there is no prefix to fork", turnID, sid)}
+		return 0, fmt.Errorf("%w: turn %s opens the history of %s; there is no prefix to fork", ErrNoForkPoint, turnID, sid)
 	}
 	return at - 1, nil
 }
@@ -175,8 +173,7 @@ func (h History) RequireNoActiveTurnAt(ctx context.Context, sid session.SessionI
 		return err
 	}
 	if ok {
-		return &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: sid,
-			Detail: fmt.Sprintf("turn %s of %s is active at commit %d; fork at a quiescent point", active, sid, at)}
+		return fmt.Errorf("%w: turn %s of %s is active at commit %d; fork at a quiescent point", ErrNoForkPoint, active, sid, at)
 	}
 	return nil
 }

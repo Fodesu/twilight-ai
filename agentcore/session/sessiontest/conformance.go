@@ -110,7 +110,7 @@ func testWire(t *testing.T, f Fixture) {
 	if rec, err := f.Store.Record(ctx, "s"); err != nil || rec.CreatedAtUnixMilli != 1 {
 		t.Fatalf("record after retry = %+v %v, want the first creation time", rec, err)
 	}
-	if _, err := f.Store.Create(ctx, session.CreateRequest{SessionID: "s", CreatedAtUnixMilli: 1, CausationID: "other"}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := f.Store.Create(ctx, session.CreateRequest{SessionID: "s", CreatedAtUnixMilli: 1, CausationID: "other"}); !session.IsConflict(err) {
 		t.Fatalf("different create = %v, want conflict", err)
 	}
 	w := open(t, f.Store, "s", false)
@@ -129,7 +129,7 @@ func testWire(t *testing.T, f Fixture) {
 	if c1.CommitID != "c1" || c2.CommitID != "c2" {
 		t.Fatalf("commit identity = %+v %+v", c1, c2)
 	}
-	if _, err := w.Append(ctx, ledger.Proposal{CommitID: "c1", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := w.Append(ctx, ledger.Proposal{CommitID: "c1", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsConflict(err) {
 		t.Fatalf("duplicate CommitID = %v, want conflict", err)
 	}
 	if head := w.Head(); head.Next != 2 {
@@ -200,13 +200,13 @@ func testStreams(t *testing.T, f Fixture) {
 	}
 	// Malformed stream refs and a read that declares no lineage are rejected
 	// before anything is read.
-	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: ledger.Domain{}, Inheritance: module.Inherited}); !session.IsCode(err, session.ErrInvalid) {
+	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: ledger.Domain{}, Inheritance: module.Inherited}); !session.IsInvalid(err) {
 		t.Fatalf("empty stream ref = %v, want invalid", err)
 	}
-	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: ledger.Domain{Name: "run/r7"}, Inheritance: module.Own}); !session.IsCode(err, session.ErrInvalid) {
+	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: ledger.Domain{Name: "run/r7"}, Inheritance: module.Own}); !session.IsInvalid(err) {
 		t.Fatalf("stream domain with separator = %v, want invalid", err)
 	}
-	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: chatStream()}); !session.IsCode(err, session.ErrInvalid) {
+	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Domain: chatStream()}); !session.IsInvalid(err) {
 		t.Fatalf("read without lineage = %v, want invalid", err)
 	}
 }
@@ -221,7 +221,7 @@ func testOwnership(t *testing.T, f Fixture) {
 	if w1.Epoch() != 1 {
 		t.Fatalf("first epoch = %d", w1.Epoch())
 	}
-	if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrOwned) {
+	if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsOwned(err) {
 		t.Fatalf("second open = %v, want owned", err)
 	}
 	appendCommit(t, w1, "c1", batch(chatStream(), "twilight/x/a", `{}`))
@@ -232,7 +232,7 @@ func testOwnership(t *testing.T, f Fixture) {
 	if w2.Epoch() != 2 {
 		t.Fatalf("epoch after reopen = %d, want 2", w2.Epoch())
 	}
-	if _, err := w1.Append(ctx, ledger.Proposal{CommitID: "c2", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
+	if _, err := w1.Append(ctx, ledger.Proposal{CommitID: "c2", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsOwnershipLost(err) {
 		t.Fatalf("old writer append = %v, want ownership_lost", err)
 	}
 	page, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
@@ -243,7 +243,7 @@ func testOwnership(t *testing.T, f Fixture) {
 	if err := w1.Close(ctx); err != nil {
 		t.Fatalf("closing a superseded writer must be a no-op: %v", err)
 	}
-	if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrOwned) {
+	if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsOwned(err) {
 		t.Fatal("closing a superseded writer released the current owner")
 	}
 	// Takeover supersedes the live owner: the crashed-process recovery path.
@@ -251,7 +251,7 @@ func testOwnership(t *testing.T, f Fixture) {
 	if w3.Epoch() != w2.Epoch()+1 {
 		t.Fatalf("takeover epoch = %d, want %d", w3.Epoch(), w2.Epoch()+1)
 	}
-	if _, err := w2.Append(ctx, ledger.Proposal{CommitID: "late", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
+	if _, err := w2.Append(ctx, ledger.Proposal{CommitID: "late", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsOwnershipLost(err) {
 		t.Fatalf("superseded writer append = %v, want ownership_lost", err)
 	}
 	appendCommit(t, w3, "c3", batch(chatStream(), "twilight/x/a", `{}`))
@@ -421,7 +421,7 @@ func testRead(t *testing.T, f Fixture) {
 	if len(two.Commits) != 2 || !two.HasMore {
 		t.Fatalf("limit 2 = %d more=%v", len(two.Commits), two.HasMore)
 	}
-	if _, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "nope"}); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "nope"}); !session.IsNotFound(err) {
 		t.Fatalf("unknown session = %v", err)
 	}
 }
@@ -490,10 +490,10 @@ func testQuery(t *testing.T, f Fixture) {
 // stream.
 func testScope(t *testing.T, f Fixture) {
 	ctx := context.Background()
-	if _, err := f.Store.Open(ctx, "missing", session.OpenOptions{}); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := f.Store.Open(ctx, "missing", session.OpenOptions{}); !session.IsNotFound(err) {
 		t.Fatalf("open unknown session = %v", err)
 	}
-	if _, err := f.Store.Header(ctx, "missing"); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := f.Store.Header(ctx, "missing"); !session.IsNotFound(err) {
 		t.Fatalf("header unknown session = %v", err)
 	}
 }

@@ -51,12 +51,12 @@ func TestSessionDirectoryIntegrity(t *testing.T) {
 			a := create(t, s, "a")
 			tc.damage(t, s, a)
 			for _, takeover := range []bool{false, true} {
-				if _, err := s.Open(ctx, "a", session.OpenOptions{Takeover: takeover}); !session.IsCode(err, session.ErrCorrupt) {
+				if _, err := s.Open(ctx, "a", session.OpenOptions{Takeover: takeover}); !session.IsCorrupt(err) {
 					t.Fatalf("Open(takeover=%v) = %v, want corrupt", takeover, err)
 				}
 			}
 			_, err = s.Header(ctx, "a")
-			if got := session.IsCode(err, session.ErrCorrupt); got != tc.headerCorrupt {
+			if got := session.IsCorrupt(err); got != tc.headerCorrupt {
 				t.Fatalf("Header = %v, corrupt=%v want %v", err, got, tc.headerCorrupt)
 			}
 		})

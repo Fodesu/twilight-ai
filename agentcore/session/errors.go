@@ -3,10 +3,11 @@ package session
 import (
 	"errors"
 	"fmt"
+
 	"github.com/felinics/twilight/agentcore/ledger"
 )
 
-// ErrorCode classifies kernel failures (SES 7).
+// ErrorCode classifies kernel failures (SES 7): what a caller can act on.
 type ErrorCode string
 
 const (
@@ -30,7 +31,9 @@ const (
 	ErrUnsupported  ErrorCode = "unsupported"
 )
 
-// Error is the kernel's discriminable error value.
+// Error is the kernel's discriminable error value: the class, the operation
+// that failed, the Session and commit it concerns when there are ones, and
+// the detail. Callers classify it with the Is predicates.
 type Error struct {
 	Code      ErrorCode
 	Operation string
@@ -53,33 +56,28 @@ func (e *Error) Error() string {
 	return s
 }
 
-// Is lets callers match on the code: errors.Is(err, &Error{Code: ErrNotFound}).
-func (e *Error) Is(target error) bool {
-	t, ok := target.(*Error)
-	if !ok {
-		return false
-	}
-	return t.Code == e.Code && (t.Operation == "" || t.Operation == e.Operation)
-}
-
-func newError(code ErrorCode, op string, sid SessionID, detail string) *Error {
+// NewError is an Error of code from operation op about sid.
+func NewError(code ErrorCode, op string, sid SessionID, detail string) *Error {
 	return &Error{Code: code, Operation: op, SessionID: sid, Detail: detail}
 }
 
-// IsCode reports whether err is a kernel Error with the given code.
+func newError(code ErrorCode, op string, sid SessionID, detail string) *Error {
+	return NewError(code, op, sid, detail)
+}
+
+// IsCode reports whether err is or wraps a kernel Error of code.
 func IsCode(err error, code ErrorCode) bool {
 	var e *Error
-	for err != nil {
-		var ce *Error
-		if errors.As(err, &ce) {
-			e = ce
-			break
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			break
-		}
-		err = u.Unwrap()
-	}
-	return e != nil && e.Code == code
+	return errors.As(err, &e) && e.Code == code
 }
+
+// The predicates of each code.
+func IsInvalid(err error) bool       { return IsCode(err, ErrInvalid) }
+func IsNotFound(err error) bool      { return IsCode(err, ErrNotFound) }
+func IsConflict(err error) bool      { return IsCode(err, ErrConflict) }
+func IsCorrupt(err error) bool       { return IsCode(err, ErrCorrupt) }
+func IsOwned(err error) bool         { return IsCode(err, ErrOwned) }
+func IsOwnershipLost(err error) bool { return IsCode(err, ErrOwnershipLost) }
+func IsReferenced(err error) bool    { return IsCode(err, ErrReferenced) }
+func IsDeleted(err error) bool       { return IsCode(err, ErrDeleted) }
+func IsHandleFailed(err error) bool  { return IsCode(err, ErrHandleFailed) }

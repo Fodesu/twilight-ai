@@ -43,11 +43,11 @@ func TestAppendSyncFailurePoisonsHandle(t *testing.T) {
 	}
 
 	s.sync = func(*os.File) error { return errors.New("injected fsync failure") }
-	if _, err := h.Append(ctx, proposal("c1", 2)); !session.IsCode(err, session.ErrHandleFailed) {
+	if _, err := h.Append(ctx, proposal("c1", 2)); !session.IsHandleFailed(err) {
 		t.Fatalf("append with failing sync = %v, want handle_failed", err)
 	}
 	s.sync = nil
-	if _, err := h.Append(ctx, proposal("c2", 1)); !session.IsCode(err, session.ErrHandleFailed) {
+	if _, err := h.Append(ctx, proposal("c2", 1)); !session.IsHandleFailed(err) {
 		t.Fatalf("poisoned handle accepted an append: %v", err)
 	}
 	if ok, err := h.Committed("c1"); err == nil || ok {
@@ -66,7 +66,7 @@ func TestAppendSyncFailurePoisonsHandle(t *testing.T) {
 	if err != nil || !ok || c.Seq != 1 || len(c.Batches) != 1 || len(c.Batches[0].Events) != 2 {
 		t.Fatalf("lookup c1 = %+v %v %v", c, ok, err)
 	}
-	if _, err := h2.Append(ctx, proposal("c1", 2)); !session.IsCode(err, session.ErrConflict) {
+	if _, err := h2.Append(ctx, proposal("c1", 2)); !session.IsConflict(err) {
 		t.Fatalf("replaying the durable commit = %v, want conflict", err)
 	}
 	next, err := h2.Append(ctx, proposal("c2", 1))

@@ -216,17 +216,13 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 	return w.kernel.Committed(ledger.CommitID(owner.Identity))
 }
 
-// errWriterClosed is the failure a closed Writer keeps returning; Writers
-// recognizes it so a forgotten Writer is not closed a second time.
-var errWriterClosed = &ledger.Error{Code: ledger.CodeInvalid, Detail: "writer closed"}
-
 // onLeaseLost is the heartbeat's report that Renew was fenced: the Writer
 // is lost exactly as it would be by a fenced Append (EXT-WRT-4).
 func (w *sessionWriter) onLeaseLost(err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.lost == nil {
-		w.lost = &ledger.Error{Code: ledger.CodeOwnershipLost, Detail: err.Error()}
+		w.lost = fmt.Errorf("%w: %w", ErrOwnershipLost, err)
 	}
 }
 
@@ -241,7 +237,7 @@ func (w *sessionWriter) Close(ctx context.Context) error {
 	if ledger.OwnBoundary(w.kernel.Header().Seed(), head) {
 		writes = w.projections.planRefresh(head, true)
 	}
-	w.lost = errWriterClosed
+	w.lost = ErrClosed
 	err := w.kernel.Close(ctx)
 	w.mu.Unlock()
 	w.projections.saveRefresh(ctx, writes)
@@ -360,11 +356,11 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		if claim != nil && appendOutcomeKnown(err) {
 			w.admission.release(ctx, claim) // best effort; OpenWriter reconciles any orphan
 		}
-		if session.IsCode(err, session.ErrOwnershipLost) {
-			w.lost = &ledger.Error{Code: ledger.CodeOwnershipLost, Detail: err.Error()}
+		if session.IsOwnershipLost(err) {
+			w.lost = fmt.Errorf("%w: %w", ErrOwnershipLost, err)
 			return CommitResult{}, w.lost
 		}
-		if session.IsCode(err, session.ErrConflict) {
+		if session.IsConflict(err) {
 			return CommitResult{Outcome: CommitConflict, Detail: err.Error()}, nil
 		}
 		if appendOutcomeKnown(err) {
@@ -374,7 +370,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		// commit. Anything else leaves the log's content unknown to this
 		// Writer: fail closed; a replay of the same commit is answered by
 		// the kernel's index (EXT-WRT-4).
-		w.lost = &ledger.Error{Code: ledger.CodeUnknownOutcome, Detail: err.Error()}
+		w.lost = fmt.Errorf("%w: %w", ErrUnknownOutcome, err)
 		return CommitResult{}, w.lost
 	}
 	w.projections.advance(next)
@@ -387,7 +383,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 // written: the kernel's validation rejections, and a context error, which an
 // adapter may only return before it starts writing (SES-APP-1).
 func appendOutcomeKnown(err error) bool {
-	if session.IsCode(err, session.ErrInvalid) || session.IsCode(err, session.ErrNotFound) {
+	if session.IsInvalid(err) || session.IsNotFound(err) {
 		return true
 	}
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)

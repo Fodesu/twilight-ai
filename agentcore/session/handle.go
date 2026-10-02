@@ -165,7 +165,7 @@ func (w *ledgerHandle) Append(ctx context.Context, p ledger.Proposal) (ledger.Co
 	}
 	c := staged.At(w.head.Next)
 	if err := w.session.st.Append(ctx, w.lease, w.session.root.Tip, c); err != nil {
-		if IsCode(err, ErrHandleFailed) {
+		if IsHandleFailed(err) {
 			w.failed = err
 		}
 		return ledger.Commit{}, err

@@ -6,7 +6,6 @@ package artifacttest
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -44,22 +43,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("registry", func(t *testing.T) { testRegistry(t) })
 }
 
-func isCode(err error, code artifact.ErrorCode) bool {
-	var e *artifact.Error
-	for err != nil {
-		var ae *artifact.Error
-		if errors.As(err, &ae) {
-			e = ae
-			break
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			break
-		}
-		err = u.Unwrap()
-	}
-	return e != nil && e.Code == code
-}
+func isCode(err error, code artifact.ErrorCode) bool { return artifact.IsCode(err, code) }
 
 func sampleRef(key artifact.Key, durability artifact.Durability) artifact.Ref {
 	size := uint64(3)

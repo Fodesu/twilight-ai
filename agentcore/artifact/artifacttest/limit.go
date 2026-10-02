@@ -2,7 +2,6 @@ package artifacttest
 
 import (
 	"context"
-	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -30,7 +29,7 @@ func PutLimit(t *testing.T, newStore func(t *testing.T, maxBytes int64) artifact
 			store := newStore(t, tc.maxBytes)
 			ref, err := store.Put(context.Background(), artifact.PutRequest{MediaType: "text/plain", Reader: strings.NewReader(tc.body), Durability: artifact.Ephemeral})
 			if tc.wantCode != "" {
-				if !errors.Is(err, &artifact.Error{Code: tc.wantCode}) {
+				if !artifact.IsCode(err, tc.wantCode) {
 					t.Fatalf("Put(%d bytes, cap %d) = %v, want %s", len(tc.body), tc.maxBytes, err, tc.wantCode)
 				}
 				return

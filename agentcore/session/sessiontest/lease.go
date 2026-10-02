@@ -34,7 +34,7 @@ func testLease(t *testing.T, f Fixture) {
 	if _, ok, err := f.Store.LeaseOf(ctx, "s"); err != nil || !ok {
 		t.Fatalf("LeaseOf after open = ok:%v %v, want the lease", ok, err)
 	}
-	if _, _, err := f.Store.LeaseOf(ctx, "absent"); !session.IsCode(err, session.ErrNotFound) {
+	if _, _, err := f.Store.LeaseOf(ctx, "absent"); !session.IsNotFound(err) {
 		t.Fatalf("LeaseOf of an unknown session = %v, want not found", err)
 	}
 	create(t, f.Store, "idle")
@@ -99,16 +99,16 @@ func testLease(t *testing.T, f Fixture) {
 		t.Fatalf("LeaseOf after takeover = %+v ok:%v %v, want b's lease", l, ok, err)
 	}
 	// The expired holder is fenced at Renew and at Append; its Close is a no-op.
-	if err := w1.Renew(ctx); !session.IsCode(err, session.ErrOwnershipLost) {
+	if err := w1.Renew(ctx); !session.IsOwnershipLost(err) {
 		t.Fatalf("expired holder renew = %v, want ownership_lost", err)
 	}
-	if _, err := w1.Append(ctx, ledger.Proposal{CommitID: "late", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
+	if _, err := w1.Append(ctx, ledger.Proposal{CommitID: "late", Batches: []ledger.EventBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsOwnershipLost(err) {
 		t.Fatalf("expired holder append = %v, want ownership_lost", err)
 	}
 	if err := w1.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Store.Open(ctx, "s", opts("c")); !session.IsCode(err, session.ErrOwned) {
+	if _, err := f.Store.Open(ctx, "s", opts("c")); !session.IsOwned(err) {
 		t.Fatal("closing a superseded holder released the current lease")
 	}
 	appendCommit(t, w2, "c1", batch(chatStream(), "twilight/x/a", `{}`))
@@ -124,7 +124,7 @@ func testLease(t *testing.T, f Fixture) {
 	}
 	w3 := open(t, f.Store, "s", false)
 	f.Advance(time.Hour)
-	if _, err := f.Store.Open(ctx, "s", opts("d")); !session.IsCode(err, session.ErrOwned) {
+	if _, err := f.Store.Open(ctx, "s", opts("d")); !session.IsOwned(err) {
 		t.Fatalf("zero-duration lease expired: %v", err)
 	}
 	w4, err := f.Store.Open(ctx, "s", session.OpenOptions{Takeover: true, Owner: "d", LeaseDuration: time.Second})

@@ -69,7 +69,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 		var err error
 		parent, err = l.Load(ctx, req.Fork.Session)
 		if err != nil {
-			if IsCode(err, ErrNotFound) {
+			if IsNotFound(err) {
 				return SegmentHeader{}, newError(ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", req.Fork.Session))
 			}
 			return SegmentHeader{}, err
@@ -94,7 +94,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 			return seg.Header, nil
 		}
 		return SegmentHeader{}, newError(ErrConflict, "create", req.SessionID, "session exists with a different creation record")
-	} else if !IsCode(err, ErrNotFound) && !IsCode(err, ErrDeleted) {
+	} else if !IsNotFound(err) && !IsDeleted(err) {
 		return SegmentHeader{}, err
 	}
 	id, err := l.segmentID()
@@ -359,7 +359,7 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	for _, id := range ids {
 		seg, err := l.st.Segment(ctx, id)
 		if err != nil {
-			if IsCode(err, ErrNotFound) {
+			if IsNotFound(err) {
 				continue
 			}
 			return CollectReport{}, err
@@ -398,7 +398,7 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	// remove a node a child's edge still names (SES-GC-4).
 	for _, id := range removalOrder(nodes, reached) {
 		if err := l.st.RemoveSegment(ctx, id); err != nil {
-			if IsCode(err, ErrReferenced) {
+			if IsReferenced(err) {
 				continue
 			}
 			return report, err
@@ -445,7 +445,7 @@ func (l *Ledger) reclaim(ctx context.Context, id SegmentID, report *CollectRepor
 	}
 	if !ok {
 		if err := l.st.RemoveSegment(ctx, id); err != nil {
-			if IsCode(err, ErrReferenced) {
+			if IsReferenced(err) {
 				return nil
 			}
 			return err

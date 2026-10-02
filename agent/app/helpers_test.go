@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +15,6 @@ import (
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/jsonstable"
-	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -23,6 +23,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 	"path/filepath"
@@ -236,7 +237,7 @@ func errorsIsOwnershipLost(err error) string {
 	if err == nil {
 		return "no error"
 	}
-	if ledger.IsOwnershipLost(err) {
+	if errors.Is(err, store.ErrOwnershipLost) || errors.Is(err, writer.ErrOwnershipLost) {
 		return "ownership lost"
 	}
 	return err.Error()

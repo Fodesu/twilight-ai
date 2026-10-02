@@ -96,7 +96,7 @@ func SaveProjection(ctx context.Context, cache ProjectionCache, registry *module
 	}
 	def, _, ok := registry.LookupProjection(id, v)
 	if !ok {
-		return &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("unknown projection %q v%d", id, v)}
+		return ledger.NewInvalid("", fmt.Sprintf("unknown projection %q v%d", id, v))
 	}
 	encoded, err := def.StateCodec.Encode(state)
 	if err != nil {

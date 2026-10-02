@@ -359,7 +359,18 @@ func (e *Error) Error() string {
 	return s
 }
 
-func (e *Error) Is(target error) bool {
-	t, ok := target.(*Error)
-	return ok && t.Code == e.Code
+// IsCode reports whether err is or wraps an Error of code.
+func IsCode(err error, code ErrorCode) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Code == code
 }
+
+// The predicates of each code.
+func IsInvalid(err error) bool      { return IsCode(err, ErrInvalid) }
+func IsNotFound(err error) bool     { return IsCode(err, ErrNotFound) }
+func IsConflict(err error) bool     { return IsCode(err, ErrConflict) }
+func IsUnauthorized(err error) bool { return IsCode(err, ErrUnauthorized) }
+func IsExpired(err error) bool      { return IsCode(err, ErrExpired) }
+func IsCorrupt(err error) bool      { return IsCode(err, ErrCorrupt) }
+func IsUnsupported(err error) bool  { return IsCode(err, ErrUnsupported) }
+func IsUnavailable(err error) bool  { return IsCode(err, ErrUnavailable) }

@@ -812,7 +812,7 @@ func testOwnershipLost(t *testing.T, factory Factory) {
 	old, oldWriter := h.takeover()
 	head := h.head()
 	_, err := h.commitWith(old, oldWriter, "r1", schema.Identity().DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("late")})
-	if !ledger.IsOwnershipLost(err) {
+	if !errors.Is(err, store.ErrOwnershipLost) {
 		t.Fatalf("old owner commit = %v, want ownership lost", err)
 	}
 	if h.head() != head {

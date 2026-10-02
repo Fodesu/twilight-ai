@@ -3,7 +3,6 @@ package writer
 import (
 	"context"
 	"errors"
-	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/session"
 	"sync"
@@ -38,10 +37,10 @@ func (ws *writerSet) Writer(ctx context.Context, sid session.SessionID) (Writer,
 		// host's decision (CloseWriter forgets the failed Writer first). Every
 		// other failure is: a fresh Writer rebuilds from the log and a replay
 		// of the same CommitID is answered by the kernel's index (EXT-WRT-4).
-		if ledger.IsOwnershipLost(lost) {
+		if errors.Is(lost, ErrOwnershipLost) {
 			return nil, lost
 		}
-		if !errors.Is(lost, errWriterClosed) {
+		if !errors.Is(lost, ErrClosed) {
 			_ = w.Close(ctx)
 		}
 		delete(ws.open, sid)
@@ -76,7 +75,7 @@ func (ws *writerSet) CloseWriter(ctx context.Context, sid session.SessionID) err
 		return nil
 	}
 	delete(ws.open, sid)
-	if errors.Is(failure(w), errWriterClosed) {
+	if errors.Is(failure(w), ErrClosed) {
 		return nil
 	}
 	return w.Close(ctx)
@@ -89,7 +88,7 @@ func (ws *writerSet) Close(ctx context.Context) error {
 	var first error
 	for sid, w := range ws.open {
 		delete(ws.open, sid)
-		if errors.Is(failure(w), errWriterClosed) {
+		if errors.Is(failure(w), ErrClosed) {
 			continue
 		}
 		if err := w.Close(ctx); err != nil && first == nil {

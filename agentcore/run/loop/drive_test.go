@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/decision"
-	"github.com/felinics/twilight/agentcore/ledger"
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/store"
@@ -69,7 +68,7 @@ func DriveForTest(ctx context.Context, d *Driven, rt store.RunStore, runID run.R
 		delete(pending, key)
 		res, err := d.Deliver(settleCtx, rt, out)
 		if err != nil {
-			if ledger.IsOwnershipLost(err) {
+			if errors.Is(err, store.ErrOwnershipLost) {
 				for k := range pending {
 					_ = d.Ports.Execution.Cancel(settleCtx, k)
 				}

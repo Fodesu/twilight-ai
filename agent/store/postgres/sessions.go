@@ -796,7 +796,7 @@ func (b *sessionStorage) Release(ctx context.Context, lease session.Lease) error
 	return b.d.tx(ctx, "session:"+string(lease.Session), func(q *db.Queries) error {
 		r, err := b.root(ctx, q, "close", lease.Session)
 		if err != nil {
-			if session.IsCode(err, session.ErrNotFound) {
+			if session.IsNotFound(err) {
 				return nil // the root was deleted under a released lease
 			}
 			return err

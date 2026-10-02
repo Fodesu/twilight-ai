@@ -189,7 +189,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrOwned) {
+	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsOwned(err) {
 		t.Fatalf("second writer = %v, want owned", err)
 	}
 	if err := w.Close(ctx); err != nil {
@@ -224,17 +224,17 @@ func TestWriterOwnershipLost(t *testing.T) {
 		t.Fatal(err)
 	}
 	w2 := f.open(t, true)
-	if _, err := w1.Commit(ctx, noteGroup("c2", "late")); !errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}) {
+	if _, err := w1.Commit(ctx, noteGroup("c2", "late")); !errors.Is(err, ErrOwnershipLost) {
 		t.Fatalf("stale writer commit = %v, want ownership_lost", err)
 	}
-	if _, err := w1.Commit(ctx, noteGroup("c3", "again")); !errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}) {
+	if _, err := w1.Commit(ctx, noteGroup("c3", "again")); !errors.Is(err, ErrOwnershipLost) {
 		t.Fatal("writer did not stay failed")
 	}
 	if got := notes(t, w2); len(got) != 1 {
 		t.Fatalf("fenced write leaked: %v", got)
 	}
 	ws := NewWriters(f.store, f.registry, f.admission(), session.OpenOptions{}, WritersConfig{})
-	if _, err := ws.Writer(ctx, "s"); !session.IsCode(err, session.ErrOwned) {
+	if _, err := ws.Writer(ctx, "s"); !session.IsOwned(err) {
 		t.Fatalf("writers while owned = %v", err)
 	}
 	_ = w2.Close(ctx)
@@ -284,7 +284,7 @@ func TestProjectionUnknownEvents(t *testing.T) {
 	kw, _ = f.store.Open(ctx, "s", session.OpenOptions{})
 	raw("strict", "twilight/a/strict", `{"v":"pre.1"}`) // in scope, not registered: fold fails
 	_ = kw.Close(ctx)
-	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !errors.Is(err, &ledger.Error{Code: ledger.CodeUnknownEvent}) {
+	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !ledger.IsUnknownEvent(err) {
 		t.Fatalf("open with unknown strict event = %v", err)
 	}
 }

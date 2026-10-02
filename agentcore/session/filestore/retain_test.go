@@ -79,13 +79,13 @@ func TestTruncateObeysLiveSpan(t *testing.T) {
 			{Segment: "child", From: c2.Seq + 1, End: session.OpenBound()},
 		},
 	})
-	if !session.IsCode(err, session.ErrNotFound) {
+	if !session.IsNotFound(err) {
 		t.Fatalf("create after truncate = %v, want not found", err)
 	}
 	if _, err := os.Stat(store.segmentDir("child")); !os.IsNotExist(err) {
 		t.Fatalf("child segment left behind: %v", err)
 	}
-	if _, err := store.Record(ctx, "ghost"); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.Record(ctx, "ghost"); !session.IsNotFound(err) {
 		t.Fatalf("ghost root = %v", err)
 	}
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "high"})

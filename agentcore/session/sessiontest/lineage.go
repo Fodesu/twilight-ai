@@ -42,10 +42,10 @@ func testLineage(t *testing.T, f Fixture) {
 
 	// Delete refuses an owned Session and an unknown one, and reclaims nothing
 	// in either case.
-	if _, err := store.Delete(ctx, "A"); !session.IsCode(err, session.ErrOwned) {
+	if _, err := store.Delete(ctx, "A"); !session.IsOwned(err) {
 		t.Fatalf("delete owned = %v", err)
 	}
-	if _, err := store.Delete(ctx, "ghost"); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.Delete(ctx, "ghost"); !session.IsNotFound(err) {
 		t.Fatalf("delete unknown = %v", err)
 	}
 	_ = aw.Close(ctx)
@@ -62,25 +62,25 @@ func testLineage(t *testing.T, f Fixture) {
 	// second Delete is not found. Its identity is never reused (SES-GC-1):
 	// a Create under the old name is ErrDeleted, so nothing addressed to
 	// the old A can land on a new one.
-	if _, err := store.Header(ctx, "A"); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.Header(ctx, "A"); !session.IsNotFound(err) {
 		t.Fatalf("header after delete = %v", err)
 	}
-	if _, err := store.Open(ctx, "A", session.OpenOptions{}); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.Open(ctx, "A", session.OpenOptions{}); !session.IsNotFound(err) {
 		t.Fatalf("open after delete = %v", err)
 	}
-	if _, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "A"}); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "A"}); !session.IsNotFound(err) {
 		t.Fatalf("read after delete = %v", err)
 	}
-	if _, err := forkAt(t, store, "E", "A", a[0].Seq); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := forkAt(t, store, "E", "A", a[0].Seq); !session.IsNotFound(err) {
 		t.Fatalf("fork of a deleted session = %v", err)
 	}
-	if _, err := store.Delete(ctx, "A"); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.Delete(ctx, "A"); !session.IsNotFound(err) {
 		t.Fatalf("second delete = %v", err)
 	}
-	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "A", CreatedAtUnixMilli: 9}); !session.IsCode(err, session.ErrDeleted) {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "A", CreatedAtUnixMilli: 9}); !session.IsDeleted(err) {
 		t.Fatalf("create under a deleted id = %v, want deleted", err)
 	}
-	if _, err := store.Record(ctx, "A"); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.Record(ctx, "A"); !session.IsNotFound(err) {
 		t.Fatalf("record of a deleted session = %v, want not found", err)
 	}
 	// B, C and D still read their prefixes, and D through A's segment.
@@ -141,7 +141,7 @@ func testLineage(t *testing.T, f Fixture) {
 		RemoveSegment(context.Context, session.SegmentID) error
 	}); ok {
 		for _, seg := range []session.SegmentID{segC, segB} {
-			if err := be.RemoveSegment(ctx, seg); !session.IsCode(err, session.ErrReferenced) {
+			if err := be.RemoveSegment(ctx, seg); !session.IsReferenced(err) {
 				t.Fatalf("remove reached segment %s = %v, want referenced", seg, err)
 			}
 		}

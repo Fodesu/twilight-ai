@@ -80,7 +80,7 @@ type ProjectionScope struct {
 func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionScope, error) {
 	def, module, ok := r.LookupProjection(id, v)
 	if !ok {
-		return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("unknown projection %q v%d", id, v)}
+		return nil, ledger.NewInvalid("", fmt.Sprintf("unknown projection %q v%d", id, v))
 	}
 	s := &ProjectionScope{Def: def, consumes: make(map[ledger.EventType]struct{}, len(def.Consumes)), modules: r.scopeOf(module)}
 	for _, t := range def.Consumes {
@@ -145,7 +145,7 @@ func (r *Registry) applyEvent(s *ProjectionScope, state any, pos ledger.Position
 			// The registry is the only authority on Ignorable, and an
 			// unregistered type has no entry to consult: an in-scope event
 			// the registry does not know is an error (EXT-PRJ-2).
-			return nil, &ledger.Error{Code: ledger.CodeUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q: unregistered event of module %s/%s at commit %d", s.Def.ID, module.Source, module.ID, seq)}
+			return nil, ledger.NewUnknownEvent(e.Type, fmt.Sprintf("projection %q: unregistered event of module %s/%s at commit %d", s.Def.ID, module.Source, module.ID, seq))
 		}
 		return state, nil
 	}
@@ -158,7 +158,7 @@ func (r *Registry) applyEvent(s *ProjectionScope, state any, pos ledger.Position
 		if entry.def.Ignorable {
 			return state, nil
 		}
-		return nil, &ledger.Error{Code: ledger.CodeUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q cannot decode v%s at commit %d", s.Def.ID, decoded.Version, seq)}
+		return nil, ledger.NewUnknownEvent(e.Type, fmt.Sprintf("projection %q cannot decode v%s at commit %d", s.Def.ID, decoded.Version, seq))
 	}
 	next, err := s.Def.Apply(state, decoded)
 	if err != nil {

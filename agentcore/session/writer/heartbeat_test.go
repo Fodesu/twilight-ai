@@ -3,7 +3,6 @@ package writer
 import (
 	"context"
 	"errors"
-	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
 	"testing"
 	"time"
@@ -23,7 +22,7 @@ func TestWriterHeartbeatRenewsAndReportsLoss(t *testing.T) {
 	// Well past the lease duration the Session is still owned: the
 	// heartbeat renewed it.
 	time.Sleep(150 * time.Millisecond)
-	if _, err := f.store.Open(ctx, "s", session.OpenOptions{Owner: "b", LeaseDuration: time.Second}); !session.IsCode(err, session.ErrOwned) {
+	if _, err := f.store.Open(ctx, "s", session.OpenOptions{Owner: "b", LeaseDuration: time.Second}); !session.IsOwned(err) {
 		t.Fatalf("open while heartbeat renews = %v, want owned", err)
 	}
 	if res, err := w.Commit(ctx, noteGroup("c1", "one")); err != nil || res.Outcome != CommitApplied {
@@ -38,7 +37,7 @@ func TestWriterHeartbeatRenewsAndReportsLoss(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		_, err := w.Commit(ctx, noteGroup("c2", "two"))
-		if errors.Is(err, &ledger.Error{Code: ledger.CodeOwnershipLost}) {
+		if errors.Is(err, ErrOwnershipLost) {
 			break
 		}
 		if time.Now().After(deadline) {

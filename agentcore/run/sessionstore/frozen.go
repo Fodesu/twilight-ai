@@ -89,8 +89,7 @@ func (f *frozenValues) Get(ctx context.Context, digest run.Digest) (body []byte,
 	}
 	rc, _, err := f.store.Open(ctx, ref)
 	if err != nil {
-		var aerr *artifact.Error
-		if errors.As(err, &aerr) && aerr.Code == artifact.ErrNotFound {
+		if artifact.IsNotFound(err) {
 			return nil, false, nil
 		}
 		return nil, false, err

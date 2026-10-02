@@ -44,7 +44,7 @@ func (l Lifecycle) Create(ctx context.Context, sid session.SessionID, ext module
 func (l Lifecycle) Ensure(ctx context.Context, sid session.SessionID) error {
 	if _, err := l.Store.Header(ctx, sid); err == nil {
 		return nil
-	} else if !session.IsCode(err, session.ErrNotFound) {
+	} else if !session.IsNotFound(err) {
 		return err
 	}
 	if err := l.Create(ctx, sid, nil); err != nil {

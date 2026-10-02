@@ -97,7 +97,7 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 		t.Fatalf("observer = %+v %+v %v", state, head, err)
 	}
 	// A Session cannot fork itself; nothing is created.
-	if _, err := Fork(ctx, f.store, f.registry, ForkRequest{Parent: "s", At: 0, Child: "s"}); !session.IsCode(err, session.ErrInvalid) {
+	if _, err := Fork(ctx, f.store, f.registry, ForkRequest{Parent: "s", At: 0, Child: "s"}); !session.IsInvalid(err) {
 		t.Fatalf("self fork = %v, want ErrInvalid", err)
 	}
 }
@@ -149,7 +149,7 @@ func TestClaimsFollowSegmentsThroughCollect(t *testing.T) {
 	if got := active(); len(got) != 1 || got[0] != "c1" {
 		t.Fatalf("claims after deleting the parent = %v, want c1 only", got)
 	}
-	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsNotFound(err) {
 		t.Fatalf("open deleted = %v", err)
 	}
 	child, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "child", session.OpenOptions{})

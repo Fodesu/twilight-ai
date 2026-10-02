@@ -91,13 +91,13 @@ func fail(w stdhttp.ResponseWriter, err error) {
 		return
 	}
 	switch {
-	case session.IsCode(err, session.ErrNotFound), errors.Is(err, workspace.ErrNotFound):
+	case session.IsNotFound(err), errors.Is(err, workspace.ErrNotFound):
 		writeError(w, &Error{Status: stdhttp.StatusNotFound, Code: CodeNotFound, Message: err.Error()})
-	case session.IsCode(err, session.ErrOwned), errors.Is(err, owner.ErrSessionOpen):
+	case session.IsOwned(err), errors.Is(err, owner.ErrSessionOpen):
 		writeError(w, &Error{Status: stdhttp.StatusConflict, Code: CodeOwned, Message: err.Error()})
 	case errors.Is(err, inbox.ErrCommandConflict):
 		writeError(w, &Error{Status: stdhttp.StatusConflict, Code: CodeCommandConflict, Message: err.Error()})
-	case errors.Is(err, turn.ErrConflict), session.IsCode(err, session.ErrInvalid), errors.Is(err, workspace.ErrExists):
+	case errors.Is(err, turn.ErrConflict), errors.Is(err, turn.ErrNoForkPoint), session.IsInvalid(err), errors.Is(err, workspace.ErrExists):
 		writeError(w, &Error{Status: stdhttp.StatusConflict, Code: CodeConflict, Message: err.Error()})
 	case errors.Is(err, app.ErrNoInbox), errors.Is(err, app.ErrNoWorkspaces), errors.Is(err, app.ErrNoSnapshots):
 		writeError(w, &Error{Status: stdhttp.StatusNotImplemented, Code: CodeUnavailable, Message: err.Error()})

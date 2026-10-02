@@ -844,7 +844,7 @@ func (s *Store) Release(ctx context.Context, lease session.Lease) error {
 	defer s.mu.Unlock()
 	_, owner, err := s.loadRoot(lease.Session, "close")
 	if err != nil {
-		if session.IsCode(err, session.ErrNotFound) {
+		if session.IsNotFound(err) {
 			return nil // the root was deleted under a released lease
 		}
 		return err

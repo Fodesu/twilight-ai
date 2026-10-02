@@ -213,10 +213,10 @@ func TestForkInsideActiveTurnIsRefused(t *testing.T) {
 		t.Fatalf("parent commits = %d %v", len(page.Commits), err)
 	}
 	mid := page.Commits[len(page.Commits)-1].Seq
-	if _, err := h.Fork(ctx, app.ForkRequest{Parent: sid, At: mid, Child: "mid"}); !session.IsCode(err, session.ErrInvalid) {
-		t.Fatalf("fork inside an active turn = %v, want ErrInvalid", err)
+	if _, err := h.Fork(ctx, app.ForkRequest{Parent: sid, At: mid, Child: "mid"}); !errors.Is(err, turn.ErrNoForkPoint) {
+		t.Fatalf("fork inside an active turn = %v, want turn.ErrNoForkPoint", err)
 	}
-	if _, err := store.Header(ctx, "mid"); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.Header(ctx, "mid"); !session.IsNotFound(err) {
 		t.Fatalf("refused fork left a root: %v", err)
 	}
 	close(gate.release)

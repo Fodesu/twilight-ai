@@ -124,7 +124,7 @@ func (app *Application) activateInBackground(sid session.SessionID) {
 // owner holds the Session, this process is between closing and reopening
 // it, or the application is shutting down.
 func expectedActivationError(err error) bool {
-	return session.IsCode(err, session.ErrOwned) || errors.Is(err, owner.ErrSessionOpen) ||
+	return session.IsOwned(err) || errors.Is(err, owner.ErrSessionOpen) ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 

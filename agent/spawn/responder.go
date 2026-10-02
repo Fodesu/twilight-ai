@@ -234,7 +234,7 @@ func (r *Responder) depthOf(ctx context.Context, sid session.SessionID) (int, er
 func (r *Responder) provenance(ctx context.Context, sid session.SessionID) (Provenance, bool, error) {
 	header, err := r.children.Header(ctx, sid)
 	if err != nil {
-		if session.IsCode(err, session.ErrNotFound) {
+		if session.IsNotFound(err) {
 			return Provenance{}, false, nil
 		}
 		return Provenance{}, false, err

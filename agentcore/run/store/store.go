@@ -23,6 +23,12 @@ func CheckContext(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// ErrOwnershipLost reports that the write capability behind a RunStore was
+// superseded (RUN-CMT-6). It is terminal for the caller: no further command
+// of this process can reach the stream. The adapter wraps the capability's
+// own report in it.
+var ErrOwnershipLost = errors.New("agent: run store ownership lost")
+
 // RunStore is the transactional port of the Run core (RUN-CMT-1): the store
 // the Runs of one Scope live in, already bound to the caller's write
 // capability. It speaks only Run types; how a command reaches durable

@@ -2,11 +2,11 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/ledger"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/store"
@@ -57,7 +57,7 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !ledger.IsOwnershipLost(err) {
+		if !errors.Is(err, store.ErrOwnershipLost) {
 			t.Fatalf("loop error = %v, want ownership lost", err)
 		}
 	case <-time.After(2 * time.Second):

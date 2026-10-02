@@ -327,7 +327,7 @@ func TestSpawnValidation(t *testing.T) {
 			}
 			surface, _ := h.TurnSurface(ctx, sid)
 			for runID := range surface.RunOwner {
-				if _, err := store.Header(ctx, spawn.ChildID(sid, runID, "c1")); !session.IsCode(err, session.ErrNotFound) {
+				if _, err := store.Header(ctx, spawn.ChildID(sid, runID, "c1")); !session.IsNotFound(err) {
 					t.Fatalf("a rejected call left a child session: %v", err)
 				}
 			}

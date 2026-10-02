@@ -141,9 +141,18 @@ func (b *bound) Commit(ctx context.Context, req store.CommitRequest) (store.Comm
 	}
 	res, err := unit.Commit(ctx, b.w, b.s.nowMilli(), unit.Work{CommitID: ledger.CommitID(req.Command.ID), Parts: []unit.Part{cmd}})
 	if err != nil {
-		return store.CommitResult{}, err
+		return store.CommitResult{}, ownershipError(err)
 	}
 	return cmd.Result(ctx, b.w, &res)
+}
+
+// ownershipError translates the Writer's ownership loss into the Run port's
+// sentinel; every other error passes through.
+func ownershipError(err error) error {
+	if errors.Is(err, writer.ErrOwnershipLost) {
+		return fmt.Errorf("%w: %w", store.ErrOwnershipLost, err)
+	}
+	return err
 }
 
 func (b *bound) FrozenRequest(ctx context.Context, digest run.Digest) (model.ModelRequest, error) {

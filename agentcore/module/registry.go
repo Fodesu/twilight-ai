@@ -195,11 +195,11 @@ func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry
 	for i := range extensions {
 		m := &extensions[i]
 		if m.Source == SourceTwilight {
-			return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("extension module %q claims the %s source", m.ID, SourceTwilight)}
+			return nil, ledger.NewInvalid("", fmt.Sprintf("extension module %q claims the %s source", m.ID, SourceTwilight))
 		}
 		for _, p := range m.Projections {
 			if p.Authoritative {
-				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("projection %q of extension %s/%s declares Authoritative; only trusted core modules may", p.ID, m.Source, m.ID)}
+				return nil, ledger.NewInvalid("", fmt.Sprintf("projection %q of extension %s/%s declares Authoritative; only trusted core modules may", p.ID, m.Source, m.ID))
 			}
 		}
 		modules = append(modules, *m)
@@ -210,26 +210,27 @@ func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry
 	for i := range modules {
 		m := &modules[i]
 		if err := validSegment("source", string(m.Source)); err != nil {
-			return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module %q: %v", m.ID, err)}
+			return nil, ledger.NewInvalid("", fmt.Sprintf("module %q: %v", m.ID, err))
 		}
 		if err := validSegment("module id", string(m.ID)); err != nil {
-			return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("source %q: %v", m.Source, err)}
+			return nil, ledger.NewInvalid("", fmt.Sprintf("source %q: %v", m.Source, err))
 		}
 		key := m.Key()
 		if _, dup := r.modules[key]; dup {
-			return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("duplicate module %s/%s", key.Source, key.ID)}
+			return nil, ledger.NewInvalid("", fmt.Sprintf("duplicate module %s/%s", key.Source, key.ID))
 		}
 		r.modules[key] = *m
 		for _, sd := range m.Streams {
 			if err := ledger.ValidateStreamRef(ledger.Domain{Name: sd.Domain}); err != nil {
-				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module %s/%s: %v", key.Source, key.ID, err)}
+				return nil, ledger.NewInvalid("", fmt.Sprintf("module %s/%s: %v", key.Source, key.ID, err))
 			}
 			if prev, dup := r.streams[sd.Domain]; dup {
-				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("duplicate stream domain %q: declared by %s/%s and %s/%s",
-					sd.Domain, prev.module.Source, prev.module.ID, key.Source, key.ID)}
+				return nil, ledger.NewInvalid("", fmt.Sprintf("duplicate stream domain %q: declared by %s/%s and %s/%s",
+					sd.Domain, prev.module.Source, prev.module.ID, key.Source, key.ID))
+
 			}
 			if err := ValidateInheritance(sd.Inheritance); err != nil {
-				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("stream domain %q: %v", sd.Domain, err)}
+				return nil, ledger.NewInvalid("", fmt.Sprintf("stream domain %q: %v", sd.Domain, err))
 			}
 			r.streams[sd.Domain] = streamEntry{module: key, def: sd}
 		}
@@ -240,17 +241,17 @@ func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry
 		}
 		for _, p := range m.Projections {
 			if p.ID == "" || p.Version == 0 || p.Initial == nil || p.Apply == nil || p.StateCodec == nil {
-				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("projection %q is incomplete", p.ID)}
+				return nil, ledger.NewInvalid("", fmt.Sprintf("projection %q is incomplete", p.ID))
 			}
 			// Refusing commits is a capability of trusted core modules, not
 			// something a descriptor declares for itself (EXT-PRJ-9); the
 			// extension path above already refused it, this guards the map.
 			if p.Authoritative && !trusted[key] {
-				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("projection %q of module %s/%s declares Authoritative without trust", p.ID, m.Source, m.ID)}
+				return nil, ledger.NewInvalid("", fmt.Sprintf("projection %q of module %s/%s declares Authoritative without trust", p.ID, m.Source, m.ID))
 			}
 			k := projectionKey{p.ID, p.Version}
 			if _, dup := r.projections[k]; dup {
-				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("duplicate projection %q v%d", p.ID, p.Version)}
+				return nil, ledger.NewInvalid("", fmt.Sprintf("duplicate projection %q v%d", p.ID, p.Version))
 			}
 			r.projections[k] = projectionEntry{module: key, def: p}
 		}
@@ -269,24 +270,24 @@ func (r *Registry) checkRequirements() error {
 	visit = func(key ModuleKey) error {
 		switch state[key] {
 		case 1:
-			return &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module requirement cycle through %s/%s", key.Source, key.ID)}
+			return ledger.NewInvalid("", fmt.Sprintf("module requirement cycle through %s/%s", key.Source, key.ID))
 		case 2:
 			return nil
 		}
 		state[key] = 1
 		for _, req := range r.modules[key].Requires {
 			if req.Source == "" {
-				return &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module %s/%s: requirement on %q has no source", key.Source, key.ID, req.Module)}
+				return ledger.NewInvalid("", fmt.Sprintf("module %s/%s: requirement on %q has no source", key.Source, key.ID, req.Module))
 			}
 			depKey := req.Key()
 			dep, ok := r.modules[depKey]
 			if !ok {
-				return &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("module %s/%s requires unregistered module %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
+				return ledger.NewInvalid("", fmt.Sprintf("module %s/%s requires unregistered module %s/%s", key.Source, key.ID, depKey.Source, depKey.ID))
 			}
 			for _, typ := range req.Events {
 				entry, ok := r.events[typ]
 				if !ok || entry.module != dep.Key() {
-					return &ledger.Error{Code: ledger.CodeInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s requires event not owned by %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
+					return ledger.NewInvalid(typ, fmt.Sprintf("module %s/%s requires event not owned by %s/%s", key.Source, key.ID, depKey.Source, depKey.ID))
 				}
 			}
 			if err := visit(depKey); err != nil {
@@ -307,10 +308,10 @@ func (r *Registry) checkRequirements() error {
 		for _, typ := range p.def.Consumes {
 			entry, ok := r.events[typ]
 			if !ok {
-				return &ledger.Error{Code: ledger.CodeInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes unregistered event", k.id)}
+				return ledger.NewInvalid(typ, fmt.Sprintf("projection %q consumes unregistered event", k.id))
 			}
 			if _, inScope := scope[entry.module]; !inScope {
-				return &ledger.Error{Code: ledger.CodeInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes event of module %s/%s outside its Requires", k.id, entry.module.Source, entry.module.ID)}
+				return ledger.NewInvalid(typ, fmt.Sprintf("projection %q consumes event of module %s/%s outside its Requires", k.id, entry.module.Source, entry.module.ID))
 			}
 		}
 	}
@@ -335,40 +336,42 @@ func (r *Registry) scopeOf(key ModuleKey) map[ModuleKey]struct{} {
 func (r *Registry) registerEvent(m *ModuleDescriptor, key ModuleKey, def EventDefinition) error {
 	prefix := ModulePrefix(m.Source, m.ID)
 	if !strings.HasPrefix(string(def.Type), string(prefix)) || len(def.Type) == len(prefix) {
-		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: fmt.Sprintf("event type is not under module %s/%s", key.Source, key.ID)}
+		return ledger.NewInvalid(def.Type, fmt.Sprintf("event type is not under module %s/%s", key.Source, key.ID))
 	}
 	if _, dup := r.events[def.Type]; dup {
-		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "duplicate event type"}
+		return ledger.NewInvalid(def.Type, "duplicate event type")
 	}
 	if len(def.Codecs) == 0 {
-		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "no codec for any payload version"}
+		return ledger.NewInvalid(def.Type, "no codec for any payload version")
 	}
 	explicit := !def.Version.IsZero()
 	for v, codec := range def.Codecs {
 		if v.IsZero() || codec == nil {
-			return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "nil codec or zero payload version"}
+			return ledger.NewInvalid(def.Type, "nil codec or zero payload version")
 		}
 		if v.Prerelease && len(def.Codecs) > 1 {
-			return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type,
-				Detail: fmt.Sprintf("prerelease version %s beside other codecs; a prerelease shape keeps no history", v)}
+			return ledger.NewInvalid(def.Type,
+				fmt.Sprintf("prerelease version %s beside other codecs; a prerelease shape keeps no history", v))
+
 		}
 		if !explicit && def.Version.Less(v) {
 			def.Version = v
 		}
 	}
 	if def.Codecs[def.Version] == nil {
-		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: fmt.Sprintf("write version %s has no codec", def.Version)}
+		return ledger.NewInvalid(def.Type, fmt.Sprintf("write version %s has no codec", def.Version))
 	}
 	if def.Domain == "" {
-		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "event declares no stream domain"}
+		return ledger.NewInvalid(def.Type, "event declares no stream domain")
 	}
 	if se, declared := r.streams[def.Domain]; !declared || se.module != key {
-		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type,
-			Detail: fmt.Sprintf("event names stream domain %q, which module %s/%s does not declare", def.Domain, key.Source, key.ID)}
+		return ledger.NewInvalid(def.Type,
+			fmt.Sprintf("event names stream domain %q, which module %s/%s does not declare", def.Domain, key.Source, key.ID))
+
 	}
 	for _, b := range def.Bindings {
 		if err := b.validate(); err != nil {
-			return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: err.Error()}
+			return ledger.NewInvalid(def.Type, err.Error())
 		}
 	}
 	r.events[def.Type] = eventEntry{module: key, def: def}
@@ -424,19 +427,19 @@ func ModulePrefix(source SourceID, id ModuleID) ledger.EventType {
 func (r *Registry) Encode(typ ledger.EventType, value any) (jsonstable.Value, error) {
 	_, def, ok := r.LookupEvent(typ)
 	if !ok {
-		return jsonstable.Value{}, &ledger.Error{Code: ledger.CodeUnknownEvent, Type: typ}
+		return jsonstable.Value{}, ledger.NewUnknownEvent(typ, "")
 	}
 	codec := def.Codecs[def.Version]
 	if err := codec.Validate(value); err != nil {
-		return jsonstable.Value{}, &ledger.Error{Code: ledger.CodeCodec, Type: typ, Detail: err.Error()}
+		return jsonstable.Value{}, ledger.NewCodec(typ, err.Error())
 	}
 	body, err := codec.Encode(value)
 	if err != nil {
-		return jsonstable.Value{}, &ledger.Error{Code: ledger.CodeCodec, Type: typ, Detail: err.Error()}
+		return jsonstable.Value{}, ledger.NewCodec(typ, err.Error())
 	}
 	wire, err := addVersion(body, def.Version)
 	if err != nil {
-		return jsonstable.Value{}, &ledger.Error{Code: ledger.CodeCodec, Type: typ, Detail: err.Error()}
+		return jsonstable.Value{}, ledger.NewCodec(typ, err.Error())
 	}
 	// The canonical Encode/Decode/Encode round trip is a module test
 	// obligation (EXT-COD-1), not re-verified per Encode.
@@ -456,7 +459,7 @@ func (r *Registry) Decode(e ledger.Event) (DecodedEvent, error) {
 	out.Module = module
 	body, v, err := splitVersion(e.Payload)
 	if err != nil {
-		return out, &ledger.Error{Code: ledger.CodeCodec, Type: e.Type, Detail: err.Error()}
+		return out, ledger.NewCodec(e.Type, err.Error())
 	}
 	out.Version = v
 	codec := def.Codecs[v]
@@ -466,7 +469,7 @@ func (r *Registry) Decode(e ledger.Event) (DecodedEvent, error) {
 	}
 	value, err := codec.Decode(body)
 	if err != nil {
-		return out, &ledger.Error{Code: ledger.CodeCodec, Type: e.Type, Detail: err.Error()}
+		return out, ledger.NewCodec(e.Type, err.Error())
 	}
 	out.Value = value
 	return out, nil
