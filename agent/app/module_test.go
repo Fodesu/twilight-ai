@@ -47,7 +47,7 @@ var auditModule = module.ModuleDescriptor{
 	Streams: []module.StreamDefinition{{Domain: "audit", Inheritance: module.Inherited}},
 	Events: []module.EventDefinition{{
 		Type: auditNoteType, Domain: "audit",
-		Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[auditNote]{}},
+		Codecs: map[module.PayloadVersion]module.PayloadCodec{module.Pre(1): module.JSONCodec[auditNote]{}},
 	}},
 	Projections: []module.ProjectionDefinition{{
 		ID: auditTrail, Version: 1,

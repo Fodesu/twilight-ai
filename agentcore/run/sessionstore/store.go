@@ -426,7 +426,7 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 			return Record{}, err
 		}
 		if decoded.Unknown {
-			return Record{}, fmt.Errorf("sessionstore: record: unknown run event %s v%d", e.Type, decoded.Version)
+			return Record{}, fmt.Errorf("sessionstore: record: unknown run event %s v%s", e.Type, decoded.Version)
 		}
 		ev, ok := decoded.Value.(Event)
 		if !ok {

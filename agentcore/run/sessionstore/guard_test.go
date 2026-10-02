@@ -18,7 +18,7 @@ type guardView struct {
 
 func (guardView) Head() ledger.Head                                 { return ledger.Head{} }
 func (guardView) Epoch() ledger.Epoch                               { return 0 }
-func (guardView) Schema() module.PayloadVersion                     { return 1 }
+func (guardView) Schema() module.PayloadVersion                     { return module.Pre(1) }
 func (guardView) Header() session.SegmentHeader                     { return session.SegmentHeader{} }
 func (guardView) Committed(ledger.CommitID) (bool, error)           { return false, nil }
 func (guardView) StreamHead(ledger.Domain) (ledger.StreamSeq, bool) { return 0, false }

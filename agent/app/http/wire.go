@@ -122,7 +122,7 @@ type Event struct {
 	Position ledger.Position       `json:"position"`
 	Type     ledger.EventType      `json:"type,omitempty"`
 	Module   module.ModuleKey      `json:"module,omitempty"`
-	Version  module.PayloadVersion `json:"version,omitempty"`
+	Version  module.PayloadVersion `json:"version,omitzero"`
 	Value    json.RawMessage       `json:"value,omitempty"`
 	Unknown  bool                  `json:"unknown,omitempty"`
 	Error    string                `json:"error,omitempty"`

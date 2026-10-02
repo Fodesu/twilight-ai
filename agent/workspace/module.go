@@ -26,8 +26,6 @@ const (
 	ModuleID module.ModuleID = "workspace"
 	// StreamDomain is the singleton stream the binding facts live on.
 	StreamDomain = "workspace"
-	// Version is the payload version the module writes.
-	Version module.PayloadVersion = 1
 	// TypeBound binds the Session to a Workspace.
 	TypeBound ledger.EventType = "agent/workspace/bound"
 	// TypeUnbound records that the Session works in no Workspace, ending a
@@ -42,6 +40,10 @@ const (
 	// TargetKind is the run.TargetRef Kind of a Workspace target.
 	TargetKind = "workspace"
 )
+
+// Version is the payload version the module writes: the first prerelease
+// shape.
+var Version = module.Pre(1)
 
 var streamDefinition = module.StreamDefinition{Domain: StreamDomain, Inheritance: module.Inherited}
 

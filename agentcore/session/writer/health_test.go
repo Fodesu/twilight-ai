@@ -32,7 +32,7 @@ func healthModule() module.ModuleDescriptor {
 		}
 	}
 	return module.ModuleDescriptor{Source: module.SourceTwilight, ID: "h", Streams: noteStreams(),
-		Events:      []module.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}}}},
+		Events:      []module.EventDefinition{{Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{module.Pre(1): module.JSONCodec[notePayload]{}}}},
 		Projections: []module.ProjectionDefinition{mk("h/authoritative", true), mk("h/derived", false)}}
 }
 

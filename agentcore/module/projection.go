@@ -158,7 +158,7 @@ func (r *Registry) applyEvent(s *ProjectionScope, state any, pos ledger.Position
 		if entry.def.Ignorable {
 			return state, nil
 		}
-		return nil, &ledger.Error{Code: ledger.CodeUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q cannot decode v%d at commit %d", s.Def.ID, decoded.Version, seq)}
+		return nil, &ledger.Error{Code: ledger.CodeUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q cannot decode v%s at commit %d", s.Def.ID, decoded.Version, seq)}
 	}
 	next, err := s.Def.Apply(state, decoded)
 	if err != nil {

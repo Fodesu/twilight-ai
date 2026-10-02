@@ -157,36 +157,45 @@ var one uint32 = 1
 // and Turn projections consume its facts; nothing of theirs is written here.
 var Module = buildModule()
 
+// Version is the payload version the run module writes every fact with: the
+// first prerelease shape. A fact whose shape changes before the release
+// moves this number and keeps nothing for the shape before; after the
+// release the stable versions keep their codecs beside the current one
+// (factCodecs).
+var Version = module.Pre(1)
+
 // factCodecs is the codec history of one fact type (SES-VER-1, EXT-REG-2):
 // one PayloadCodec per payload version ever written, keyed by version, and
-// the current version. older holds the superseded versions 1..n-1, each a
-// codec of its own that decodes that version's wire shape and upcasts to
-// the current run.Fact; the current shape is version n, served by factCodec
-// for the wire the Run core defines today. Nothing is dropped: a fact type
-// whose shape changes keeps its previous codec under its old version and
-// moves up one version by itself. A history with a gap is a programming
-// error in this module's own table and stops the build.
+// the current version. older holds the superseded stable versions 1..n-1,
+// each a codec of its own that decodes that version's wire shape and
+// upcasts to the current run.Fact; the current shape is stable version n,
+// served by factCodec for the wire the Run core defines today. Nothing is
+// dropped: a fact type whose shape changes keeps its previous codec under
+// its old version and moves up one version by itself. A history with a gap
+// is a programming error in this module's own table and stops the build.
+// With no history the current shape is written at Version, which stays a
+// prerelease version until the release.
 func factCodecs(name string, older map[module.PayloadVersion]module.PayloadCodec) (map[module.PayloadVersion]module.PayloadCodec, module.PayloadVersion) {
+	current := Version
 	codecs := make(map[module.PayloadVersion]module.PayloadCodec, len(older)+1)
-	for v := module.PayloadVersion(1); int(v) <= len(older); v++ {
-		c, ok := older[v]
-		if !ok || c == nil {
-			panic(fmt.Sprintf("sessionstore: fact %s: codec history has no version %d", name, v))
+	if len(older) > 0 {
+		for n := uint16(1); int(n) <= len(older); n++ {
+			c, ok := older[module.Stable(n)]
+			if !ok || c == nil {
+				panic(fmt.Sprintf("sessionstore: fact %s: codec history has no stable version %d", name, n))
+			}
+			codecs[module.Stable(n)] = c
 		}
-		codecs[v] = c
+		current = module.Stable(uint16(len(older) + 1)) //nolint:gosec // G115: a handful of versions
 	}
-	if len(codecs) != len(older) {
-		panic(fmt.Sprintf("sessionstore: fact %s: codec history is not contiguous from 1", name))
-	}
-	current := module.PayloadVersion(len(older) + 1) //nolint:gosec // G115: a handful of versions
 	codecs[current] = factCodec{local: name, wire: wire.Facts{}}
 	return codecs, current
 }
 
-// olderFactCodecs is the superseded payload versions of one fact type.
-// While module.Prerelease holds a shape changes in place and no type has a
-// history; after the release the first change of a type adds the codec of
-// the shape it replaces here, under version 1, and keeps it for good.
+// olderFactCodecs is the superseded stable payload versions of one fact
+// type. Before the release there are none: a shape changes in place and
+// Version moves. After it, the first change of a type adds the codec of the
+// shape it replaces here, under stable version 1, and keeps it for good.
 func olderFactCodecs(string) map[module.PayloadVersion]module.PayloadCodec { return nil }
 
 // eventDefinition is the EventDefinition of one fact type over its codec

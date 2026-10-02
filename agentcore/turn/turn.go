@@ -129,8 +129,9 @@ func CancelCommandID(sid session.SessionID, turnID TurnID, runID run.RunID) run.
 
 // --- module -----------------------------------------------------------------------
 
-// Version is the payload version the turn module writes every event with.
-const Version module.PayloadVersion = 1
+// Version is the payload version the turn module writes every event with:
+// the first prerelease shape.
+var Version = module.Pre(1)
 
 func def[T any](typ ledger.EventType, check func(*T) error) module.EventDefinition {
 	return module.EventDefinition{Type: typ, Domain: StreamDomain,

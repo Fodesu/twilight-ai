@@ -38,14 +38,6 @@ type PayloadCodec interface {
 	Validate(value any) error
 }
 
-// PayloadVersion is the version of one event type's payload codec
-// (SES-VER-1, EXT-REG-2). It belongs to the event type, not to the segment:
-// every payload carries the version it was written under as `v`, the module
-// keeps a codec for every version it ever published, and every codec of one
-// type decodes to the module's current in-memory value (upcasting inside the
-// codec), so consumers never see a version. The kernel reads none of this.
-type PayloadVersion uint16
-
 // EventDefinition declares one event type, the codec of every version it was
 // ever written under, and the version new payloads are written with.
 type EventDefinition struct {
@@ -337,8 +329,9 @@ func (r *Registry) scopeOf(key ModuleKey) map[ModuleKey]struct{} {
 
 // registerEvent validates one event definition of module m and indexes it:
 // the type under the module's prefix and unique, at least one codec with a
-// non-zero version, a write Version that names one of them (defaulting to
-// the highest), a stream domain the module declares, and valid bindings.
+// non-zero version, one codec at most when a version is prerelease, a write
+// Version that names one of them (defaulting to the highest), a stream
+// domain the module declares, and valid bindings.
 func (r *Registry) registerEvent(m *ModuleDescriptor, key ModuleKey, def EventDefinition) error {
 	prefix := ModulePrefix(m.Source, m.ID)
 	if !strings.HasPrefix(string(def.Type), string(prefix)) || len(def.Type) == len(prefix) {
@@ -350,16 +343,21 @@ func (r *Registry) registerEvent(m *ModuleDescriptor, key ModuleKey, def EventDe
 	if len(def.Codecs) == 0 {
 		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "no codec for any payload version"}
 	}
+	explicit := !def.Version.IsZero()
 	for v, codec := range def.Codecs {
-		if v == 0 || codec == nil {
+		if v.IsZero() || codec == nil {
 			return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "nil codec or zero payload version"}
 		}
-		if def.Version == 0 || v > def.Version && !explicitVersion(m.Events, def.Type) {
-			def.Version = max(def.Version, v)
+		if v.Prerelease && len(def.Codecs) > 1 {
+			return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type,
+				Detail: fmt.Sprintf("prerelease version %s beside other codecs; a prerelease shape keeps no history", v)}
+		}
+		if !explicit && def.Version.Less(v) {
+			def.Version = v
 		}
 	}
 	if def.Codecs[def.Version] == nil {
-		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: fmt.Sprintf("write version %d has no codec", def.Version)}
+		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: fmt.Sprintf("write version %s has no codec", def.Version)}
 	}
 	if def.Domain == "" {
 		return &ledger.Error{Code: ledger.CodeInvalid, Type: def.Type, Detail: "event declares no stream domain"}
@@ -375,17 +373,6 @@ func (r *Registry) registerEvent(m *ModuleDescriptor, key ModuleKey, def EventDe
 	}
 	r.events[def.Type] = eventEntry{module: key, def: def}
 	return nil
-}
-
-// explicitVersion reports whether the module declared a write Version for
-// typ, in which case Build leaves it alone.
-func explicitVersion(events []EventDefinition, typ ledger.EventType) bool {
-	for i := range events {
-		if events[i].Type == typ {
-			return events[i].Version != 0
-		}
-	}
-	return false
 }
 
 func (r *Registry) LookupEvent(typ ledger.EventType) (ModuleKey, EventDefinition, bool) {
@@ -485,7 +472,8 @@ func (r *Registry) Decode(e ledger.Event) (DecodedEvent, error) {
 	return out, nil
 }
 
-// addVersion inserts the integer `v` field into the first level of body.
+// addVersion inserts the `v` field, the version's wire form, into the first
+// level of body.
 func addVersion(body jsonstable.Value, v PayloadVersion) (jsonstable.Value, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body.Bytes(), &m); err != nil {
@@ -497,7 +485,11 @@ func addVersion(body jsonstable.Value, v PayloadVersion) (jsonstable.Value, erro
 	if _, has := m["v"]; has {
 		return jsonstable.Value{}, errors.New("payload must not define its own \"v\" field")
 	}
-	m["v"] = json.RawMessage(fmt.Sprintf("%d", v))
+	vs, err := json.Marshal(v)
+	if err != nil {
+		return jsonstable.Value{}, err
+	}
+	m["v"] = vs
 	return jsonstable.FromValue(m)
 }
 
@@ -505,22 +497,22 @@ func addVersion(body jsonstable.Value, v PayloadVersion) (jsonstable.Value, erro
 func splitVersion(payload jsonstable.Value) (jsonstable.Value, PayloadVersion, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(payload.Bytes(), &m); err != nil {
-		return jsonstable.Value{}, 0, fmt.Errorf("payload is not an object: %w", err)
+		return jsonstable.Value{}, PayloadVersion{}, fmt.Errorf("payload is not an object: %w", err)
 	}
 	raw, ok := m["v"]
 	if !ok {
-		return jsonstable.Value{}, 0, errors.New("payload has no \"v\" field")
+		return jsonstable.Value{}, PayloadVersion{}, errors.New("payload has no \"v\" field")
 	}
-	var v uint16
-	if err := json.Unmarshal(raw, &v); err != nil || v == 0 {
-		return jsonstable.Value{}, 0, errors.New("payload \"v\" is not a positive integer")
+	var v PayloadVersion
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return jsonstable.Value{}, PayloadVersion{}, fmt.Errorf("payload \"v\": %w", err)
 	}
 	delete(m, "v")
 	body, err := jsonstable.FromValue(m)
 	if err != nil {
-		return jsonstable.Value{}, 0, err
+		return jsonstable.Value{}, PayloadVersion{}, err
 	}
-	return body, PayloadVersion(v), nil
+	return body, v, nil
 }
 
 // JSONCodec is a PayloadCodec for a plain Go struct type T with json tags.

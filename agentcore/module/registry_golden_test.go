@@ -20,7 +20,7 @@ func TestEncodeWireGolden(t *testing.T) {
 		Events: []EventDefinition{{
 			Type:   "goldsrc/gold/sample",
 			Domain: "gold",
-			Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[goldenPayload]{}},
+			Codecs: map[PayloadVersion]PayloadCodec{Pre(1): JSONCodec[goldenPayload]{}},
 		}},
 	})
 	if err != nil {
@@ -30,7 +30,7 @@ func TestEncodeWireGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if got, want := wire.String(), `{"b":1,"v":1}`; got != want {
+	if got, want := wire.String(), `{"b":1,"v":"pre.1"}`; got != want {
 		t.Fatalf("golden encoded payload drifted:\n got: %s\nwant: %s", got, want)
 	}
 }

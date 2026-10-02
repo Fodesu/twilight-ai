@@ -23,7 +23,7 @@ func countModule() module.ModuleDescriptor {
 	typ := tpfx("q") + "row"
 	return module.ModuleDescriptor{Source: module.SourceTwilight, ID: "q", Streams: noteStreams(),
 		Events: []module.EventDefinition{{Type: typ, Domain: noteDomain,
-			Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[countPayload]{}}}},
+			Codecs: map[module.PayloadVersion]module.PayloadCodec{module.Pre(1): module.JSONCodec[countPayload]{}}}},
 		Projections: []module.ProjectionDefinition{{
 			ID: module.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []ledger.EventType{typ},
 			Initial: func() (any, error) { return countState{}, nil },

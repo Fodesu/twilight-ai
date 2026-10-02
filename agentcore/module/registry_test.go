@@ -39,9 +39,9 @@ func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
 	typ := tpfx(id) + "note"
 	return ModuleDescriptor{Source: SourceTwilight, ID: id, Requires: requires, Streams: ownStream(string(id)),
 		Events: []EventDefinition{
-			{Type: typ, Domain: string(id), Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+			{Type: typ, Domain: string(id), Codecs: map[PayloadVersion]PayloadCodec{Pre(1): JSONCodec[notePayload]{}},
 				Bindings: []BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Domain: string(id), Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Domain: string(id), Codecs: map[PayloadVersion]PayloadCodec{Pre(1): JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []ProjectionDefinition{{
 			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []ledger.EventType{typ},
@@ -66,7 +66,7 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 		"cycle":                   {noteModule("a", ModuleRequirement{Source: SourceTwilight, Module: "b"}), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a"})},
 		"event not owned by the dependency": {noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
 			Events: []ledger.EventType{tpfx("b") + "note"}})},
-		"event outside module": {{Source: SourceTwilight, ID: "a", Events: []EventDefinition{{Type: "twilight/b/x", Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}}}}},
+		"event outside module": {{Source: SourceTwilight, ID: "a", Events: []EventDefinition{{Type: "twilight/b/x", Codecs: map[PayloadVersion]PayloadCodec{Pre(1): JSONCodec[notePayload]{}}}}}},
 		"projection outside scope": {noteModule("a"), {Source: SourceTwilight, ID: "b", Projections: []ProjectionDefinition{{ID: "p", Version: 1, Consumes: []ledger.EventType{tpfx("a") + "note"},
 			Initial: func() (any, error) { return nil, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[noteState]{}}}}},
 	}
@@ -86,7 +86,7 @@ func srcModule(source SourceID, id ModuleID) ModuleDescriptor {
 	domain := string(source) + "." + string(id)
 	return ModuleDescriptor{Source: source, ID: id, Streams: ownStream(domain), Events: []EventDefinition{{
 		Type: ModulePrefix(source, id) + "note", Domain: domain,
-		Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+		Codecs: map[PayloadVersion]PayloadCodec{Pre(1): JSONCodec[notePayload]{}},
 	}}}
 }
 
@@ -129,15 +129,15 @@ func TestRegistrySchemaVersion(t *testing.T) {
 	}
 	typ := tpfx("a") + "note"
 	wire, err := r.Encode(typ, notePayload{Text: "hi"})
-	if err != nil || wire.String() != `{"text":"hi","v":1}` {
+	if err != nil || wire.String() != `{"text":"hi","v":"pre.1"}` {
 		t.Fatalf("encode = %s %v", wire, err)
 	}
 	decoded, err := r.Decode(ledger.Event{Type: typ, Payload: wire})
 	if err != nil || decoded.Unknown || decoded.Value.(notePayload).Text != "hi" {
 		t.Fatalf("decode = %+v %v", decoded, err)
 	}
-	future, err := r.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"hi","v":2}`)})
-	if err != nil || !future.Unknown || future.Version != 2 {
+	future, err := r.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"hi","v":"pre.2"}`)})
+	if err != nil || !future.Unknown || future.Version != Pre(2) {
 		t.Fatalf("future version = %+v %v", future, err)
 	}
 	if _, err := r.Encode("twilight/a/other", notePayload{}); err == nil {
@@ -155,8 +155,8 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 		detail string
 	}{
 		{"no codec at all", nil, "no codec for any payload version"},
-		{"zero payload version", map[PayloadVersion]PayloadCodec{0: JSONCodec[notePayload]{}}, "nil codec or zero payload version"},
-		{"nil codec", map[PayloadVersion]PayloadCodec{1: nil}, "nil codec or zero payload version"},
+		{"zero payload version", map[PayloadVersion]PayloadCodec{PayloadVersion{}: JSONCodec[notePayload]{}}, "nil codec or zero payload version"},
+		{"nil codec", map[PayloadVersion]PayloadCodec{Pre(1): nil}, "nil codec or zero payload version"},
 	} {
 		_, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
 			Events: []EventDefinition{{Type: tpfx("a") + "note", Domain: "a", Codecs: tc.codecs}}})
@@ -167,24 +167,36 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 			t.Fatalf("%s: error = %v", tc.name, err)
 		}
 	}
-	// A type with codecs for two versions is the supported shape: it keeps
-	// building, and the write Version defaults to the highest codec. A
-	// declared write Version without a codec is refused.
+	// A type with codecs for two stable versions is the supported shape: it
+	// keeps building, and the write Version defaults to the highest codec. A
+	// declared write Version without a codec is refused, and so is a
+	// prerelease version beside any other codec: a prerelease shape keeps no
+	// history.
 	r, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
 		Events: []EventDefinition{{
 			Type: tpfx("a") + "note", Domain: "a",
-			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
+			Codecs: map[PayloadVersion]PayloadCodec{Stable(1): legacyCodec{}, Stable(2): JSONCodec[notePayload]{}},
 		}}})
 	if err != nil {
 		t.Fatalf("coexisting versions: %v", err)
 	}
-	if _, def, _ := r.LookupEvent(tpfx("a") + "note"); def.Version != 2 {
-		t.Fatalf("default write version = %d, want the highest codec, 2", def.Version)
+	if _, def, _ := r.LookupEvent(tpfx("a") + "note"); def.Version != Stable(2) {
+		t.Fatalf("default write version = %s, want the highest codec, 2", def.Version)
 	}
 	if _, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
-		Events: []EventDefinition{{Type: tpfx("a") + "note", Domain: "a", Version: 3,
-			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}}}}}); err == nil || !strings.Contains(err.Error(), "write version 3 has no codec") {
+		Events: []EventDefinition{{Type: tpfx("a") + "note", Domain: "a", Version: Stable(3),
+			Codecs: map[PayloadVersion]PayloadCodec{Stable(1): legacyCodec{}, Stable(2): JSONCodec[notePayload]{}}}}}); err == nil || !strings.Contains(err.Error(), "write version 3 has no codec") {
 		t.Fatalf("write version without codec: %v", err)
+	}
+	if _, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
+		Events: []EventDefinition{{Type: tpfx("a") + "note", Domain: "a",
+			Codecs: map[PayloadVersion]PayloadCodec{Pre(1): legacyCodec{}, Pre(2): JSONCodec[notePayload]{}}}}}); err == nil || !strings.Contains(err.Error(), "prerelease version") {
+		t.Fatalf("prerelease history: %v", err)
+	}
+	if _, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
+		Events: []EventDefinition{{Type: tpfx("a") + "note", Domain: "a",
+			Codecs: map[PayloadVersion]PayloadCodec{Pre(1): legacyCodec{}, Stable(1): JSONCodec[notePayload]{}}}}}); err == nil || !strings.Contains(err.Error(), "prerelease version") {
+		t.Fatalf("prerelease beside stable: %v", err)
 	}
 }
 
@@ -221,7 +233,7 @@ func (legacyCodec) Validate(v any) error {
 // Unknown with its raw payload.
 func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	typ := tpfx("v") + "note"
-	codecs := map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}}
+	codecs := map[PayloadVersion]PayloadCodec{Stable(1): legacyCodec{}, Stable(2): JSONCodec[notePayload]{}}
 	upgraded := ModuleDescriptor{Source: SourceTwilight, ID: "v", Streams: ownStream("v"), Events: []EventDefinition{{
 		Type: typ, Domain: "v", Codecs: codecs,
 	}}}
@@ -235,30 +247,30 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if wire.String() != `{"text":"hi","v":2}` {
+	if wire.String() != `{"text":"hi","v":"2"}` {
 		t.Fatalf("default write version wire = %s", wire)
 	}
 	// A module still writing the older version declares it.
 	pinned := upgraded
-	pinned.Events = []EventDefinition{{Type: typ, Domain: "v", Codecs: codecs, Version: 1}}
+	pinned.Events = []EventDefinition{{Type: typ, Domain: "v", Codecs: codecs, Version: Stable(1)}}
 	r1, err := BuildRegistry(pinned)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w1, err := r1.Encode(typ, notePayload{Text: "hi"}); err != nil || w1.String() != `{"text":"hi","v":1}` {
+	if w1, err := r1.Encode(typ, notePayload{Text: "hi"}); err != nil || w1.String() != `{"text":"hi","v":"1"}` {
 		t.Fatalf("pinned write version wire = %s %v", w1, err)
 	}
 
 	// A row written before the upgrade still decodes, through its own codec.
-	old, err := r.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"old","v":1}`)})
+	old, err := r.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"old","v":"1"}`)})
 	if err != nil {
 		t.Fatalf("decode v1: %v", err)
 	}
 	if old.Unknown {
 		t.Fatal("a retained older version decoded as Unknown")
 	}
-	if old.Version != 1 || old.Value.(notePayload).Text != "v1:old" {
-		t.Fatalf("v1 row = version %d value %+v: the v1 codec did not run", old.Version, old.Value)
+	if old.Version != Stable(1) || old.Value.(notePayload).Text != "v1:old" {
+		t.Fatalf("v1 row = version %s value %+v: the v1 codec did not run", old.Version, old.Value)
 	}
 	current, err := r.Decode(ledger.Event{Type: typ, Payload: wire})
 	if err != nil || current.Unknown || current.Value.(notePayload).Text != "hi" {
@@ -266,11 +278,11 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	}
 
 	// A version no codec claims is preserved raw rather than reinterpreted.
-	future, err := r.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"x","v":3}`)})
-	if err != nil || !future.Unknown || future.Version != 3 {
+	future, err := r.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"x","v":"3"}`)})
+	if err != nil || !future.Unknown || future.Version != Stable(3) {
 		t.Fatalf("v3 row = %+v %v, want Unknown v3", future, err)
 	}
-	if future.Event.Payload.String() != `{"text":"x","v":3}` {
+	if future.Event.Payload.String() != `{"text":"x","v":"3"}` {
 		t.Fatalf("unknown-version payload was not preserved: %s", future.Event.Payload)
 	}
 }

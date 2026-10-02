@@ -24,7 +24,7 @@ func registry(t *testing.T) *module.Registry {
 	r, err := module.BuildRegistry(module.ModuleDescriptor{Source: module.SourceTwilight, ID: "z",
 		Streams: []module.StreamDefinition{{Domain: "z", Inheritance: module.Inherited}},
 		Events: []module.EventDefinition{{Type: rowType, Domain: "z",
-			Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[rowPayload]{}}}}})
+			Codecs: map[module.PayloadVersion]module.PayloadCodec{module.Pre(1): module.JSONCodec[rowPayload]{}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

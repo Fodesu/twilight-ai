@@ -514,8 +514,9 @@ var supersededBinding = module.BindingReferenceDefinition{
 const StreamDomain = "chatlog"
 
 // Version is the payload version the chatlog writes every event with
-// (EXT-REG-2); older versions keep their codecs beside it.
-const Version module.PayloadVersion = 1
+// (EXT-REG-2): the first prerelease shape. A stable version keeps the codecs
+// of the stable versions before it beside it.
+var Version = module.Pre(1)
 
 var streamDefinition = module.StreamDefinition{Domain: StreamDomain, Inheritance: module.Inherited}
 

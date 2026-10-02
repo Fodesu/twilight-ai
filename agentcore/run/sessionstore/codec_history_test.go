@@ -2,18 +2,19 @@ package sessionstore
 
 import (
 	"errors"
+	"strings"
+	"testing"
+
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/run"
-	"strings"
-	"testing"
 )
 
-// withdrawnV1 stands in for a superseded wire shape of model_step_withdrawn
-// in which the step was named "step": it decodes that shape and upcasts to
-// the current run.ModelStepWithdrawn. Encode is never used for a superseded
-// version.
+// withdrawnV1 stands in for a superseded stable wire shape of
+// model_step_withdrawn in which the step was named "step": it decodes that
+// shape and upcasts to the current run.ModelStepWithdrawn. Encode is never
+// used for a superseded version.
 type withdrawnV1 struct{}
 
 func (withdrawnV1) Validate(any) error { return errors.New("version 1 is superseded") }
@@ -31,14 +32,15 @@ func (withdrawnV1) Decode(w jsonstable.Value) (any, error) {
 	return Event{RunID: body.RunID, Fact: run.ModelStepWithdrawn{StepID: body.Step}}, nil
 }
 
-// EXT-REG-2: a fact type keeps the codec of every payload version it ever
-// wrote. With a superseded version in its history the type encodes at the
-// next version and still decodes the old wire to the current fact.
+// EXT-REG-2: once released, a fact type keeps the codec of every stable
+// payload version it ever wrote. With a superseded stable version in its
+// history the type encodes at the next stable version and still decodes the
+// old wire to the current fact.
 func TestFactCodecHistoryDecodesEveryVersion(t *testing.T) {
 	const name = "model_step_withdrawn"
-	codecs, current := factCodecs(name, map[module.PayloadVersion]module.PayloadCodec{1: withdrawnV1{}})
-	if current != 2 || len(codecs) != 2 {
-		t.Fatalf("history = %d codecs at version %d, want 2 at 2", len(codecs), current)
+	codecs, current := factCodecs(name, map[module.PayloadVersion]module.PayloadCodec{module.Stable(1): withdrawnV1{}})
+	if current != module.Stable(2) || len(codecs) != 2 {
+		t.Fatalf("history = %d codecs at version %s, want 2 at 2", len(codecs), current)
 	}
 	mod := module.ModuleDescriptor{Source: module.SourceTwilight, ID: ModuleID,
 		Streams: []module.StreamDefinition{streamDefinition}, Events: []module.EventDefinition{eventDefinition(name, codecs, current)}}
@@ -50,37 +52,52 @@ func TestFactCodecHistoryDecodesEveryVersion(t *testing.T) {
 	want := Event{RunID: "r1", Fact: run.ModelStepWithdrawn{StepID: "s1"}}
 
 	wire, err := reg.Encode(typ, want)
-	if err != nil || !strings.Contains(wire.String(), `"v":2`) {
-		t.Fatalf("encode = %s %v, want the current version 2", wire, err)
+	if err != nil || !strings.Contains(wire.String(), `"v":"2"`) {
+		t.Fatalf("encode = %s %v, want the current stable version 2", wire, err)
 	}
 	cases := []struct {
 		name    string
 		payload string
 		version module.PayloadVersion
 	}{
-		{"superseded wire", `{"runId":"r1","step":"s1","v":1}`, 1},
-		{"current wire", wire.String(), 2},
+		{"superseded wire", `{"runId":"r1","step":"s1","v":"1"}`, module.Stable(1)},
+		{"current wire", wire.String(), module.Stable(2)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d, err := reg.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(tc.payload)})
 			if err != nil || d.Unknown || d.Version != tc.version || d.Value != want {
-				t.Fatalf("decode = %+v %v, want version %d value %+v", d, err, tc.version, want)
+				t.Fatalf("decode = %+v %v, want version %s value %+v", d, err, tc.version, want)
 			}
 		})
 	}
 }
 
-// Before the release every fact type is at version 1 with one codec: a
-// shape that changes is changed in place. After it, a fact whose wire shape
-// changes adds its previous codec to olderFactCodecs rather than editing the
-// current one in place.
+// Before the release every fact type is written at the module's one
+// prerelease Version with no history: a shape that changes is changed in
+// place and the number moves. A payload of an earlier prerelease shape is
+// not read.
 func TestPrereleaseFactsHaveNoHistory(t *testing.T) {
-	if !module.Prerelease {
-		t.Skip("released: fact types may carry a codec history")
+	if !Version.Prerelease {
+		t.Skip("released: fact types may carry a stable codec history")
 	}
-	if err := module.NoHistory(&Module); err != nil {
+	for _, def := range Module.Events {
+		if def.Version != Version || len(def.Codecs) != 1 || def.Codecs[Version] == nil {
+			t.Fatalf("%s: version %s with %d codecs, want %s with one codec", def.Type, def.Version, len(def.Codecs), Version)
+		}
+	}
+	reg, err := module.BuildRegistry(Module)
+	if err != nil {
 		t.Fatal(err)
+	}
+	typ := Type("model_step_withdrawn")
+	earlier := module.Pre(Version.Number - 1)
+	if earlier.IsZero() {
+		earlier = module.Pre(Version.Number + 1)
+	}
+	d, err := reg.Decode(ledger.Event{Type: typ, Payload: jsonstable.MustParse(`{"runId":"r1","stepId":"s1","v":"` + earlier.String() + `"}`)})
+	if err != nil || !d.Unknown {
+		t.Fatalf("decode of another prerelease shape = %+v %v, want Unknown", d, err)
 	}
 }
 
@@ -88,8 +105,8 @@ func TestPrereleaseFactsHaveNoHistory(t *testing.T) {
 func TestFactCodecHistoryMustBeContiguous(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Fatal("a history without version 1 built")
+			t.Fatal("a history without stable version 1 built")
 		}
 	}()
-	factCodecs("model_step_withdrawn", map[module.PayloadVersion]module.PayloadCodec{2: withdrawnV1{}})
+	factCodecs("model_step_withdrawn", map[module.PayloadVersion]module.PayloadCodec{module.Stable(2): withdrawnV1{}})
 }

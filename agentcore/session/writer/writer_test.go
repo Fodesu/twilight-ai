@@ -50,9 +50,9 @@ func noteModule(id module.ModuleID, requires ...module.ModuleRequirement) module
 	typ := tpfx(id) + "note"
 	return module.ModuleDescriptor{Source: module.SourceTwilight, ID: id, Requires: requires, Streams: noteStreams(),
 		Events: []module.EventDefinition{
-			{Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}},
+			{Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{module.Pre(1): module.JSONCodec[notePayload]{}},
 				Bindings: []module.BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{module.Pre(1): module.JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []module.ProjectionDefinition{{
 			ID: module.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []ledger.EventType{typ}, Authoritative: true,
@@ -273,8 +273,8 @@ func TestProjectionUnknownEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	raw("other", "twilight/zzz/thing", `{"v":1}`)         // out of scope: skipped
-	raw("hinted", tpfx("a")+"hint", `{"text":"x","v":2}`) // in scope, ignorable, unknown version: skipped
+	raw("other", "twilight/zzz/thing", `{"v":"pre.1"}`)         // out of scope: skipped
+	raw("hinted", tpfx("a")+"hint", `{"text":"x","v":"pre.2"}`) // in scope, ignorable, unknown version: skipped
 	_ = kw.Close(ctx)
 	w = f.open(t, false)
 	if got := notes(t, w); len(got) != 1 {
@@ -282,7 +282,7 @@ func TestProjectionUnknownEvents(t *testing.T) {
 	}
 	_ = w.Close(ctx)
 	kw, _ = f.store.Open(ctx, "s", session.OpenOptions{})
-	raw("strict", "twilight/a/strict", `{"v":1}`) // in scope, not registered: fold fails
+	raw("strict", "twilight/a/strict", `{"v":"pre.1"}`) // in scope, not registered: fold fails
 	_ = kw.Close(ctx)
 	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !errors.Is(err, &ledger.Error{Code: ledger.CodeUnknownEvent}) {
 		t.Fatalf("open with unknown strict event = %v", err)
@@ -446,7 +446,7 @@ func TestBindingAdmission(t *testing.T) {
 	typ := tpfx("r") + "ref"
 	reg, err := module.BuildRegistry(module.ModuleDescriptor{Source: module.SourceTwilight, ID: "r", Streams: noteStreams(),
 		Events: []module.EventDefinition{{
-			Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{1: module.JSONCodec[notePayload]{}},
+			Type: typ, Domain: noteDomain, Codecs: map[module.PayloadVersion]module.PayloadCodec{module.Pre(1): module.JSONCodec[notePayload]{}},
 			Bindings: []module.BindingReferenceDefinition{{
 				Extractor: refsExtractor, Cardinality: module.Cardinality{Min: 1, Max: &maxTwo},
 				AllowedSchemes:     []artifact.Scheme{"spill"},

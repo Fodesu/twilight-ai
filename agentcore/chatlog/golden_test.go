@@ -71,5 +71,5 @@ func TestChatlogWireGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	freezeChatlog(t, "input_submitted wire", wire.String(), `{"content":{"text":"hi"},"inputId":"in-1","submittedAtUnixMilli":1,"v":1}`)
+	freezeChatlog(t, "input_submitted wire", wire.String(), `{"content":{"text":"hi"},"inputId":"in-1","submittedAtUnixMilli":1,"v":"pre.1"}`)
 }
