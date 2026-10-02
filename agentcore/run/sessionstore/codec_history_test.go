@@ -71,14 +71,16 @@ func TestFactCodecHistoryDecodesEveryVersion(t *testing.T) {
 	}
 }
 
-// The production module has no history yet: every fact type is at version 1
-// with one codec. A fact whose wire shape changes must add its previous
-// codec to olderFactCodecs rather than edit the current one in place.
-func TestEveryFactIsAtVersionOne(t *testing.T) {
-	for _, def := range Module.Events {
-		if def.Version != 1 || len(def.Codecs) != 1 || def.Codecs[1] == nil {
-			t.Fatalf("%s: version %d with %d codecs, want version 1 with one codec", def.Type, def.Version, len(def.Codecs))
-		}
+// Before the release every fact type is at version 1 with one codec: a
+// shape that changes is changed in place. After it, a fact whose wire shape
+// changes adds its previous codec to olderFactCodecs rather than editing the
+// current one in place.
+func TestPrereleaseFactsHaveNoHistory(t *testing.T) {
+	if !module.Prerelease {
+		t.Skip("released: fact types may carry a codec history")
+	}
+	if err := module.NoHistory(&Module); err != nil {
+		t.Fatal(err)
 	}
 }
 

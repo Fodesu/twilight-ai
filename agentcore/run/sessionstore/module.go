@@ -183,9 +183,9 @@ func factCodecs(name string, older map[module.PayloadVersion]module.PayloadCodec
 	return codecs, current
 }
 
-// olderFactCodecs is the superseded payload versions of one fact type. No
-// fact type has changed wire shape since it was first written, so every
-// type is at version 1 with no history; the first change adds the codec of
+// olderFactCodecs is the superseded payload versions of one fact type.
+// While module.Prerelease holds a shape changes in place and no type has a
+// history; after the release the first change of a type adds the codec of
 // the shape it replaces here, under version 1, and keeps it for good.
 func olderFactCodecs(string) map[module.PayloadVersion]module.PayloadCodec { return nil }
 
