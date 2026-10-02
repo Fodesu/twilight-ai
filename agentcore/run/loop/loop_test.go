@@ -12,8 +12,8 @@ import (
 
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/sdkconv"
-	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/prompt"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -100,7 +100,7 @@ type staticBuilder struct {
 	policy StepPolicy
 }
 
-func (p staticBuilder) Build(_ context.Context, hint PromptInput) (decision.Prompt, error) {
+func (p staticBuilder) Build(_ context.Context, hint PromptInput) (prompt.Prompt, error) {
 	model := p.model
 	if model == "" {
 		model = testModel
@@ -115,9 +115,9 @@ func (p staticBuilder) Build(_ context.Context, hint PromptInput) (decision.Prom
 	}
 	frozen, err := sdkconv.FreezeModelRequest(req)
 	if err != nil {
-		return decision.Prompt{}, err
+		return prompt.Prompt{}, err
 	}
-	return decision.Prompt{Model: model, Request: frozen, InputIDs: ids, Tools: p.specs, Policy: p.policy}, nil
+	return prompt.Prompt{Model: model, Request: frozen, InputIDs: ids, Tools: p.specs, Policy: p.policy}, nil
 }
 
 // toolDef is the provider definition every test tool shares; ToolSpec keeps
@@ -172,7 +172,7 @@ type blockingBuilder struct {
 	release chan struct{}
 }
 
-func (b *blockingBuilder) Build(ctx context.Context, hint PromptInput) (decision.Prompt, error) {
+func (b *blockingBuilder) Build(ctx context.Context, hint PromptInput) (prompt.Prompt, error) {
 	close(b.started)
 	<-b.release
 	return b.staticBuilder.Build(ctx, hint)

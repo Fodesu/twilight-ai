@@ -22,8 +22,8 @@ type driver struct {
 	// runs is the Run module's Session adapter; every drive binds it to the
 	// caller's Writer.
 	runs *sessionstore.SessionRunStore
-	// loop steps every Run; builders resolves the decision each Run's
-	// preset makes for its model steps.
+	// loop steps every Run; builders resolves the prompt Builder of each
+	// Run's preset.
 	loop     *loop.Loop
 	builders *builders
 	recovery *recovery

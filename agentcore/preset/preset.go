@@ -13,13 +13,13 @@ type (
 	// PresetID names a preset under registration; the PresetRef a Session
 	// records pairs it with the digest of the registered AgentPreset.
 	PresetID string
-	// PromptBuilderRef names the decision component that builds the model
+	// PromptBuilderRef names the builder that assembles the model
 	// prompt for a Turn. It is part of the preset digest.
 	PromptBuilderRef string
 )
 
 // PresetRef is the digest-checked reference a Turn's started fact records:
-// the decision identity the Turn runs under, addressable across processes.
+// the preset the Turn runs under, addressable across processes.
 type PresetRef struct {
 	ID     PresetID          `json:"id"`
 	Digest jsonstable.Digest `json:"digest"`
@@ -42,15 +42,15 @@ type ToolContract struct {
 	Placement run.ToolPlacement `json:"placement,omitempty"`
 }
 
-// AgentPreset is the decision identity a Turn is started under: every
-// input to the decision layer that must be the same when another process
+// AgentPreset is what a Turn is started under: every input to prompt
+// building and step policy that must be the same when another process
 // resumes the Turn. The Session records PresetRef{ID, Digest}; credentials,
 // clients and tool implementations never enter it. Streaming is not part of
 // the identity: it is an execution-side observation choice of the backend.
 type AgentPreset struct {
 	Model run.ModelRef   `json:"model"`
 	Tools []ToolContract `json:"tools,omitempty"`
-	// PromptBuilder names the decision component resolved on the Owner side.
+	// PromptBuilder names the prompt builder resolved on the Owner side.
 	PromptBuilder PromptBuilderRef `json:"promptBuilder"`
 	// Scheduling is how the tool calls of one step run: parallel (default) or
 	// sequential, with an optional bound on concurrent workers. It is frozen
@@ -67,9 +67,8 @@ type AgentPreset struct {
 // it pins every PresetRef ever recorded.
 const DigestDomain = "twilight/turn/preset"
 
-// DigestPreset covers the fields that change what the decision layer does
-// for a Turn: Model, Tools, Prompt, Scheduling, MalformedRetries and
-// SystemPrompt.
+// DigestPreset covers the fields that change what a Turn does: Model,
+// Tools, PromptBuilder, Scheduling, MalformedRetries and SystemPrompt.
 func DigestPreset(p *AgentPreset) (jsonstable.Digest, error) {
 	body := struct {
 		Model            run.ModelRef       `json:"model"`

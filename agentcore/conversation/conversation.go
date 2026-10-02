@@ -85,7 +85,7 @@ type Config struct {
 	Turns       Turns
 	Chatlog     *chatlog.Commands
 	Projections session.ProjectionReader
-	// Preset is the decision identity every Turn the Controller starts runs
+	// Preset is the preset every Turn the Controller starts runs
 	// under; required.
 	Preset preset.PresetRef
 	// NewTurnID mints TurnIDs for new Turns; nil selects the random default.

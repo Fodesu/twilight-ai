@@ -208,7 +208,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	}
 }
 
-// Older Turns keep resolving their recorded decision identity (PST-2).
+// Older Turns keep resolving the preset they recorded (PST-2).
 func TestPresetVersionsRemainAvailable(t *testing.T) {
 	presets := preset.NewMemory()
 	ap := mustPreset("m-1", nil, app.WithSystemPrompt("original"))
@@ -227,7 +227,7 @@ func TestPresetVersionsRemainAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if newRef == ref {
-		t.Fatal("changed decision inputs reused the old preset ref")
+		t.Fatal("changed preset fields reused the old preset ref")
 	}
 	old, err := presets.Resolve(ref)
 	if err != nil || old.SystemPrompt != "original" || old.Tools[0].Definition.Name != "tool" || old.Tools[0].Definition.CacheControl.Type != "ephemeral" {

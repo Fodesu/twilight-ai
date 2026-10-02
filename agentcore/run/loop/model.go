@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/prompt"
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -16,7 +16,7 @@ import (
 
 // planAndPrepare asks builder for the step's request and commits the Prepare
 // that freezes it, with the policy the builder decided for the step.
-func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, builder decision.Builder, snapshot *store.Snapshot, hint run.PromptInput) error {
+func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, builder prompt.Builder, snapshot *store.Snapshot, hint run.PromptInput) error {
 	hint.Scope = rt.Scope()
 	p, err := builder.Build(ctx, hint)
 	if err != nil {

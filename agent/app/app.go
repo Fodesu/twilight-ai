@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agent/context/compaction"
-	"github.com/felinics/twilight/agent/prompt"
+	"github.com/felinics/twilight/agent/contextprompt"
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/execution"
@@ -29,7 +29,7 @@ import (
 	"sync"
 )
 
-// Preset is an authority-side decision identity to register during Build.
+// Preset is an AgentPreset to register during Build.
 type Preset struct {
 	ID    preset.PresetID
 	Value preset.AgentPreset
@@ -50,7 +50,7 @@ type Config struct {
 	// services from.
 	Sessions SessionPorts
 	// Execution is the execution side's assembly: the effect ports, the
-	// decision catalog, the preset registry, the takeover policy and the
+	// prompt builder catalog, the preset registry, the takeover policy and the
 	// other drive-chain policies the Engine composes over the Sessions. New
 	// fills the Planner, the Responders, Fail and Notify.
 	Execution execution.Config
@@ -115,7 +115,7 @@ type Application struct {
 	// them.
 	owner  *owner.Owner
 	engine execution.Engine
-	// presets is the registry of decision identities Runs are driven under;
+	// presets is the registry of the presets Runs are driven under;
 	// progress is the transient stream of running effects and background
 	// failures. The engine publishes to both; the application owns them.
 	presets  preset.Registry
@@ -243,16 +243,16 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 			resolver = &workspace.Resolver{}
 			c.Execution.TargetResolver = resolver
 		}
-		if c.Execution.Decisions == nil {
-			c.Execution.Decisions = prompt.CatalogWith(prompt.WorkspacePreface)
+		if c.Execution.PromptBuilders == nil {
+			c.Execution.PromptBuilders = contextprompt.CatalogWith(contextprompt.WorkspacePreface)
 		}
 		app.snapshots = c.Workspaces.Snapshots
 		if c.Workspaces.SnapshotAfterTurn && app.snapshots == nil {
 			return nil, errors.New("app: Workspaces.SnapshotAfterTurn requires a Snapshotter")
 		}
 	}
-	if c.Execution.Decisions == nil {
-		c.Execution.Decisions = prompt.DefaultCatalog()
+	if c.Execution.PromptBuilders == nil {
+		c.Execution.PromptBuilders = contextprompt.DefaultCatalog()
 	}
 	if err := app.composeSessions(c.Sessions); err != nil {
 		return nil, err
@@ -340,7 +340,7 @@ func (app *Application) wakeAdvance(sid session.SessionID) {
 	}
 }
 
-// RegisterPreset adds or replaces a decision identity after Build.
+// RegisterPreset adds or replaces a preset after Build.
 func (app *Application) RegisterPreset(id preset.PresetID, p preset.AgentPreset) (preset.PresetRef, error) {
 	ref, err := app.presets.Register(id, p)
 	if err != nil {

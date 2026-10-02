@@ -1,4 +1,4 @@
-// Package preset is the authority-side registry of decision identities:
+// Package preset is the authority-side registry of presets:
 // an AgentPreset in, a digest-checked PresetRef out. It never holds a model
 // client or a tool implementation; those live behind the effect port.
 package preset

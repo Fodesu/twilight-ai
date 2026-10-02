@@ -6,12 +6,12 @@ import (
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
-	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
+	"github.com/felinics/twilight/agentcore/prompt"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/effect/watch"
@@ -191,7 +191,7 @@ func awaiting(t testing.TB, l *Loop) *watch.Watcher {
 // Advance, await the Outcome of each effect it dispatched, Deliver it, and
 // again, until the Run finishes, waits, or a step fails. Each step is the
 // Loop's own; the wait is the Watcher's.
-func settle(ctx context.Context, l *Loop, watcher *watch.Watcher, rt store.RunStore, builder decision.Builder, runID RunID) (LoopResult, error) {
+func settle(ctx context.Context, l *Loop, watcher *watch.Watcher, rt store.RunStore, builder prompt.Builder, runID RunID) (LoopResult, error) {
 	for {
 		res, err := l.Advance(ctx, rt, builder, runID)
 		if err != nil || res.Disposition != LoopDispatched {

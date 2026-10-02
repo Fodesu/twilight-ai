@@ -3,9 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agent/contextprompt"
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/executor/sandbox"
-	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
@@ -172,7 +172,7 @@ func WithSystemPrompt(s string) PresetOption {
 	return func(p *preset.AgentPreset) { p.SystemPrompt = s }
 }
 
-// WithPrompt selects the decision component used by the preset.
+// WithPrompt selects the prompt builder the preset names.
 func WithPrompt(ref preset.PromptBuilderRef) PresetOption {
 	return func(p *preset.AgentPreset) { p.PromptBuilder = ref }
 }
@@ -216,7 +216,7 @@ func NewPresetFromDefinitions(model run.ModelRef, defs []preset.ToolContract, op
 	if model == "" {
 		return preset.AgentPreset{}, errNoModel
 	}
-	p := preset.AgentPreset{Model: model, PromptBuilder: prompt.PromptContextV1, Tools: append([]preset.ToolContract(nil), defs...)}
+	p := preset.AgentPreset{Model: model, PromptBuilder: contextprompt.V1, Tools: append([]preset.ToolContract(nil), defs...)}
 	for _, opt := range opts {
 		opt(&p)
 	}

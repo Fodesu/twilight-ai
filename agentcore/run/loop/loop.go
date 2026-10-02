@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/prompt"
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
@@ -15,7 +15,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
-// Loop is the decision interpreter of Runs (RUN-LOP-2). It holds no
+// Loop is the interpreter of Runs (RUN-LOP-2). It holds no
 // authoritative state: every step starts from RunStore.Load, derives the next
 // action with plan.Next, records the protocol transition and, for a start,
 // hands the requested effect to the Executor as an Assignment keyed by its
@@ -25,8 +25,8 @@ import (
 // reads their Outcomes and delivers them. It never learns which attempt the
 // Executor made for an effect.
 //
-// One Loop serves every Run of a deployment: the decision that differs per
-// Run, the Builder of its preset, is Advance's argument, and everything a
+// One Loop serves every Run of a deployment: what differs per Run, the
+// prompt Builder of its preset, is Advance's argument, and everything a
 // settlement needs is read from the step the Run froze. Deliver and
 // Redispatch therefore need no preset at all.
 type Loop struct {
@@ -155,15 +155,15 @@ func (l *Loop) checkArgs(ctx context.Context, st store.RunStore, runID run.RunID
 // Advance moves the Run to its next quiescent point without waiting on any
 // effect (RUN-LOP-2): it records protocol transitions (prepare, withdraw,
 // start barriers) and dispatches Assignments, then returns LoopDispatched,
-// LoopWaiting or LoopFinished. builder is the Run's preset's decision: it
-// is asked for the next model request when the Run is Open, and the policy
-// it returns is frozen onto the step. The caller reads each returned key through
-// the executor and passes its Outcome to Deliver. One Run takes one step at
-// a time: a concurrent Advance or Deliver of the same Run waits for the
-// step in progress and then takes its own, from the state that step left.
-// store is the RunStore bound to the caller's write capability: every
-// commit of the step goes through it (OWN-HDL-2).
-func (l *Loop) Advance(ctx context.Context, st store.RunStore, builder decision.Builder, runID run.RunID) (LoopResult, error) {
+// LoopWaiting or LoopFinished. builder is the Run's preset's prompt Builder:
+// it is asked for the next model request when the Run is Open, and the
+// policy it returns is frozen onto the step. The caller reads each returned
+// key through the executor and passes its Outcome to Deliver. One Run takes
+// one step at a time: a concurrent Advance or Deliver of the same Run waits
+// for the step in progress and then takes its own, from the state that step
+// left. store is the RunStore bound to the caller's write capability:
+// every commit of the step goes through it (OWN-HDL-2).
+func (l *Loop) Advance(ctx context.Context, st store.RunStore, builder prompt.Builder, runID run.RunID) (LoopResult, error) {
 	if err := l.checkArgs(ctx, st, runID); err != nil {
 		return LoopResult{}, err
 	}
@@ -181,7 +181,7 @@ func (l *Loop) Advance(ctx context.Context, st store.RunStore, builder decision.
 // their keys; outcome retrieval is a separate message-shaped operation through
 // Executor.GetOutcome. This keeps the Executor boundary usable across process
 // boundaries.
-func (l *Loop) advance(ctx context.Context, rt store.RunStore, builder decision.Builder, runID run.RunID) (LoopResult, error) {
+func (l *Loop) advance(ctx context.Context, rt store.RunStore, builder prompt.Builder, runID run.RunID) (LoopResult, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return LoopResult{}, err

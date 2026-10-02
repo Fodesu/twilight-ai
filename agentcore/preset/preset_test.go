@@ -7,14 +7,14 @@ import (
 )
 
 // TestPresetDigestGolden freezes the preset digest and its field boundary:
-// every frozen decision input changes the digest.
+// every frozen field changes the digest.
 func TestPresetDigestGolden(t *testing.T) {
-	base := AgentPreset{Model: "m-1", PromptBuilder: "twilight/decision/prompt/context-v1"}
+	base := AgentPreset{Model: "m-1", PromptBuilder: "twilight/contextprompt/v1"}
 	d, err := DigestPreset(&base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "sha256:0df9e77f409900f02d12be56197ad6cdcf57f948d5ee56b388c9a0f89fdcfbf4"
+	const want = "sha256:3694be1915266edfc3f7892f85ce91c2f541bb6a9b62d43f6c7cc29dffb78c79"
 	if want == "" {
 		t.Errorf("UNSET preset digest = %s", d)
 	} else if string(d) != want {

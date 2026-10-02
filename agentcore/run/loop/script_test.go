@@ -9,8 +9,8 @@ import (
 
 	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/sdkconv"
-	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/sdk"
@@ -131,7 +131,7 @@ type scriptBuilder struct {
 	lastHint run.PromptInput
 }
 
-func (p *scriptBuilder) Build(_ context.Context, hint run.PromptInput) (decision.Prompt, error) {
+func (p *scriptBuilder) Build(_ context.Context, hint run.PromptInput) (prompt.Prompt, error) {
 	p.lastHint = hint
 	model := p.model
 	if model == "" {
@@ -147,7 +147,7 @@ func (p *scriptBuilder) Build(_ context.Context, hint run.PromptInput) (decision
 	}
 	frozen, err := sdkconv.FreezeModelRequest(req)
 	if err != nil {
-		return decision.Prompt{}, err
+		return prompt.Prompt{}, err
 	}
-	return decision.Prompt{Model: model, Request: frozen, InputIDs: ids, Tools: p.specs}, nil
+	return prompt.Prompt{Model: model, Request: frozen, InputIDs: ids, Tools: p.specs}, nil
 }

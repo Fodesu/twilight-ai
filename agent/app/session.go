@@ -23,7 +23,7 @@ import (
 
 // SessionOptions tunes OpenSession.
 type SessionOptions struct {
-	// Preset is the decision identity new Turns run under (required).
+	// Preset is the preset new Turns run under (required).
 	Preset preset.PresetRef
 	// NewTurnID mints TurnIDs; nil selects the random default.
 	NewTurnID func() turn.TurnID

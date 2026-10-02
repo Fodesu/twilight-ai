@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/chatlog"
-	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/preset"
+	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/effect/watch"
@@ -85,21 +85,21 @@ type Sources struct {
 	Content chatlog.ContentResolver
 }
 
-// Config composes one Engine: the effect layer it drives, the decision
-// identities it resolves and the policies it drives under.
+// Config composes one Engine: the effect layer it drives, the presets it
+// resolves and the policies it drives under.
 type Config struct {
 	// Executor is the effect layer (RUN-EXE-3): Execution is required, the
 	// optional capabilities are used when set.
 	Executor effect.Ports
-	// Presets is the registry of decision identities Runs are driven under:
+	// Presets is the registry of the presets Runs are driven under:
 	// required, and the host's to register into.
 	Presets preset.Registry
 	// Progress is the transient stream the Engine publishes the frames of
 	// running effects and, without Fail, its background failures to; nil
 	// publishes none.
 	Progress *observe.Progresses
-	// Decisions resolve each preset's PromptBuilderRef (DEC-CAT): required.
-	Decisions *decision.Catalog
+	// PromptBuilders resolves each preset's PromptBuilderRef: required.
+	PromptBuilders *prompt.Catalog
 	// Planner, when set, is consulted between the steps of every Run with
 	// the Writer of the Session being driven.
 	Planner Planner
@@ -152,8 +152,8 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 	if cfg.Executor.Execution == nil {
 		return nil, errors.New("execution: an Executor port is required")
 	}
-	if cfg.Decisions == nil {
-		return nil, errors.New("execution: a prompt builder catalog is required (Config.Decisions)")
+	if cfg.PromptBuilders == nil {
+		return nil, errors.New("execution: a prompt builder catalog is required (Config.PromptBuilders)")
 	}
 	if cfg.MissingEffects == reconcile.RedispatchMissing && cfg.Redispatches == nil {
 		return nil, errors.New("execution: MissingEffects=redispatch requires a dispatch ledger (Config.Redispatches, RUN-EXE-15)")
@@ -193,7 +193,7 @@ func New(cfg Config, src Sources) (Engine, error) { //nolint:gocritic // hugePar
 	if err != nil {
 		return nil, err
 	}
-	bs := &builders{presets: presets, decisions: cfg.Decisions, sources: decision.Sources{Projections: src.Projections, Content: src.Content}}
+	bs := &builders{presets: presets, catalog: cfg.PromptBuilders, sources: prompt.Sources{Projections: src.Projections, Content: src.Content}}
 	x.recovery = &recovery{runs: src.Runs, ports: cfg.Executor, loop: lp, watcher: x.watcher, fail: report, notify: notify,
 		missingEffects: cfg.MissingEffects, redispatches: cfg.Redispatches, maxRedispatches: cfg.MaxRedispatches, progress: cfg.Progress}
 	var rs *responders

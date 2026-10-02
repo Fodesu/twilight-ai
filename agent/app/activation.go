@@ -20,7 +20,7 @@ import (
 // processes over the same stores, and a gateway may send a command to any
 // replica.
 type Activation struct {
-	// Preset is the decision identity an activation opens a Session with.
+	// Preset is the preset an activation opens a Session with.
 	Preset preset.PresetID
 	// Options is the SessionOptions template of an activated Session; its
 	// Preset and ResumeActive are set by the activation.

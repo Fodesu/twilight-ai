@@ -9,11 +9,11 @@ import (
 
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/chatlog"
-	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/preset"
+	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -136,26 +136,26 @@ func (p *scriptedPort) count() int {
 	return len(p.dispatched)
 }
 
-// staticBuilder is the one decision builder the tests register: one user
+// staticBuilder is the one prompt builder the tests register: one user
 // message under the preset's model.
 type staticBuilder struct{ ap preset.AgentPreset }
 
-func (b staticBuilder) Build(_ context.Context, in run.PromptInput) (decision.Prompt, error) {
+func (b staticBuilder) Build(_ context.Context, in run.PromptInput) (prompt.Prompt, error) {
 	ids := make([]run.InputID, len(in.Inputs))
 	for i, x := range in.Inputs {
 		ids[i] = x.ID
 	}
 	req := model.ModelRequest{Model: string(b.ap.Model), Messages: []model.Message{{Role: model.MessageRoleUser,
 		Content: []model.MessagePart{{Type: model.MessagePartTypeText, Text: "go"}}}}}
-	return decision.Prompt{Model: b.ap.Model, Request: req, InputIDs: ids}, nil
+	return prompt.Prompt{Model: b.ap.Model, Request: req, InputIDs: ids}, nil
 }
 
 const builderRef preset.PromptBuilderRef = "test/static"
 
-func catalog(t *testing.T) *decision.Catalog {
+func catalog(t *testing.T) *prompt.Catalog {
 	t.Helper()
-	c, err := decision.NewCatalog(map[decision.BuilderRef]decision.PromptBuilderFactory{
-		builderRef: func(ap preset.AgentPreset, _ decision.Sources) decision.Builder { return staticBuilder{ap} },
+	c, err := prompt.NewCatalog(map[prompt.BuilderRef]prompt.BuilderFactory{
+		builderRef: func(ap preset.AgentPreset, _ prompt.Sources) prompt.Builder { return staticBuilder{ap} },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,8 +235,8 @@ func newEngine(t *testing.T, cfg Config, s *sessionSide) *engine {
 	if cfg.Executor.Execution == nil {
 		cfg.Executor = effect.PortsOf(newScriptedPort(effect.AttachmentMissing))
 	}
-	if cfg.Decisions == nil {
-		cfg.Decisions = catalog(t)
+	if cfg.PromptBuilders == nil {
+		cfg.PromptBuilders = catalog(t)
 	}
 	if cfg.Presets == nil {
 		cfg.Presets = preset.NewMemory()

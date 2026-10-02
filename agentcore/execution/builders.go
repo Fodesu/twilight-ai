@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/preset"
+	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session/writer"
 )
@@ -18,22 +18,22 @@ type Planner interface {
 	BeforePrepare(ctx context.Context, w writer.Writer, input run.PromptInput) error
 }
 
-// builders resolves the decision Builder of each AgentPreset once and hands
+// builders resolves the prompt Builder of each AgentPreset once and hands
 // the same Builder to every drive of a Run under that preset. A Builder is
 // all a preset contributes to a drive: what it decides for a step travels in
 // the Prompt it returns and is frozen onto the step, so settling the step
 // later needs no preset.
 type builders struct {
-	presets   preset.Registry
-	decisions *decision.Catalog
-	sources   decision.Sources
+	presets preset.Registry
+	catalog *prompt.Catalog
+	sources prompt.Sources
 
 	mu    sync.Mutex
-	built map[preset.PresetRef]decision.Builder
+	built map[preset.PresetRef]prompt.Builder
 }
 
 // For returns the Builder of the preset, resolving it on first use.
-func (b *builders) For(ref preset.PresetRef) (decision.Builder, error) {
+func (b *builders) For(ref preset.PresetRef) (prompt.Builder, error) {
 	ap, err := b.presets.Resolve(ref)
 	if err != nil {
 		return nil, err
@@ -43,12 +43,12 @@ func (b *builders) For(ref preset.PresetRef) (decision.Builder, error) {
 	if built, ok := b.built[ref]; ok {
 		return built, nil
 	}
-	built, err := b.decisions.Resolve(ap, b.sources)
+	built, err := b.catalog.Resolve(ap, b.sources)
 	if err != nil {
 		return nil, err
 	}
 	if b.built == nil {
-		b.built = make(map[preset.PresetRef]decision.Builder)
+		b.built = make(map[preset.PresetRef]prompt.Builder)
 	}
 	b.built[ref] = built
 	return built, nil

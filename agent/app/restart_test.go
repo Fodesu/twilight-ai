@@ -124,7 +124,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 		t.Fatalf("resume = %+v %v %v", results, resumed, err)
 	}
 	// One fresh model call, planned by process 2 -- the same conversation, so
-	// the same messages, but a new decision at recovery time.
+	// the same messages, but planned afresh at recovery time.
 	seen := replan.requests()
 	if len(seen) != 1 {
 		t.Fatalf("replanning model saw %d requests, want 1", len(seen))

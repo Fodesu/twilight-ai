@@ -55,7 +55,7 @@ type Config struct {
 	// Takeover makes every Open take over a live lease (CLD-CTL-2); a
 	// deployment sets it on the owner the controller hands a Session to.
 	Takeover bool `json:"takeover,omitempty"`
-	// Presets are the decision identities registered at start.
+	// Presets are the presets registered at start.
 	Presets []Preset `json:"presets"`
 	// SnapshotAfterTurn snapshots the bound workspace after each settled
 	// Turn (APP-WSP-7); needs ToolBackend.
@@ -71,7 +71,7 @@ type Config struct {
 
 // Activation is the owner's activation model (APP-ACT).
 type Activation struct {
-	// Preset is the decision identity an activation opens with.
+	// Preset is the preset an activation opens with.
 	Preset preset.PresetID `json:"preset"`
 	// IdleRelease is the quiescence after which ownership is released;
 	// zero keeps activated Sessions open.
@@ -89,7 +89,7 @@ type Filestore struct {
 	Root string `json:"root"`
 }
 
-// Preset is one decision identity of the document.
+// Preset is one preset of the document.
 type Preset struct {
 	ID           preset.PresetID `json:"id"`
 	Model        run.ModelRef    `json:"model"`

@@ -1,17 +1,17 @@
-package prompt_test
+package contextprompt_test
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/contextprompt"
 	"github.com/felinics/twilight/agent/input"
-	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agentcore/chatlog"
-	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
 	"github.com/felinics/twilight/agentcore/preset"
+	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -61,12 +61,12 @@ func (c fixedContent) ToolResponse(ctx context.Context, d jsonstable.Digest) (js
 	return c.ToolOutput(ctx, d)
 }
 
-func sources(state chatlog.Context, head ledger.Head, content fixedContent) decision.Sources {
-	return decision.Sources{Projections: fixedSource{state: state, head: head}, Content: content}
+func sources(state chatlog.Context, head ledger.Head, content fixedContent) prompt.Sources {
+	return prompt.Sources{Projections: fixedSource{state: state, head: head}, Content: content}
 }
 
 func testPreset() preset.AgentPreset {
-	return preset.AgentPreset{Model: "m-1", PromptBuilder: prompt.PromptContextV1, SystemPrompt: "be brief"}
+	return preset.AgentPreset{Model: "m-1", PromptBuilder: contextprompt.V1, SystemPrompt: "be brief"}
 }
 
 func entries() (chatlog.Context, fixedContent) {
@@ -79,25 +79,25 @@ func entries() (chatlog.Context, fixedContent) {
 	}}, content
 }
 
-// DEC-CAT-2 / DEC-PMT-1: two authorities resolving the same AgentPreset
+// Two authorities resolving the same AgentPreset
 // against the same projection state and frozen bodies build the same prompt;
 // the registry refuses refs it does not hold.
 func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	state, content := entries()
 	src := sources(state, ledger.Head{Next: 3}, content)
 	input := run.PromptInput{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Digest: "sha256:in-1"}}}
-	var prompts []decision.Prompt
+	var prompts []prompt.Prompt
 	for i := 0; i < 2; i++ {
-		builders := prompt.DefaultCatalog() // a fresh process builds its own registry
+		builders := contextprompt.DefaultCatalog() // a fresh process builds its own registry
 		builder, err := builders.Resolve(testPreset(), src)
 		if err != nil {
 			t.Fatal(err)
 		}
-		prompt, err := builder.Build(context.Background(), input)
+		built, err := builder.Build(context.Background(), input)
 		if err != nil {
 			t.Fatal(err)
 		}
-		prompts = append(prompts, prompt)
+		prompts = append(prompts, built)
 	}
 	if !reflect.DeepEqual(prompts[0], prompts[1]) {
 		t.Fatalf("prompts differ across processes:\n%+v\n%+v", prompts[0], prompts[1])
@@ -108,41 +108,41 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 
 	p := testPreset()
 	p.PromptBuilder = "x/builder"
-	if _, err := prompt.DefaultCatalog().Resolve(p, src); !errors.Is(err, decision.ErrUnknownPromptBuilder) {
-		t.Fatalf("unknown builder: err = %v, want %v", err, decision.ErrUnknownPromptBuilder)
+	if _, err := contextprompt.DefaultCatalog().Resolve(p, src); !errors.Is(err, prompt.ErrUnknownBuilder) {
+		t.Fatalf("unknown builder: err = %v, want %v", err, prompt.ErrUnknownBuilder)
 	}
-	var none *decision.Catalog
+	var none *prompt.Catalog
 	if _, err := none.Resolve(testPreset(), src); err == nil {
 		t.Fatal("nil registry resolved")
 	}
 	// A body the frozen store lost fails the build; the projection itself is
 	// unaffected (CHT-MAT-1).
-	if _, err := prompt.NewContextPromptBuilder(testPreset(), sources(state, ledger.Head{}, fixedContent{})).Build(context.Background(), input); !errors.Is(err, frozen.ErrMissing) {
+	if _, err := contextprompt.New(testPreset(), sources(state, ledger.Head{}, fixedContent{})).Build(context.Background(), input); !errors.Is(err, frozen.ErrMissing) {
 		t.Fatalf("missing body: err = %v", err)
 	}
 }
 
-// DEC-CAT-1: registration rejects empty refs, nil factories and duplicates.
+// Registration rejects empty refs, nil factories and duplicates.
 func TestPromptBuilderRegistration(t *testing.T) {
-	builders, err := decision.NewCatalog(nil)
+	builders, err := prompt.NewCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := builders.Register("", prompt.NewContextPromptBuilder); err == nil {
+	if err := builders.Register("", contextprompt.New); err == nil {
 		t.Fatal("empty builder ref accepted")
 	}
 	if err := builders.Register("p", nil); err == nil {
 		t.Fatal("nil factory accepted")
 	}
-	if err := builders.Register("p", prompt.NewContextPromptBuilder); err != nil {
+	if err := builders.Register("p", contextprompt.New); err != nil {
 		t.Fatal(err)
 	}
-	if err := builders.Register("p", prompt.NewContextPromptBuilder); err == nil {
+	if err := builders.Register("p", contextprompt.New); err == nil {
 		t.Fatal("duplicate builder accepted")
 	}
 }
 
-// DEC-INP-1: the v1 input shape round-trips.
+// The v1 input shape round-trips.
 func TestInputContentRoundTrip(t *testing.T) {
 	for _, text := range []string{"hello", "", `quote " and \ slash`, "多字节"} {
 		got, err := input.TextOf(input.Text(text))
@@ -173,18 +173,18 @@ func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
 		{"interleaved summary", []chatlog.Entry{call, summary, result}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: tc.entries}, ledger.Head{}, content))
+			builder := contextprompt.New(testPreset(), sources(chatlog.Context{Entries: tc.entries}, ledger.Head{}, content))
 			if _, err := builder.Build(context.Background(), run.PromptInput{Scope: "s"}); err == nil {
 				t.Fatal("unpaired history produced a provider request")
 			}
 		})
 	}
-	builder := prompt.NewContextPromptBuilder(testPreset(), sources(chatlog.Context{Entries: []chatlog.Entry{call, input, result}}, ledger.Head{}, content))
-	prompt, err := builder.Build(context.Background(), run.PromptInput{Scope: "s"})
+	builder := contextprompt.New(testPreset(), sources(chatlog.Context{Entries: []chatlog.Entry{call, input, result}}, ledger.Head{}, content))
+	built, err := builder.Build(context.Background(), run.PromptInput{Scope: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	msgs := prompt.Request.Messages
+	msgs := built.Request.Messages
 	if len(msgs) != 4 || msgs[2].Role != "tool" || msgs[3].Role != "user" {
 		t.Fatalf("paired context = %+v", msgs)
 	}
