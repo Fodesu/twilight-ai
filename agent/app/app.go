@@ -105,6 +105,7 @@ type Application struct {
 	// Owner holds the Sessions this process owns; Kernel is their durable
 	// state and Execution is what advances them.
 	Owner     *owner.Owner
+	ownerID   string // diagnostic lease identity supplied by the composition root
 	Kernel    *sessionkernel.Kernel
 	Execution *rt.Execution
 	spawn     *spawn.Responder
@@ -192,7 +193,7 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 	if warn == nil {
 		warn = func(error) {}
 	}
-	app := &Application{warn: warn, inbox: c.Inbox, workspaces: c.Workspaces, bindings: workspace.Commands{Now: c.Kernel.Clock},
+	app := &Application{warn: warn, ownerID: c.Kernel.Ownership.Owner, inbox: c.Inbox, workspaces: c.Workspaces, bindings: workspace.Commands{Now: c.Kernel.Clock},
 		refs: make(map[preset.PresetID]preset.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session),
 		activating: make(map[session.SessionID]chan struct{})}
 	app.bg, app.bgCancel = context.WithCancel(context.Background())

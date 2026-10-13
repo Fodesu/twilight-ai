@@ -11,6 +11,7 @@ import (
 	stdhttp "net/http"
 	"strings"
 
+	"github.com/felinics/twilight/agent/observability"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"github.com/felinics/twilight/agentcore/executor/store"
@@ -43,11 +44,13 @@ func (c *Client) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFa
 	return response.Failure, nil
 }
 
-func (c *Client) Dispatch(ctx context.Context, a effect.Assignment) error {
+func (c *Client) Dispatch(ctx context.Context, a effect.Assignment) (err error) {
+	done := observability.Default.Begin(ctx, "dispatch", observability.ExecutionAttrs(a.Key())...)
+	defer func() { done(err) }()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	err := c.post(ctx, "/dispatch", makeAssignmentRequest(a), nil)
+	err = c.post(ctx, "/dispatch", makeAssignmentRequest(a), nil)
 	var responseErr *responseError
 	switch {
 	case err == nil:
@@ -73,7 +76,9 @@ func (c *Client) Dispatch(ctx context.Context, a effect.Assignment) error {
 	return fmt.Errorf("%w: %w", effect.ErrDispatchUnknown, err)
 }
 
-func (c *Client) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
+func (c *Client) Attach(ctx context.Context, key effect.AssignmentKey) (out effect.Attachment, err error) {
+	done := observability.Default.Begin(ctx, "execution_attach", observability.ExecutionAttrs(key)...)
+	defer func() { done(err) }()
 	var response effect.Attachment
 	if err := c.post(ctx, "/attach", keyRequest{Key: key}, &response); err != nil {
 		return effect.Attachment{}, err
@@ -104,7 +109,9 @@ func (c *Client) GetStatus(ctx context.Context, key effect.AssignmentKey) (effec
 // GetOutcome reads the key's Outcome; the Server answers a wait that ran out
 // with 204, which is effect.ErrOutcomeNotReady here, so the caller asks
 // again (Worker.GetOutcome).
-func (c *Client) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
+func (c *Client) GetOutcome(ctx context.Context, key effect.AssignmentKey) (out effect.Outcome, err error) {
+	done := observability.Default.Begin(ctx, "execution_outcome", observability.ExecutionAttrs(key)...)
+	defer func() { done(err) }()
 	var response protocol.OutcomeEnvelope
 	found, err := c.postOptional(ctx, "/outcome", keyRequest{Key: key}, &response)
 	if err != nil {
@@ -159,6 +166,7 @@ func (c *Client) stream(ctx context.Context, path string, in any, fn func(data [
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	observability.Inject(req)
 	resp, err := c.client().Do(req)
 	if err != nil {
 		return err
@@ -198,7 +206,9 @@ func (c *Client) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 // RecoverExecution is effect.Recoverer over HTTP: the Worker takes the
 // orphaned record of key back and continues it. Not part of
 // effect.ExecutionPort.
-func (c *Client) RecoverExecution(ctx context.Context, key effect.AssignmentKey) error {
+func (c *Client) RecoverExecution(ctx context.Context, key effect.AssignmentKey) (err error) {
+	done := observability.Default.Begin(ctx, "execution_recover", observability.ExecutionAttrs(key)...)
+	defer func() { done(err) }()
 	return c.post(ctx, "/recover", keyRequest{Key: key}, nil)
 }
 
@@ -235,6 +245,7 @@ func (c *Client) postOptional(ctx context.Context, path string, in, out any) (fo
 		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	observability.Inject(req)
 	resp, err := c.client().Do(req)
 	if err != nil {
 		return false, err
@@ -262,6 +273,8 @@ const DefaultMaxBodyBytes int64 = 16 << 20
 // accepts POST only, and a body larger than MaxBodyBytes (zero takes
 // DefaultMaxBodyBytes) is rejected before the Worker sees the request.
 type Server struct {
+	// WorkerID is diagnostic identity, not an authorization credential.
+	WorkerID     string
 	Worker       *executor.Worker
 	MaxBodyBytes int64
 }
@@ -447,7 +460,11 @@ func (s *Server) dispatch(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	// Assignment is 400 (a conflicting replay or an aborted key 409), a
 	// refusal the Worker itself may lift later is 503. 5xx other than 503
 	// never come from here.
-	if err := s.Worker.Dispatch(r.Context(), req.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
+	attrs := append(observability.ExecutionAttrs(req.Assignment.Key()), "worker_id", s.WorkerID)
+	done := observability.Default.Begin(r.Context(), "worker_dispatch", attrs...)
+	err := s.Worker.Dispatch(r.Context(), req.Assignment)
+	done(err)
+	if err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
 		status := stdhttp.StatusBadRequest
 		switch {
 		case errors.Is(err, store.ErrAssignmentConflict), errors.Is(err, effect.ErrExecutionAborted):
@@ -532,7 +549,11 @@ func (s *Server) recover(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if !s.readJSON(w, r, &req) {
 		return
 	}
-	if err := s.Worker.RecoverExecution(r.Context(), req.Key); err != nil {
+	attrs := append(observability.ExecutionAttrs(req.Key), "worker_id", s.WorkerID)
+	done := observability.Default.Begin(r.Context(), "worker_recover", attrs...)
+	err := s.Worker.RecoverExecution(r.Context(), req.Key)
+	done(err)
+	if err != nil {
 		writeError(w, err)
 		return
 	}

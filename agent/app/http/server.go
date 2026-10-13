@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/observability"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/ledger"
@@ -304,13 +305,16 @@ func (s *Server) turn(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 func (s *Server) events(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	id := sid(r)
 	var events <-chan app.Event
+	var cursor *ledger.CommitSeq
 	if from := r.URL.Query().Get("from"); from != "" {
 		n, err := strconv.ParseUint(from, 10, 64)
 		if err != nil {
 			writeError(w, &Error{Status: stdhttp.StatusBadRequest, Code: CodeInvalid, Message: "from must be a commit sequence"})
 			return
 		}
-		events, err = s.App.EventsFrom(r.Context(), id, ledger.CommitSeq(n))
+		seq := ledger.CommitSeq(n)
+		cursor = &seq
+		events, err = s.App.EventsFrom(r.Context(), id, seq)
 		if err != nil {
 			fail(w, err)
 			return
@@ -318,11 +322,21 @@ func (s *Server) events(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	} else {
 		events = s.App.Events(r.Context(), id)
 	}
+	stream := observability.Default.OpenEvents(r.Context(), id, cursor)
+	var writeErr error
+	defer func() {
+		if writeErr == nil {
+			writeErr = r.Context().Err()
+		}
+		stream.Close(writeErr)
+	}()
 	send := sse(w)
 	for e := range events {
 		if !send(EventOf(&e)) {
+			writeErr = errors.New("event stream write failed")
 			return
 		}
+		stream.Sent(e.Position, e.Row.Type != "")
 	}
 }
 

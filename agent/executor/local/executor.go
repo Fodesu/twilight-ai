@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/felinics/twilight/agent/observability"
 	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/executor/notice"
 	run "github.com/felinics/twilight/agentcore/run"
@@ -438,7 +441,19 @@ func (e *LocalExecutor) InFlight() int {
 	return n
 }
 
+func modelTrace(ctx context.Context, a Assignment, event string, attrs ...any) {
+	fields := append(observability.ExecutionAttrs(a.Key()), "event", event)
+	fields = append(fields, attrs...)
+	slog.InfoContext(ctx, "Model execution phase", fields...)
+}
+
 func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenRequest *model.ModelRequest, invoker ModelInvoker) Outcome {
+	modelAttrs := append(observability.ExecutionAttrs(a.Key()), "model", frozenRequest.Model)
+	done := observability.Default.Begin(ctx, "model_execution", modelAttrs...)
+	defer func() { done(nil) }()
+	modelTrace(ctx, a, "model_execution_started", "model", frozenRequest.Model)
+	modelTrace(ctx, a, "model_started", "model", frozenRequest.Model)
+
 	sdkRequest, err := sdkconv.ModelRequest(*frozenRequest)
 	if err != nil {
 		return Outcome{Result: effect.ModelFailed{Code: effect.FailureMalformedRequest, Message: "frozen request cannot be materialized: " + err.Error()}}
@@ -473,8 +488,11 @@ func modelFailure(err error) OutcomeResult {
 func (e *LocalExecutor) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.Request, a Assignment) (sdk.ModelResult, error) {
 	if e.streaming {
 		if streamer, ok := invoker.(StreamingModelInvoker); ok {
+			streamStart := time.Now()
+			modelTrace(ctx, a, "model_stream_started", "model", req.Model)
 			stream, err := streamer.Stream(ctx, *req)
 			if err != nil {
+				modelTrace(ctx, a, "model_stream_error", "model", req.Model, "stream_elapsed_seconds", time.Since(streamStart).Seconds())
 				return sdk.ModelResult{}, err
 			}
 			// The range has an explicit ctx escape: a stream that stops
@@ -487,6 +505,8 @@ func (e *LocalExecutor) invokeModel(ctx context.Context, invoker ModelInvoker, r
 				}
 				e.sink.Publish(ctx, effect.ProgressFrame{Key: a.Key(), Kind: kind, Payload: mustJSON(payload)})
 			}
+			var firstDelta, lastDelta, terminalAt time.Time
+			var terminalPart string
 		consume:
 			for {
 				select {
@@ -496,21 +516,56 @@ func (e *LocalExecutor) invokeModel(ctx context.Context, invoker ModelInvoker, r
 					}
 					switch p := part.(type) {
 					case *sdk.TextDeltaPart:
+						if firstDelta.IsZero() {
+							firstDelta = time.Now()
+							modelTrace(ctx, a, "model_first_delta", "model", req.Model, "stream_elapsed_seconds", firstDelta.Sub(streamStart).Seconds())
+						}
+						lastDelta = time.Now()
 						emitDelta(effect.ProgressTextDelta, p.Text)
 					case *sdk.ReasoningDeltaPart:
+						if firstDelta.IsZero() {
+							firstDelta = time.Now()
+							modelTrace(ctx, a, "model_first_delta", "model", req.Model, "stream_elapsed_seconds", firstDelta.Sub(streamStart).Seconds())
+						}
+						lastDelta = time.Now()
 						emitDelta(effect.ProgressReasoningDelta, p.Text)
+					case *sdk.FinishPart:
+						terminalPart = "finish"
+						terminalAt = time.Now()
+						modelTrace(ctx, a, "model_finish_part_received", "model", req.Model, "terminal_part", terminalPart, "stream_elapsed_seconds", terminalAt.Sub(streamStart).Seconds())
+						modelTrace(ctx, a, "model_terminal_received", "model", req.Model, "terminal_part", terminalPart, "stream_elapsed_seconds", terminalAt.Sub(streamStart).Seconds())
+					case *sdk.ErrorPart:
+						terminalPart = "error"
+						terminalAt = time.Now()
+						modelTrace(ctx, a, "model_finish_part_received", "model", req.Model, "terminal_part", terminalPart, "stream_elapsed_seconds", terminalAt.Sub(streamStart).Seconds())
+						modelTrace(ctx, a, "model_terminal_received", "model", req.Model, "terminal_part", terminalPart, "stream_elapsed_seconds", terminalAt.Sub(streamStart).Seconds())
 					}
 				case <-ctx.Done():
+					modelTrace(ctx, a, "model_stream_canceled", "model", req.Model, "stream_elapsed_seconds", time.Since(streamStart).Seconds())
 					return sdk.ModelResult{}, ctx.Err()
 				}
 			}
+			partsClosed := time.Now()
+			attrs := []any{"model", req.Model, "stream_elapsed_seconds", partsClosed.Sub(streamStart).Seconds(), "terminal_part", terminalPart, "had_delta", !firstDelta.IsZero()}
+			if !lastDelta.IsZero() {
+				attrs = append(attrs, "last_delta_to_parts_closed_seconds", partsClosed.Sub(lastDelta).Seconds())
+				modelTrace(ctx, a, "model_last_delta", "model", req.Model, "stream_elapsed_seconds", lastDelta.Sub(streamStart).Seconds(), "delta_to_parts_closed_seconds", partsClosed.Sub(lastDelta).Seconds())
+			}
+			if !terminalAt.IsZero() {
+				attrs = append(attrs, "terminal_to_parts_closed_seconds", partsClosed.Sub(terminalAt).Seconds())
+			}
+			modelTrace(ctx, a, "model_parts_closed", attrs...)
 			result, err := stream.Result()
+			resultElapsed := time.Since(partsClosed).Seconds()
 			if err != nil {
+				modelTrace(ctx, a, "model_result_error", "model", req.Model, "stream_elapsed_seconds", time.Since(streamStart).Seconds(), "parts_to_result_seconds", resultElapsed)
 				return sdk.ModelResult{}, err
 			}
 			if result == nil {
+				modelTrace(ctx, a, "model_result_error", "model", req.Model, "stream_elapsed_seconds", time.Since(streamStart).Seconds(), "parts_to_result_seconds", resultElapsed)
 				return sdk.ModelResult{}, errors.New("agent: loop: stream returned no result")
 			}
+			modelTrace(ctx, a, "model_result_ready", "model", req.Model, "stream_elapsed_seconds", time.Since(streamStart).Seconds(), "parts_to_result_seconds", resultElapsed, "finish_reason", result.FinishReason)
 			return *result, nil
 		}
 	}

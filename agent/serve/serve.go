@@ -8,6 +8,7 @@ package serve
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	stdhttp "net/http"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/felinics/twilight/agent/observability"
 )
 
 // Component is what a binary serves: its handler and the close that
@@ -36,7 +39,8 @@ type Options struct {
 // DefaultGrace is the shutdown drain when Options give none.
 const DefaultGrace = 15 * time.Second
 
-// Handler wraps a component's handler with /healthz and /readyz.
+// Handler wraps a component's handler with /healthz, /readyz and /metrics.
+// /healthz tests HTTP responsiveness only; it does not prove business-loop health.
 func Handler(component stdhttp.Handler, ready func() bool) stdhttp.Handler {
 	mux := stdhttp.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w stdhttp.ResponseWriter, _ *stdhttp.Request) { w.WriteHeader(stdhttp.StatusNoContent) })
@@ -47,8 +51,9 @@ func Handler(component stdhttp.Handler, ready func() bool) stdhttp.Handler {
 		}
 		w.WriteHeader(stdhttp.StatusNoContent)
 	})
+	mux.Handle("GET /metrics", observability.Default.MetricsHandler())
 	mux.Handle("/", component)
-	return mux
+	return observability.Default.HTTP(mux)
 }
 
 // Run serves the component on addr until ctx ends or a termination signal
@@ -92,6 +97,7 @@ func Run(ctx context.Context, addr string, component Component, opts Options) er
 		}
 	}
 	listening.Store(false)
+	slog.Info("Draining HTTP server", "event", "server_draining", "grace_seconds", grace.Seconds())
 	drain, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
 	shutdownErr := server.Shutdown(drain)

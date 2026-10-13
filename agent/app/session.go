@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/input"
+	"github.com/felinics/twilight/agent/observability"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/owner"
@@ -132,10 +134,14 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if err := app.Kernel.EnsureSession(ctx, sid); err != nil {
 		return nil, err
 	}
+	done := observability.Default.Begin(ctx, "session_owner_open", "session_id", sid, "owner_id", app.ownerID)
 	h, err := app.Owner.Open(ctx, sid)
+	done(err)
 	if err != nil {
 		return nil, err
 	}
+	slog.InfoContext(ctx, "Session ownership opened", append(observability.Correlation(ctx),
+		"event", "session_owner_opened", "session_id", sid, "owner_id", app.ownerID, "lease_epoch", h.Writer().Epoch(), "recovered", h.Recovered)...)
 	s := &Session{Recovered: h.Recovered, app: app, h: h, sid: sid, opts: opts}
 	s.rt, err = rt.New(rt.Config{
 		Writer: h.Writer(), Driver: app.Execution.Driver, Turns: app.Kernel.Turns, Chatlog: app.Kernel.Chatlog, Projections: app.Kernel.Projections,
@@ -534,5 +540,8 @@ func (s *Session) maybeCompact(ctx context.Context) {
 func (s *Session) Close(ctx context.Context) error {
 	s.app.untrack(s)
 	s.host.close()
-	return s.h.Close(ctx)
+	done := observability.Default.Begin(ctx, "session_owner_close", "session_id", s.sid, "owner_id", s.app.ownerID, "lease_epoch", s.h.Writer().Epoch())
+	err := s.h.Close(ctx)
+	done(err)
+	return err
 }

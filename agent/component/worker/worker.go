@@ -86,7 +86,7 @@ func New(ctx context.Context, opts Options) (*Component, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Component{Worker: w, server: &executorhttp.Server{Worker: w}}, nil
+	return &Component{Worker: w, server: &executorhttp.Server{Worker: w, WorkerID: opts.ID}}, nil
 }
 
 // Compose builds the worker its Config describes.

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/felinics/twilight/agent/environment"
+	"github.com/felinics/twilight/agent/observability"
 	"github.com/felinics/twilight/agent/workspace"
 )
 
@@ -99,6 +100,7 @@ func (c *Client) Snapshot(ctx context.Context, id workspace.ID) (workspace.Snaps
 	if err != nil {
 		return workspace.Snapshot{}, err
 	}
+	observability.Inject(req)
 	resp, err := c.client().Do(req) //nolint:gosec // G704: see above
 	if err != nil {
 		return workspace.Snapshot{}, fmt.Errorf("workspace/http: snapshot %s: %w", id, err)

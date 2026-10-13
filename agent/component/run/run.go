@@ -7,7 +7,7 @@ package run
 import (
 	"context"
 	"flag"
-	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/felinics/twilight/agent/config"
@@ -29,6 +29,9 @@ func MainWithDefaultConfig[C any](name string, compose func(context.Context, C) 
 }
 
 func mainWithConfig[C any](name string, compose func(context.Context, C) (serve.Component, error), listen func(C) string, discover func() (string, error)) {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("role", name,
+		"pod", os.Getenv("TWILIGHT_POD_NAME"), "namespace", os.Getenv("TWILIGHT_POD_NAMESPACE"), "node", os.Getenv("TWILIGHT_NODE_NAME"))
+	slog.SetDefault(logger)
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	path := fs.String("config", "", "path of the component's configuration document")
 	_ = fs.Parse(os.Args[1:])
@@ -37,33 +40,34 @@ func mainWithConfig[C any](name string, compose func(context.Context, C) (serve.
 		var err error
 		configPath, err = discover()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+			logger.Error("Configuration discovery failed", "event", "configuration_failed", "error", err)
 			os.Exit(2)
 		}
 	}
 	if configPath == "" {
-		fmt.Fprintf(os.Stderr, "%s: -config is required\n", name)
+		logger.Error("-config is required", "event", "configuration_failed")
 		os.Exit(2)
 	}
 	cfg, err := config.LoadFile[C](configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+		logger.Error("Configuration load failed", "event", "configuration_failed", "error", err)
 		os.Exit(2)
 	}
 	addr := listen(cfg)
 	if addr == "" {
-		fmt.Fprintf(os.Stderr, "%s: listen address is required\n", name)
+		logger.Error("Listen address is required", "event", "configuration_failed")
 		os.Exit(2)
 	}
 	ctx := context.Background()
 	component, err := compose(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: compose: %v\n", name, err)
+		logger.Error("Composition failed", "event", "composition_failed", "error", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "%s: serving on %s\n", name, addr)
+	logger.Info("Starting HTTP server", "event", "server_starting", "listen", addr)
 	if err := serve.Run(ctx, addr, component, serve.Options{}); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+		logger.Error("Server stopped with an error", "event", "server_failed", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("Server stopped", "event", "server_stopped")
 }

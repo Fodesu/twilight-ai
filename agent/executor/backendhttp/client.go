@@ -11,6 +11,7 @@ import (
 	stdhttp "net/http"
 	"strings"
 
+	"github.com/felinics/twilight/agent/observability"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/notice"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
@@ -52,7 +53,10 @@ func (c *Client) Prepare(ctx context.Context, a effect.Assignment) (string, erro
 // Start hands ref to the Server. A 400 is the backend's definite refusal; a
 // 202 marked unknown, a transport failure or any other status may have
 // crossed the effect boundary and is effect.ErrDispatchUnknown.
-func (c *Client) Start(ctx context.Context, ref string, a effect.Assignment) error {
+func (c *Client) Start(ctx context.Context, ref string, a effect.Assignment) (err error) {
+	attrs := append(observability.ExecutionAttrs(a.Key()), "backend_ref", ref)
+	done := observability.Default.Begin(ctx, "backend_start", attrs...)
+	defer func() { done(err) }()
 	resp, err := c.do(ctx, "/start", startRequest{Ref: ref, Assignment: a})
 	if err != nil {
 		return fmt.Errorf("%w: %w", effect.ErrDispatchUnknown, err)
@@ -73,7 +77,10 @@ func (c *Client) Start(ctx context.Context, ref string, a effect.Assignment) err
 	}
 }
 
-func (c *Client) Restart(ctx context.Context, previous string, a effect.Assignment) (string, error) {
+func (c *Client) Restart(ctx context.Context, previous string, a effect.Assignment) (ref string, err error) {
+	attrs := append(observability.ExecutionAttrs(a.Key()), "previous_backend_ref", previous)
+	done := observability.Default.Begin(ctx, "backend_restart", attrs...)
+	defer func() { done(err) }()
 	var out refResponse
 	if _, err := c.post(ctx, "/restart", restartRequest{Previous: previous, Assignment: a}, &out); err != nil {
 		return "", err
@@ -101,7 +108,9 @@ func (c *Client) Status(ctx context.Context, ref string) (effect.ExecutionStatus
 
 // Outcome is the read: the Outcome once the backend has it,
 // effect.ErrOutcomeNotReady on a 204.
-func (c *Client) Outcome(ctx context.Context, ref string) (effect.Outcome, error) {
+func (c *Client) Outcome(ctx context.Context, ref string) (out effect.Outcome, err error) {
+	done := observability.Default.Begin(ctx, "backend_outcome", "backend_ref", ref)
+	defer func() { done(err) }()
 	var envelope protocol.OutcomeEnvelope
 	found, err := c.post(ctx, "/outcome", refRequest{Ref: ref}, &envelope)
 	if err != nil {
@@ -183,6 +192,7 @@ func (c *Client) do(ctx context.Context, path string, in any) (*stdhttp.Response
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	observability.Inject(req)
 	return c.client().Do(req) //nolint:gosec // G704: see above
 }
 

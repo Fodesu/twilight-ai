@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/felinics/twilight/agent/observability"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/ledger"
@@ -57,6 +58,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	observability.Inject(req)
 	resp, err := c.client().Do(req)
 	if err != nil {
 		return fmt.Errorf("owner http: %s %s: %w", method, path, err)
@@ -248,6 +250,7 @@ func (c *Client) eventsLive(ctx context.Context, sid session.SessionID, fn func(
 	if err != nil {
 		return err
 	}
+	observability.Inject(req)
 	resp, err := c.client().Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -307,6 +310,7 @@ func (c *Client) eventsAttempt(
 	if err != nil {
 		return eventsAttemptResult{}, err
 	}
+	observability.Inject(req)
 	resp, err := c.client().Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

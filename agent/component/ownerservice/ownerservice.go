@@ -18,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agent/component/stores"
 	"github.com/felinics/twilight/agent/config"
 	"github.com/felinics/twilight/agent/executor/http"
+	"github.com/felinics/twilight/agent/observability"
 	wshttp "github.com/felinics/twilight/agent/workspace/http"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -239,6 +240,7 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 		Workspaces: wsCfg,
 		Presets:    presets,
 		Activation: activation,
+		Warn:       observability.Default.Warn,
 	}
 	appCfg.Execution.Executor = &http.Client{BaseURL: cfg.Executor}
 	a, err := app.New(appCfg)

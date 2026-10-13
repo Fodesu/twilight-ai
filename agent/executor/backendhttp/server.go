@@ -17,6 +17,7 @@ import (
 	"fmt"
 	stdhttp "net/http"
 
+	"github.com/felinics/twilight/agent/observability"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/notice"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
@@ -112,7 +113,9 @@ func (s *Server) prepare(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if !s.readJSON(w, r, &req) {
 		return
 	}
+	done := observability.Default.Begin(r.Context(), "backend_prepare_received", observability.ExecutionAttrs(req.Assignment.Key())...)
 	ref, err := s.Backend.Prepare(r.Context(), req.Assignment)
+	done(err)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -129,7 +132,10 @@ func (s *Server) start(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if !s.readJSON(w, r, &req) {
 		return
 	}
+	attrs := append(observability.ExecutionAttrs(req.Assignment.Key()), "backend_ref", req.Ref)
+	done := observability.Default.Begin(r.Context(), "backend_start_received", attrs...)
 	err := s.Backend.Start(r.Context(), req.Ref, req.Assignment)
+	done(err)
 	if err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
