@@ -70,10 +70,10 @@ type Config struct {
 	Preset preset.PresetRef
 	// NewTurnID mints TurnIDs for new Turns; nil selects the random default.
 	NewTurnID func() turn.TurnID
-	// RouteRetries bounds how many times one input's route is re-committed
-	// after a conflict with a concurrent route before the last conflict is
-	// returned; the input stays submitted and the next Submit, Advance or
-	// Resume routes it. Zero selects DefaultRouteRetries.
+	// RouteRetries bounds how many times one explicit delivery or Turn start
+	// is re-committed after a conflict before the last conflict is returned;
+	// the input stays submitted for a later QueueInput or Resume. Zero selects
+	// DefaultRouteRetries.
 	RouteRetries int
 	// TurnBudget bounds how many Turns one advance starts from submitted,
 	// undelivered inputs before returning ErrTurnBudget with the Turns so
@@ -90,20 +90,21 @@ const (
 )
 
 var (
-	// ErrRouteContended reports a route that lost to concurrent routes
-	// RouteRetries times. The input is submitted and stays undelivered; the
-	// next Submit, Advance or Resume routes it. It is a transient answer,
-	// unlike the turn.ErrConflict of a Turn that admits no route.
+	// ErrRouteContended reports an explicit delivery or Turn start that lost
+	// to concurrent routes RouteRetries times. The input stays submitted for a
+	// later QueueInput or Resume. It is a transient answer, unlike the
+	// turn.ErrConflict of a Turn that admits no route.
 	ErrRouteContended = errors.New("runtime: route contended")
 	// ErrTurnBudget reports an advance that stopped at the TurnBudget with
 	// inputs still submitted.
 	ErrTurnBudget = errors.New("runtime: turn budget exhausted with inputs still submitted")
 )
 
-// SessionRuntime is the conversation process over one owned Session. Submit
-// admits an input into a Turn, Advance drives a Turn to settlement and on
-// through every Turn the remaining inputs start, Resume does the same for
-// a Session as found after a restart, and Stop settles the active Turn.
+// SessionRuntime is the conversation process over one owned Session.
+// QueueInput, StartInput and DeliverInput make input assignment explicit;
+// Advance drives a Turn to settlement and on through queued inputs, Resume
+// does the same for a Session as found after a restart, and Stop settles the
+// active Turn.
 // Every command runs through the Config's Writer; reads go by SessionID.
 // Concurrent calls are safe: writes serialize in the Writer, and a call
 // whose input lands in a running Turn reports AlreadyDriving. It starts no
@@ -162,28 +163,30 @@ func (r *SessionRuntime) ref(turnID turn.TurnID) turn.TurnRef {
 	return turn.TurnRef{SessionID: r.sid, TurnID: turnID}
 }
 
-// Submitted is what Submit reports: the Turn the input landed in, and
-// whether another driver of this process is already carrying that Turn, in
-// which case it settles and reports there and the caller has nothing to
-// advance.
+// Submitted is what Deliver reports: the Turn the input entered, and whether
+// another driver of this process is already carrying that Turn.
 type Submitted struct {
 	Ref            turn.TurnRef
 	AlreadyDriving bool
 }
 
-// Submit records one input body under id and commits its route: into the
-// active Turn when there is one, into a new Turn otherwise. The body is
-// opaque to the runtime; the idempotency key is the id, so a retried
-// submission replays. Nothing is driven: the caller advances the Turn,
-// here or on another goroutine, with Advance.
-func (r *SessionRuntime) Submit(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Submitted, error) {
+// QueueInput records an input without assigning it to a Turn. The input
+// remains a durable chatlog submission until Advance or Resume starts the next Turn.
+func (r *SessionRuntime) QueueInput(ctx context.Context, id run.InputID, content run.CanonicalJSON) (run.AgentInput, error) {
+	return r.chat.Submit(ctx, r.w, id, content)
+}
+
+// DeliverInput records an input and explicitly delivers it to the named active
+// Turn. It never chooses an active Turn implicitly.
+func (r *SessionRuntime) DeliverInput(ctx context.Context, turnID turn.TurnID, id run.InputID, content run.CanonicalJSON) (Submitted, error) {
 	in, err := r.chat.Submit(ctx, r.w, id, content)
 	if err != nil {
 		return Submitted{}, err
 	}
 	var lastErr error
 	for attempt := 0; attempt < r.routeRetries; attempt++ {
-		ref, err := r.route(ctx, []run.AgentInput{in})
+		ref := r.ref(turnID)
+		err := r.deliver(ctx, ref, []run.AgentInput{in})
 		if err == nil {
 			return Submitted{Ref: ref}, nil
 		}
@@ -198,21 +201,32 @@ func (r *SessionRuntime) Submit(ctx context.Context, id run.InputID, content run
 	return Submitted{}, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, r.routeRetries, lastErr.Error())
 }
 
-// Send submits the input and advances the Session to quiescence: the first
-// Turn of the Settlement is the one the input landed in, the rest are the
-// Turns the remaining inputs started. When another driver of this process
-// took the input, the single Turn reports AlreadyDriving and that driver
-// settles.
-func (r *SessionRuntime) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Settlement, error) {
-	sub, err := r.Submit(ctx, id, content)
+// StartInput queues an input and starts a new Turn only when the Session is
+// idle. It never selects or reuses an active Turn.
+func (r *SessionRuntime) StartInput(ctx context.Context, id run.InputID, content run.CanonicalJSON) (turn.TurnRef, error) {
+	in, err := r.chat.Submit(ctx, r.w, id, content)
 	if err != nil {
+		return turn.TurnRef{}, err
+	}
+	if _, active, err := r.active(ctx); err != nil {
+		return turn.TurnRef{}, err
+	} else if active {
+		return turn.TurnRef{}, fmt.Errorf("%w: cannot start input while a Turn is active", turn.ErrConflict)
+	}
+	return r.route(ctx, []run.AgentInput{in})
+}
+
+// Send queues the input and advances the Session to quiescence. Queued inputs
+// are assigned to the next Turn rather than appended to an active one.
+func (r *SessionRuntime) Send(ctx context.Context, id run.InputID, content run.CanonicalJSON) (Settlement, error) {
+	if _, err := r.QueueInput(ctx, id, content); err != nil {
 		return Settlement{}, err
 	}
-	if sub.AlreadyDriving {
-		resp, _ := r.absorbedStatus(ctx, sub.Ref)
-		return Settlement{Turns: []DriveResult{resp}}, nil
+	settlement, ok, err := r.Resume(ctx)
+	if !ok {
+		return Settlement{}, err
 	}
-	return r.Advance(ctx, sub.Ref.TurnID)
+	return settlement, err
 }
 
 // Advance drives the Turn to its next quiescent point and, while its
@@ -284,20 +298,14 @@ func (r *SessionRuntime) drive(ctx context.Context, turnID turn.TurnID) (DriveRe
 	return DriveResult{TurnResult: resp, AlreadyDriving: taken}, nil
 }
 
-// route commits the inputs' route: Deliver into the active Turn when there
-// is one, Start a new one when there is none.
+func (r *SessionRuntime) deliver(ctx context.Context, ref turn.TurnRef, inputs []run.AgentInput) error {
+	_, err := r.turns.Deliver(ctx, r.w, sessionkernel.DeliverRequest{Ref: ref, Inputs: inputs})
+	return err
+}
+
+// route starts a new Turn from inputs already admitted to the chatlog queue.
+// It deliberately never inspects or reuses an active Turn.
 func (r *SessionRuntime) route(ctx context.Context, inputs []run.AgentInput) (turn.TurnRef, error) {
-	surface, err := turn.ReadSurface(ctx, r.proj, r.sid)
-	if err != nil {
-		return turn.TurnRef{}, err
-	}
-	if active, ok := surface.Active(); ok {
-		ref := r.ref(active.TurnID)
-		if _, err := r.turns.Deliver(ctx, r.w, sessionkernel.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
-			return turn.TurnRef{}, err
-		}
-		return ref, nil
-	}
 	ref := r.ref(r.newID())
 	if _, err := r.turns.Start(ctx, r.w, sessionkernel.StartRequest{Ref: ref, Inputs: inputs, Preset: r.preset}); err != nil {
 		return turn.TurnRef{}, err
