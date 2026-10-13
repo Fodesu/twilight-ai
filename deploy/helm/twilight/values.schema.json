@@ -2,6 +2,41 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scrapeAnnotations"],
+      "properties": {
+        "scrapeAnnotations": {
+          "type": "boolean",
+          "description": "Add prometheus.io scrape annotations to the four service pods. Requires an annotation-aware scraper."
+        }
+      }
+    },
+    "podMonitor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "labels", "interval", "scrapeTimeout"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Render a PodMonitor; requires the Prometheus Operator CRD when deploying."
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Labels used by the existing Prometheus podMonitorSelector, for example release: monitoring."
+        },
+        "interval": {
+          "type": "string",
+          "pattern": "^([0-9]+(ms|s|m|h))+$"
+        },
+        "scrapeTimeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ms|s|m|h))+$"
+        }
+      }
+    },
     "agentSandbox": {
       "type": "object",
       "properties": {

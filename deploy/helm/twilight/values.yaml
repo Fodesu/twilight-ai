@@ -3,6 +3,20 @@ image:
   tag: dev
   pullPolicy: Never
 
+# /metrics is always served on each binary's HTTP port. These settings only
+# configure discovery; they do not install Prometheus or expose a new Service.
+metrics:
+  # Requires an existing Prometheus job that honors prometheus.io annotations.
+  scrapeAnnotations: false
+
+podMonitor:
+  # Requires an existing Prometheus Operator and monitoring.coreos.com CRDs.
+  enabled: false
+  # Match the existing Prometheus podMonitorSelector, e.g. release: monitoring.
+  labels: {}
+  interval: 30s
+  scrapeTimeout: 10s
+
 secrets:
   # Create this Secret outside Helm. It contains postgres-password,
   # postgres-dsn and OPENAI_API_KEY.

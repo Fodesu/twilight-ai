@@ -29,6 +29,8 @@ spec:
     metadata:
       labels:
         {{- include "twilight.selectorLabels" (dict "name" "tool-backend") | nindent 8 }}
+        app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      {{- include "twilight.metricsAnnotations" (dict "Values" .Values "port" 8083) | nindent 6 }}
     spec:
       serviceAccountName: twilight-tool-backend
       securityContext:
@@ -50,6 +52,8 @@ spec:
           image: {{ include "twilight.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/usr/local/bin/tool-backend", "-config", "/etc/twilight/config/tool-backend.json"]
+          env:
+            {{- include "twilight.identityEnv" . | nindent 12 }}
           ports:
             - name: http
               containerPort: 8083

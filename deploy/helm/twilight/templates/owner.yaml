@@ -27,6 +27,8 @@ spec:
     metadata:
       labels:
         {{- include "twilight.selectorLabels" (dict "name" "owner") | nindent 8 }}
+        app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      {{- include "twilight.metricsAnnotations" (dict "Values" .Values "port" 8080) | nindent 6 }}
     spec:
       securityContext:
         fsGroup: 10001
@@ -47,6 +49,8 @@ spec:
           image: {{ include "twilight.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/usr/local/bin/owner", "-config", "/etc/twilight/config/owner.json"]
+          env:
+            {{- include "twilight.identityEnv" . | nindent 12 }}
           ports:
             - name: http
               containerPort: 8080

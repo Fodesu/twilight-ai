@@ -1,0 +1,25 @@
+{{- if .Values.podMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ .Release.Name }}-twilight
+  labels:
+    {{- mergeOverwrite (dict) (include "twilight.labels" (dict "name" "twilight" "Release" .Release) | fromYaml) .Values.podMonitor.labels | toYaml | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace | quote }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: twilight
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [owner, worker, model-backend, tool-backend]
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.podMonitor.interval | quote }}
+      scrapeTimeout: {{ .Values.podMonitor.scrapeTimeout | quote }}
+{{- end }}
