@@ -57,6 +57,7 @@ type Retry struct {
 type Component struct {
 	Worker *executor.Worker
 	server *executorhttp.Server
+	ping   func(context.Context) error
 	closes []func() error
 }
 
@@ -105,6 +106,7 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	c.ping = db.Ping
 	c.closes = append(c.closes, db.Close)
 	return c, nil
 }
@@ -124,6 +126,15 @@ func Routes(b Backends) []executor.Route {
 
 // Handler is the ExecutionPort's HTTP binding.
 func (c *Component) Handler() stdhttp.Handler { return c.server.Handler() }
+
+// Ready checks only the durable database, not downstream backends.
+// Components built with New have no database check and are ready.
+func (c *Component) Ready(ctx context.Context) error {
+	if c.ping == nil {
+		return nil
+	}
+	return c.ping(ctx)
+}
 
 // Close stops the Worker; its records keep their leases until they expire
 // and the next incarnation adopts them.

@@ -171,6 +171,7 @@ type Preset struct {
 type Component struct {
 	App    *app.Application
 	server *ownerhttp.Server
+	ping   func(context.Context) error
 	closes []func() error
 }
 
@@ -249,6 +250,7 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 		return nil, err
 	}
 	c := New(a, app.SessionOptions{InboxPoll: cfg.InboxPoll.Std()})
+	c.ping = db.Ping
 	c.closes = append(c.closes, db.Close)
 	return c, nil
 }
@@ -309,6 +311,15 @@ func presetsOf(defs []Preset) ([]app.Preset, error) {
 
 // Handler is the command face.
 func (c *Component) Handler() stdhttp.Handler { return c.server.Handler() }
+
+// Ready checks only the durable database, not downstream services.
+// Components built with New have no database check and are ready.
+func (c *Component) Ready(ctx context.Context) error {
+	if c.ping == nil {
+		return nil
+	}
+	return c.ping(ctx)
+}
 
 // Close releases every Session this owner holds and the stores.
 func (c *Component) Close(ctx context.Context) error {

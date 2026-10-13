@@ -31,6 +31,7 @@ type Handle interface {
 	Bindings() artifact.BindingStore
 	Ledger(artifact.BindingSetBuilder) artifact.RetentionLedger
 	Workspaces() workspace.Store
+	Ping(context.Context) error
 	Close() error
 }
 
@@ -91,8 +92,9 @@ func (h sqliteHandle) Bindings() artifact.BindingStore  { return h.db.Bindings()
 func (h sqliteHandle) Ledger(b artifact.BindingSetBuilder) artifact.RetentionLedger {
 	return h.db.Ledger(b)
 }
-func (h sqliteHandle) Workspaces() workspace.Store { return h.db.Workspaces() }
-func (h sqliteHandle) Close() error                { return h.db.Close() }
+func (h sqliteHandle) Workspaces() workspace.Store    { return h.db.Workspaces() }
+func (h sqliteHandle) Ping(ctx context.Context) error { return h.db.Ping(ctx) }
+func (h sqliteHandle) Close() error                   { return h.db.Close() }
 
 type pgHandle struct{ db *postgres.DB }
 
@@ -109,4 +111,5 @@ func (h pgHandle) Sessions() session.Stores    { return h.db.Sessions() }
 func (h pgHandle) Content(authority artifact.Authority) (artifact.ContentStore, error) {
 	return h.db.Content(authority, postgres.ContentStoreOptions{})
 }
-func (h pgHandle) Close() error { return h.db.Close() }
+func (h pgHandle) Ping(ctx context.Context) error { return h.db.Ping(ctx) }
+func (h pgHandle) Close() error                   { return h.db.Close() }

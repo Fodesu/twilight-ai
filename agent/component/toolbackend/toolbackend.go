@@ -67,6 +67,7 @@ type AgentSandboxProvider struct {
 type Component struct {
 	Backend  *sandbox.Backend
 	progress *executor.ProgressHub
+	ping     func(context.Context) error
 	closes   []func() error
 }
 
@@ -139,6 +140,7 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	c.ping = db.Ping
 	c.closes = append(c.closes, db.Close)
 	return c, nil
 }
@@ -150,6 +152,15 @@ func (c *Component) Handler() stdhttp.Handler {
 	mux.Handle("/workspaces/", (&wshttp.Server{Snapshots: c.Backend}).Handler())
 	mux.Handle("/", (&backendhttp.Server{Backend: c.Backend, Progress: c.progress}).Handler())
 	return mux
+}
+
+// Ready checks only the durable database, not the environment provider.
+// Components built with New have no database check and are ready.
+func (c *Component) Ready(ctx context.Context) error {
+	if c.ping == nil {
+		return nil
+	}
+	return c.ping(ctx)
 }
 
 // Close detaches the environments this process attached; the workspaces

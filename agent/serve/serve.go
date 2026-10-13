@@ -27,6 +27,12 @@ type Component interface {
 	Close(context.Context) error
 }
 
+// Readiness is an optional component capability. Database-backed components
+// check their own store, not every downstream service.
+type Readiness interface {
+	Ready(context.Context) error
+}
+
 // Options tune Run.
 type Options struct {
 	// Grace bounds the drain of in-flight requests at shutdown; zero selects
@@ -56,6 +62,18 @@ func Handler(component stdhttp.Handler, ready func() bool) stdhttp.Handler {
 	return observability.Default.HTTP(mux)
 }
 
+func checkReadiness(ctx context.Context, component Component, opts Options) error {
+	if opts.Ready != nil && !opts.Ready() {
+		return errors.New("readiness gate closed")
+	}
+	if probe, ok := component.(Readiness); ok {
+		check, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		return probe.Ready(check)
+	}
+	return nil
+}
+
 // Run serves the component on addr until ctx ends or a termination signal
 // arrives, then drains and closes it. It returns nil on a clean stop.
 func Run(ctx context.Context, addr string, component Component, opts Options) error {
@@ -66,9 +84,12 @@ func Run(ctx context.Context, addr string, component Component, opts Options) er
 	var listening atomic.Bool
 	ready := func() bool {
 		if !listening.Load() {
+			observability.Default.Readiness(errors.New("server is not accepting requests"))
 			return false
 		}
-		return opts.Ready == nil || opts.Ready()
+		err := checkReadiness(ctx, component, opts)
+		observability.Default.Readiness(err)
+		return err == nil
 	}
 	server := &stdhttp.Server{Addr: addr, Handler: Handler(component.Handler(), ready), ReadHeaderTimeout: 10 * time.Second}
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)

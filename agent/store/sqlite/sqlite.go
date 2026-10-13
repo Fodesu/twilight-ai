@@ -163,6 +163,12 @@ func Open(path string, options ...Options) (*DB, error) {
 	return &DB{db: db, now: now}, nil
 }
 
+// Ping checks that the database can execute a query.
+func (d *DB) Ping(ctx context.Context) error {
+	var one int
+	return d.db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+}
+
 // Close closes the database. Stores obtained from it stop working.
 func (d *DB) Close() error { return d.db.Close() }
 
