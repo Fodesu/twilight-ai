@@ -25,7 +25,7 @@ import (
 	"testing"
 )
 
-// Run executes the RUN-CMP-2 Runtime conformance suite against fixtures made
+// Run executes the Runtime conformance suite against fixtures made
 // by factory.
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
@@ -92,7 +92,7 @@ func testCreation(t *testing.T, factory Factory) {
 	}
 	// A second created for the same RunID -- active or ended -- is refused by
 	// the Run module's creation Part from the ledger's stream index, before
-	// anything reaches the ledger (RUN-NEW-1).
+	// anything reaches the ledger.
 	again, err := run.BuildNewRun("r1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +271,6 @@ func testDeclineToolCall(t *testing.T, factory Factory) {
 	}
 	// The CommandID names the decline of this call: a replay, with the same
 	// or another reason, is AlreadyApplied and the first decline stands
-	// (RUN-CMT-5).
 	if again := h.mustCommit("r1", id, 0, decline); again.Status != store.CommitAlreadyApplied {
 		t.Fatalf("decline replay = %v", again.Status)
 	}
@@ -502,7 +501,7 @@ func testPrepareCASIgnoresOtherModules(t *testing.T, factory Factory) {
 	}
 }
 
-// RUN-CMT-5: a settlement CommandID names the effect rather than the
+// a settlement CommandID names the effect rather than the
 // outcome, so every settlement of the same effect is the same operation: the
 // first one stands and later ones, whatever they carry, are AlreadyApplied
 // without a second Decide.
@@ -634,7 +633,7 @@ func testTakeover(t *testing.T, factory Factory) {
 	h.executingModel("r1", false)
 	before := h.load("r1")
 	// An input delivered while the model runs waits in PendingInputs; the
-	// recovery-time plan must include it (TRN-DUR-1).
+	// recovery-time plan must include it.
 	h.submitInputs(input("in-late"))
 	h.mustCommit("r1", schema.Identity().DeriveInputCommandID("r1", "in-late"), 0, run.NextStep(input("in-late")))
 	toolStep, ids := h.openToolStep("r2", 2)
@@ -647,7 +646,7 @@ func testTakeover(t *testing.T, factory Factory) {
 	}
 	// The unreachable model attempt is withdrawn: the Run is Open again with
 	// the late input still pending and the step no longer counted, so the
-	// next Prepare is a fresh decision, not a replay (RUN-CMT-7, TRN-DUR-1).
+	// next Prepare is a fresh decision, not a replay.
 	r1 := h.load("r1")
 	if _, open := r1.State.Current.(run.Open); !open || r1.State.Status != run.RunActive || r1.State.ModelSteps != 0 ||
 		len(r1.State.PendingInputs) != 1 || r1.State.PendingInputs[0].ID != "in-late" {
@@ -676,7 +675,7 @@ func testTakeover(t *testing.T, factory Factory) {
 		t.Fatalf("pending sibling = %+v, want untouched", ts.Calls[1])
 	}
 	// The Unknown is the call's terminal fact; the conversation projects it
-	// as a tool_result with status unknown and no body (TRN-DUR-4).
+	// as a tool_result with status unknown and no body.
 	rec := h.record("r2")
 	found := false
 	for _, e := range rec.Events {
@@ -741,7 +740,7 @@ func (p *livePort) GetOutcome(context.Context, effect.AssignmentKey) (effect.Out
 }
 func (p *livePort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
 
-// RUN-CMT-7 with a reachable executor: a target whose effect the executor
+// with a reachable executor: a target whose effect the executor
 // still executes is not disposed -- it stays Executing under its original
 // effect and that effect's settlement is accepted afterwards -- while a
 // target the executor no longer holds is disposed as before.
@@ -820,7 +819,7 @@ func testOwnershipLost(t *testing.T, factory Factory) {
 	}
 	// Reading needs no ownership: the superseded process still reads the
 	// ledger by SessionID and sees the state as the new owner left it
-	// (OWN-HDL-2); only its Writer's view and commits are fenced.
+	// only its Writer's view and commits are fenced.
 	if rec, err := old.Record(h.ctx, sid, "r1"); err != nil || mustType[run.ModelStep](h.t, rec.Snapshot.State.Current).Status != run.ModelExecuting {
 		t.Fatalf("old owner record = %v, want the current state without an ownership error", err)
 	}
@@ -849,7 +848,7 @@ func testFrozenValues(t *testing.T, factory Factory) {
 	}
 	h.mustCommit("r1", schema.Identity().DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
 	// The body is EventBound content the artifact layer retains; Record never
-	// depends on it (RUN-WIR-4).
+	// depends on it.
 	if _, err := h.rt.Record(h.ctx, sid, "r1"); err != nil {
 		t.Fatalf("record after settlement: %v", err)
 	}

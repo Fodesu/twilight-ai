@@ -4,7 +4,7 @@
 // there; neither is repeated here. What only the process manager knows, and
 // what must survive its crash, is which redispatch it decided to make,
 // whether that dispatch reached the destination, and whether it gave up
-// (RUN-EXE-15). Each record is written before the act it decides, so a
+// Each record is written before the act it decides, so a
 // decision made and a dispatch sent cannot drift apart.
 package redispatch
 
@@ -28,7 +28,7 @@ const (
 	// the next attempt be planned.
 	EventDispatched ledger.EventType = "dispatched"
 	// EventGivenUp: the process manager stopped redispatching; the reason is
-	// recorded and the Run disposes the effect (RUN-CMT-7).
+	// recorded and the Run disposes the effect.
 	EventGivenUp ledger.EventType = "given_up"
 )
 
@@ -176,7 +176,7 @@ type Store interface {
 
 // Plan returns the attempt the process manager is to make now: the planned
 // attempt still owed to the Executor, or the next one, recorded before the
-// Dispatch it announces (RUN-EXE-15). A crash between the record and the
+// Dispatch it announces. A crash between the record and the
 // Dispatch leaves the attempt pending, and the next reconciliation makes
 // the same attempt instead of a new one.
 func Plan(ctx context.Context, s Store, epoch ledger.Epoch, key effect.AssignmentKey, now int64) (int, error) {

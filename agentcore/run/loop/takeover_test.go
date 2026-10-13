@@ -15,7 +15,7 @@ import (
 // The owner process dies while a tool call is Executing. A new owner takes
 // the Session over, RecoverInterrupted settles the call as Unknown, a fresh
 // Loop finishes the Run, and the dead owner's late settlement is fenced with
-// ErrOwnershipLost (RUN-CMT-6/7, RUN-LOP-5).
+// ErrOwnershipLost.
 func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})

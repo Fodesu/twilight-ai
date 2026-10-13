@@ -20,7 +20,7 @@ func (timeoutError) Temporary() bool { return true }
 
 var _ net.Error = timeoutError{}
 
-// RUN-EXE-11: provider errors classify by HTTP status, transport errors as
+// provider errors classify by HTTP status, transport errors as
 // connection failures, everything else as executor_error; the disposition
 // is read off the class, and only the rate limit, provider outage and
 // connection classes allow a retry.

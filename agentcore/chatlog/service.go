@@ -16,7 +16,7 @@ import (
 
 // Commands are the chatlog's canonical commands -- submitting and
 // withdrawing inputs, committing compactions -- each through the Writer the
-// caller owns (CHT-EVT, OWN-HDL-2). They are the only writer of chatlog
+// caller owns. They are the only writer of chatlog
 // facts: callers go through these methods instead of building chatlog
 // TypedEvents by hand.
 type Commands struct {
@@ -25,17 +25,16 @@ type Commands struct {
 
 // Guard is a caller-supplied precondition evaluated inside a command's
 // commit critical section, on the same View the command reads. Compaction
-// uses it for the "no Turn may be active" rule (APP-CKP-1), which is turn
+// uses it for the "no Turn may be active" rule, which is turn
 // domain policy this package cannot import.
 type Guard func(v writer.View) error
 
 // ErrNotSubmitted reports a withdraw of an input that is not in the
-// submitted state (CHT-EVT-2).
+// submitted state.
 var ErrNotSubmitted = errors.New("chatlog: input is not submitted")
 
-// Submit records one user input as submitted (CHT-EVT-1): content is the
-// input's body, opaque to this module and digested as given (the agent
-// decides its shape, DEC-INP-1). Idempotency rides on the CommitID, so a
+// Submit records one user input as submitted: content is the
+// input's body, opaque to this module and digested as given (the agent decides its shape). Idempotency rides on the CommitID, so a
 // retried submission replays.
 func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, content run.CanonicalJSON) (run.AgentInput, error) {
 	if content.IsZero() {
@@ -64,8 +63,8 @@ func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, 
 }
 
 // Withdraw marks a submitted, undelivered input as withdrawn
-// (CHT-EVT-2), for example the original input of a Turn the caller forked
-// before in order to edit it (OWN-FRK-2).
+// for example the original input of a Turn the caller forked
+// before in order to edit it.
 func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID, reason string) error {
 	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		state, err := v.Projection(SurfaceProjectionID, SurfaceProjection.Version)
@@ -97,7 +96,7 @@ func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID
 	}
 }
 
-// Compaction commits a summary and its compaction in one group (CHT-EVT-3).
+// Compaction commits a summary and its compaction in one group.
 // The base is read inside the commit's critical section, so the digest pins
 // exactly the context being replaced. guard (when non-nil) runs in the same
 // critical section first; callers pass the active-Turn rule there.
@@ -175,7 +174,7 @@ func (s *Commands) Compact(ctx context.Context, w writer.Writer, summaryText str
 // compaction replaces: the Session, the base context digest and the summary
 // text. A Compaction retried over the same base therefore carries the same
 // CommitID and is answered as already applied instead of writing a second
-// compaction (APP-CKP-1).
+// compaction.
 // compactionDerivationVersion versions this preimage; it is chatlog's own,
 // not a kernel version: the kernel has none.
 const compactionDerivationVersion uint16 = 1
@@ -204,7 +203,7 @@ func compactionIDs(sid session.SessionID, base jsonstable.Digest, summaryText st
 // CheckRetainClosure requires retained tool results and their issuing
 // assistants to travel together, and an assistant with a call whose result
 // is not yet in the context to be retained, so the compacted context stays
-// valid provider input now and when that result lands (APP-CKP-2). Subset
+// valid provider input now and when that result lands. Subset
 // and order are the fold's job.
 func CheckRetainClosure(entries []Entry, retain []EntryDigestPair) error {
 	kept := make(map[EntryDigestPair]bool, len(retain))
@@ -257,7 +256,7 @@ func CheckRetainClosure(entries []Entry, retain []EntryDigestPair) error {
 }
 
 // DeliverInputs is the chatlog's Part of a Turn's start or delivery unit
-// (CHT-EVT, TRN-DLV-1): it checks, on the unit's own View, that every input
+// it checks, on the unit's own View, that every input
 // is a submitted chatlog Input whose content digest is the one the Run
 // accepts, and writes one input_delivered per input. The body stays here;
 // the Run carries only the digest. A failed check is

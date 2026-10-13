@@ -1,7 +1,7 @@
 // Package prompt is the model-input seam of the agent core: the catalog that
 // resolves an AgentPreset's PromptBuilderRef to a PromptBuilder and the
 // Sources a builder reads from. It holds no builder of its own and no input
-// content shape (the agent's input package owns that, DEC-INP-1): how a model
+// content shape (the agent's input package owns that): how a model
 // request is assembled from Session state is a strategy of the agent built on
 // the core (agent/prompt is the first-party one), named by a ref the
 // AgentPreset digest covers, so the process that takes a Turn over resolves
@@ -18,7 +18,7 @@ import (
 // from the Store.
 type ProjectionSource = session.ProjectionReader
 
-// Sources are the two read ports of a prompt builder (DEC-PMT-1): the
+// Sources are the two read ports of a prompt builder: the
 // structural projections and the content resolver that materializes the
 // frozen bodies the projections name by digest. Folding is pure; reading a
 // body is I/O and happens only here.

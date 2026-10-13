@@ -25,7 +25,6 @@ func policyModule(streams []StreamDefinition, eventStream string) ModuleDescript
 
 // TestBuildRegistryValidatesStreamDeclarations: stream declarations and the
 // domains events name are assembly errors, caught before any write
-// (EXT-STR-1).
 func TestBuildRegistryValidatesStreamDeclarations(t *testing.T) {
 	singleton := StreamDefinition{Domain: "pol", Inheritance: Inherited}
 	keyed := StreamDefinition{Domain: "polrun", Key: func(any) (string, error) { return "r1", nil }, Inheritance: Own}

@@ -8,7 +8,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/schema"
 )
 
-// RUN-WIR-1: every fact that closes an effect names it, and RunEnded closes
+// every fact that closes an effect names it, and RunEnded closes
 // none. A model failure and a cancellation settle the executing model effect
 // with ModelStepFailed before the Run ends; a rejection names the effect it
 // settles; Evolve refuses a RunEnded over an Executing target and a

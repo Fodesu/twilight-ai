@@ -14,7 +14,7 @@ import (
 
 // projectionsDir holds cached projection states beside the session's authoritative
 // files. Everything under it is derived data: losing it, or finding it corrupt
-// or stale, only costs a reader a longer fold (EXT-PRJ-3).
+// or stale, only costs a reader a longer fold.
 const projectionsDir = "projections"
 
 // ProjectionCache returns the durable session.ProjectionCache of this Store,
@@ -50,7 +50,7 @@ func (c projectionCache) Load(_ context.Context, sid session.SessionID, id modul
 	return state, rec.Through, true, nil
 }
 
-// Save keeps the entry monotonic (EXT-PRJ-7): a write that lands after a
+// Save keeps the entry monotonic: a write that lands after a
 // later one is dropped.
 func (c projectionCache) Save(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion, state jsonstable.Value, through ledger.Head) error {
 	if _, current, ok, _ := c.Load(ctx, sid, id, v); ok && current.Next >= through.Next {

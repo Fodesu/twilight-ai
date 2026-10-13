@@ -13,7 +13,7 @@
 // The Machine computes no digest and derives no identity itself: it is bound
 // to the Canonical and Identity rules of the schema version a Run was created
 // under, so a Run replays under its own rules whatever the current version is.
-// Everything around a Run lives in the subpackages, in two tiers (RUN-SCP-1).
+// Everything around a Run lives in the subpackages, in two tiers.
 // The protocol tier changes with the Run schema or is a port the core defines:
 // agent/run/model holds the durable model data that facts name by digest,
 // agent/run/canonical the digest and identity rules, agent/run/wire the

@@ -55,7 +55,7 @@ const (
 )
 
 // CompactionView records one compaction for readers; compaction never touches
-// EntryOrder or the input queue (CHT-SUR-1).
+// EntryOrder or the input queue.
 type CompactionView struct {
 	Compaction CompactionCreatedPayload `json:"compaction"`
 	Status     CompactionStatus         `json:"status"`
@@ -63,7 +63,7 @@ type CompactionView struct {
 	Position   ledger.Position          `json:"position"`
 }
 
-// Surface is the UI-facing read model (CHT-SUR-1). Every table is persistent
+// Surface is the UI-facing read model. Every table is persistent
 // (Table): a fold shares them between states and pays O(sqrt(n)) per write.
 // Assistants and ToolResults are structural: they name frozen bodies by
 // digest and are rendered through Materialize.
@@ -108,7 +108,7 @@ func sortViews(views []InputView) {
 
 // chatlogConsumes is what both projections fold: the module's own facts and
 // the Run facts that produce assistant and tool_result entries, and the
-// attempt binding that names their Turn (CHT-SCP-1).
+// attempt binding that names their Turn.
 var chatlogConsumes = func() []ledger.EventType {
 	out := make([]ledger.EventType, 0, 9+len(consumedRunFacts))
 	out = append(out, TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
@@ -123,7 +123,7 @@ var SurfaceProjection = module.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: chatlogConsumes,
 	// Assistant and tool_result entries are projected from run facts
-	// (CHT-SCP-1); a fork inherits that conversation content (EXT-PRJ-8).
+	// a fork inherits that conversation content.
 	Inherits:      module.InheritAll,
 	Authoritative: true,
 	Initial: func() (any, error) {
@@ -137,7 +137,7 @@ var SurfaceProjection = module.ProjectionDefinition{
 // shared with the previous state and Set returns a new one, and EntryOrder
 // grows by append. Apply stays pure -- the previous state is never written.
 // Every position an entry carries is the ledger Position of the event that
-// produced it (EXT-PRJ-1): the projection keeps no counter and a snapshot
+// produced it: the projection keeps no counter and a snapshot
 // restores without rescanning.
 func applySurface(state any, e module.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	s, ok := state.(Surface)
@@ -219,7 +219,7 @@ func applySurface(state any, e module.DecodedEvent) (any, error) { //nolint:gocr
 	return s, nil
 }
 
-// applyRun folds one Run fact into the Surface (CHT-ENT-1, CHT-ENT-2). The
+// applyRun folds one Run fact into the Surface. The
 // Run's Turn is remembered from run_created until run_ended: no fact of the
 // Run follows its end, so the table is bounded by the Runs active now.
 func (s Surface) applyRun(ev sessionstore.Event, pos ledger.Position) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
@@ -296,8 +296,7 @@ func attachCalls(a *Assistant, f *run.ToolStepOpened) error {
 }
 
 // toolResultOf projects a call's terminal fact into a structural entry
-// (TRN-MAP-3, TRN-MAP-4 semantics: Unknown outcome or effect_unknown class
-// is status unknown, every other failure is error).
+// (semantics: Unknown outcome or effect_unknown class is status unknown, every other failure is error).
 func toolResultOf(turnID TurnID, runID run.RunID, fact run.Fact) (ToolResult, error) {
 	var r ToolResult
 	switch f := fact.(type) {
@@ -325,7 +324,7 @@ func toolResultOf(turnID TurnID, runID run.RunID, fact run.Fact) (ToolResult, er
 }
 
 // supersedingResult is the entry an out-of-band verification substitutes for
-// old (CHT-ENT-2): same call, the verified status and body.
+// old: same call, the verified status and body.
 func supersedingResult(old *ToolResult, p *ToolResultSupersededPayload) (ToolResult, error) {
 	r := ToolResult{ID: SupersedingToolResultID(old.ID), TurnID: old.TurnID, RunID: old.RunID, CallID: old.CallID, Status: p.Status}
 	if p.Status == ToolSuccess {
@@ -369,9 +368,9 @@ func clip[T any](s []T) []T { return s[:len(s):len(s)] }
 
 // --- context ------------------------------------------------------------------
 
-// Entry is one element of the model-facing conversation (CHT-CTX-1). Position is
+// Entry is one element of the model-facing conversation. Position is
 // the projection-internal position of the entry; compactions split base from
-// gap by it (CHT-EVT-3). An assistant or tool_result entry is structural: it
+// gap by it. An assistant or tool_result entry is structural: it
 // names its frozen body by digest and is rendered through Materialize.
 type Entry struct {
 	Kind       EntryKind         `json:"kind"`
@@ -390,7 +389,7 @@ func (e *Entry) Pair() EntryDigestPair {
 }
 
 // AppliedCompaction archives what a compaction replaced so an explicit
-// invalidation restores it (CHT-EVT-3). Base excludes the compaction's own
+// invalidation restores it. Base excludes the compaction's own
 // summary entry: invalidation drops the summary from the active context.
 type AppliedCompaction struct {
 	ID CompactionID `json:"id"`
@@ -467,7 +466,7 @@ func applyContext(state any, e module.DecodedEvent) (any, error) { //nolint:gocr
 		if i < 0 {
 			// A result outside the active context was either never created or
 			// compacted; its Turn completed, so superseding it violates
-			// CHT-ENT-2 rather than invalidating the compaction.
+			// rather than invalidating the compaction.
 			return nil, fmt.Errorf("tool_result %s superseded outside the active context", p.ToolResultID)
 		}
 		if _, twice := c.Superseded[p.ToolResultID]; twice {
@@ -506,7 +505,7 @@ func applyContext(state any, e module.DecodedEvent) (any, error) { //nolint:gocr
 	return c, nil
 }
 
-// applyRun folds one Run fact into the Context (CHT-CTX-2). Runs is bounded
+// applyRun folds one Run fact into the Context. Runs is bounded
 // like the Surface's: the Turn is forgotten at run_ended.
 func (c Context) applyRun(ev sessionstore.Event, pos ledger.Position) (any, error) {
 	switch f := ev.Fact.(type) {
@@ -555,7 +554,7 @@ func (c *Context) indexOf(kind EntryKind, id string) int {
 	return -1
 }
 
-// applyCompaction validates and applies one compaction_created (CHT-EVT-3).
+// applyCompaction validates and applies one compaction_created.
 // pos is the compaction's own position; CoveredThrough names an entry
 // position, so it must precede the compaction event.
 func applyCompaction(c Context, p *CompactionCreatedPayload, pos ledger.Position) (any, error) {
@@ -614,7 +613,7 @@ func selectRetained(base []Entry, pairs []EntryDigestPair) ([]Entry, error) {
 	return out, nil
 }
 
-// ContextFold folds decoded chatlog and run events into entries (CHT-CTX-1).
+// ContextFold folds decoded chatlog and run events into entries.
 func ContextFold(events []module.DecodedEvent) ([]Entry, error) {
 	state, _ := ContextProjection.Initial()
 	for i := range events {

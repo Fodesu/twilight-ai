@@ -70,7 +70,7 @@ func TestTablePersistence(t *testing.T) {
 
 // TestSurfaceFoldIsPure folds two different continuations from one state: the
 // old state keeps its contents and the two results do not see each other
-// (EXT-PRJ-1). Each event carries its own ledger Position, as a fold would
+// Each event carries its own ledger Position, as a fold would
 // stamp it.
 func TestSurfaceFoldIsPure(t *testing.T) {
 	var seq ledger.CommitSeq

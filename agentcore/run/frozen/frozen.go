@@ -13,7 +13,7 @@ import (
 )
 
 // Store is the run layer's port to the content-addressed side store for
-// the bodies that facts name by digest only (RUN-WIR-4): the
+// the bodies that facts name by digest only: the
 // ModelRequest of a Prepared step, the ModelResult of a completed step, a
 // tool output and an external tool response. The digest is the SHA-256 of
 // the stored bytes, so a body is one cas entry whose key is its digest; the

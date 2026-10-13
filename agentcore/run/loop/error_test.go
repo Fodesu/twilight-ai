@@ -13,7 +13,7 @@ func TestCatalogResolveErrorLeavesRunActive(t *testing.T) {
 	f := newFeature(t)
 	f.ModelResolveError(missing)
 	// Validate finds the missing model before the start barrier: no start or
-	// recovery fact, the step stays Prepared for a later drive (RUN-EXE-5).
+	// recovery fact, the step stays Prepared for a later drive.
 	f.RunError(loop.ErrModelUnavailable)
 	f.RequireActive()
 	f.RequirePrepared()

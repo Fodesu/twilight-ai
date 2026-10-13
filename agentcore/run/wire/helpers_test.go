@@ -13,7 +13,7 @@ import (
 )
 
 // startModel is the start of the current Prepared step's next model effect
-// (RUN-WIR-1): the step's rejected count is the effect's sequence.
+// the step's rejected count is the effect's sequence.
 func startModel(s run.MachineState, stepID run.StepID) run.StartModelExecution {
 	ms, _ := s.Current.(run.ModelStep)
 	return run.StartModelExecution{StepID: stepID, Effect: schema.Identity().DeriveEffectID(s.RunID, stepID, "", ms.Rejects)}

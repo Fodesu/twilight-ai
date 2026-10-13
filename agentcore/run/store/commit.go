@@ -29,8 +29,8 @@ type CommitDecision struct {
 	Reject error
 }
 
-// ValidateEnvelope is step 1 of RUN-CMT-3: identity. Envelopes are only
-// built by wire.Codec.Envelope (RUN-WIR-3), so there is no per-commit
+// ValidateEnvelope checks command identity. Envelopes are only
+// built by wire.Codec.Envelope, so there is no per-commit
 // self-verification of the command bytes.
 func ValidateEnvelope(env *wire.CommandEnvelope) error {
 	if env.RunID == "" || env.ID == "" {
@@ -40,8 +40,8 @@ func ValidateEnvelope(env *wire.CommandEnvelope) error {
 }
 
 // EvaluateCommit is the pure evaluation every RunStore runs inside its
-// store's critical section after the replay lookup (RUN-CMT-3 steps 4-8). Execution ownership is
-// Session-level (RUN-CMT-6), so there is no per-target authorization: a
+// store's critical section after the replay lookup (steps 4-8). Execution ownership is
+// Session-level, so there is no per-target authorization: a
 // command against a target whose state does not admit it is Stale.
 //
 //nolint:gocritic // hugeParam: public pure commit evaluator keeps state/request as value protocol inputs.
@@ -54,11 +54,11 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 		return CommitDecision{}, err
 	}
 	// The effect a start, settlement or recovery names is part of the
-	// command identity (RUN-WIR-1): without it no CommandID derives.
+	// command identity: without it no CommandID derives.
 	if op, effect, named := namedEffect(env.Command); named && effect == "" {
 		return CommitDecision{Kind: DecisionConflict, Reject: fmt.Errorf("agent: commit: %s requires its effect identity", op)}, nil
 	}
-	// Derived-identity families must use their derived CommandID (RUN-WIR-3):
+	// Derived-identity families must use their derived CommandID:
 	// the derivation is the idempotency index, so a caller-minted random ID
 	// cannot bypass duplicate detection.
 	if err := checkDerivedCommandID(&env, req.Base, schema.Identity()); err != nil {
@@ -70,7 +70,7 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 		return CommitDecision{Kind: DecisionTerminal, Reject: run.ErrRunTerminal}, nil
 	}
 
-	// Base: PrepareModelRequest is the only hard-CAS command (RUN-CMT-4).
+	// Base: PrepareModelRequest is the only hard-CAS command.
 	if _, plan := env.Command.(run.PrepareModelRequest); plan && req.Base != position {
 		return CommitDecision{Kind: DecisionStale, Reject: run.ErrStaleRuntime}, nil
 	}
@@ -149,7 +149,7 @@ func namedEffect(cmd run.AgentCommand) (op string, effect run.EffectID, named bo
 	}
 }
 
-// checkDerivedCommandID enforces the derived-identity rules of RUN-WIR-3.
+// checkDerivedCommandID enforces the derived-identity rules.
 func checkDerivedCommandID(env *wire.CommandEnvelope, base run.RunPosition, id run.Identity) error {
 	var want run.CommandID
 	switch cmd := env.Command.(type) {
@@ -181,7 +181,7 @@ func checkDerivedCommandID(env *wire.CommandEnvelope, base run.RunPosition, id r
 		want = id.DeriveSettlementCommandID(cmd.Effect)
 	case run.SubmitToolFailure:
 		// An Unknown tool failure is either the owner's settlement of a
-		// delivered Outcome or a takeover disposition (RUN-CMT-7). The two
+		// delivered Outcome or a takeover disposition. The two
 		// are distinct operations with their own identities; either closes
 		// the effect once.
 		if cmd.Outcome == run.ToolOutcomeUnknown && env.ID == id.DeriveRecoveryCommandID(cmd.Effect) {

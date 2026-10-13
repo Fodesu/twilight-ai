@@ -6,7 +6,7 @@ import (
 )
 
 // TestEncodeTypedPayload pins the domain separator every Twilight digest is
-// built on (, RUN-WIR-4): the exact byte shape, and the fact that
+// built on: the exact byte shape, and the fact that
 // the schema version, the type name and the canonical payload each change the
 // preimage. A change here moves every digest in every protocol version, so it
 // is a wire change and not a refactor.

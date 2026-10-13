@@ -11,7 +11,7 @@ import (
 )
 
 // ClassifyModelError maps a model invocation error to a wire-stable
-// FailureCode (RUN-EXE-11). Provider errors that expose their HTTP status
+// FailureCode. Provider errors that expose their HTTP status
 // (sdk.APIError) classify by status; transport errors classify as
 // connection failures; anything else is FailureExecutor, which is not
 // transient, so an unclassified error is never retried. Cancellation and the

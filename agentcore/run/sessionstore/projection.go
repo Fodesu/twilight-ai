@@ -15,7 +15,7 @@ import (
 
 const MachineProjectionID module.ProjectionID = "twilight/run/machine"
 
-// Machine is the twilight/run/machine projection state (RUN-CMT-2): every
+// Machine is the twilight/run/machine projection state: every
 // non-terminal Run of the Session with its last event position and schema.
 // Terminal Runs leave the projection entirely; Record and the turn surface
 // keep their results, and a second creation of a used RunID is refused at
@@ -50,7 +50,7 @@ func (m Machine) snapshot(runID run.RunID) (store.Snapshot, bool) {
 	return store.Snapshot{State: ms, Position: m.Positions[runID]}, true
 }
 
-// Apply folds one decoded run event (RUN-MCH-3 via Protocol.Evolve).
+// Apply folds one decoded run event (via Protocol.Evolve).
 func (m Machine) Apply(e module.DecodedEvent) (Machine, error) { //nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
 	ev, ok := e.Value.(Event)
 	if !ok {
@@ -169,7 +169,7 @@ var _ ledger.EventType = Prefix
 // WriterCachePolicy is this module's use of the projection cache for the
 // Writer: every projection at the deployment's interval, except the machine
 // projection, whose entry the SessionRunStore refreshes itself through SnapshotPolicy
-// and which must never be cached mid-step (RUN-CMT-2). every is the interval in
+// and which must never be cached mid-step. every is the interval in
 // commits; zero or less takes module.DefaultCacheEvery.
 func WriterCachePolicy(every ledger.CommitSeq) module.CachePolicy {
 	return module.CacheEvery(every).Exclude(MachineProjectionID)

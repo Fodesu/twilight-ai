@@ -24,11 +24,11 @@ func CheckContext(ctx context.Context) error {
 }
 
 // ErrOwnershipLost reports that the write capability behind a RunStore was
-// superseded (RUN-CMT-6). It is terminal for the caller: no further command of
+// superseded. It is terminal for the caller: no further command of
 // this process can reach the stream.
 var ErrOwnershipLost = errors.New("agent: run store ownership lost")
 
-// RunStore is the transactional port of the Run core (RUN-CMT-1): the store
+// RunStore is the transactional port of the Run core: the store
 // the Runs of one Scope live in, already bound to the caller's write
 // capability. It speaks only Run types; how a command reaches durable
 // storage, how facts are encoded on the wire and how the bound capability
@@ -39,14 +39,14 @@ type RunStore interface {
 	Scope() run.Scope
 	// Load is the owner's view of a Run for the next command. A port whose
 	// capability was superseded still answers from its own epoch's state and
-	// is fenced at Commit (RUN-LOP-5).
+	// is fenced at Commit.
 	Load(context.Context, run.RunID) (Snapshot, error)
-	// Commit evaluates one command (RUN-CMT-3) and appends its facts as one
+	// Commit evaluates one command and appends its facts as one
 	// atomic group. Replays are answered from the store's command index
-	// without re-deciding (RUN-CMT-5).
+	// without re-deciding.
 	Commit(context.Context, CommitRequest) (CommitResult, error)
 	// FrozenRequest returns the request body a Prepared or Executing ModelStep
-	// names by RequestDigest (RUN-WIR-4); a missing body is frozen.ErrMissing.
+	// names by RequestDigest; a missing body is frozen.ErrMissing.
 	FrozenRequest(context.Context, run.Digest) (model.ModelRequest, error)
 }
 
@@ -61,7 +61,6 @@ type Snapshot struct {
 type CommitRequest struct {
 	// Base is the Position the caller loaded. PrepareModelRequest treats it
 	// as a hard CAS; other commands rebase call-locally and may pass zero
-	// (RUN-CMT-4).
 	Base    run.RunPosition
 	Command wire.CommandEnvelope
 }

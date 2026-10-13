@@ -26,7 +26,7 @@ func (panickingObserver) Committed(context.Context, session.SessionID, ledger.Co
 	panic("observer failed")
 }
 
-// EXT-WRT-7: every applied commit reaches the observers once, in commit order,
+// every applied commit reaches the observers once, in commit order,
 // with the sealed commit; rejected and replayed commits notify nothing; a
 // panicking observer neither fails the Commit nor starves the next observer.
 func TestCommitObserversSeeAppliedCommitsInOrder(t *testing.T) {

@@ -22,9 +22,9 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 }
 
 // startToolCalls validates, starts and dispatches the Pending calls the
-// frozen Scheduling allows (RUN-LOP-4). Validation happens before the start
+// frozen Scheduling allows. Validation happens before the start
 // barrier through the Executor and a failed call is declined without a start
-// (DeclineToolCall, RUN-EXE-5); a validated call is started under its tool
+// (DeclineToolCall); a validated call is started under its tool
 // effect and handed to the Executor. It returns the dispatched keys; an empty
 // list with no error means nothing is executing on this Loop's behalf and the
 // reload decides.
@@ -59,11 +59,10 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 		if call.Status != run.ToolPending {
 			// Executing calls settle through the Outcome of the effect they
 			// started or the owner's takeover disposition; never re-run
-			// (TRN-DUR-4).
 			continue
 		}
 		ref := toolEffect(runID, act.StepID, callID)
-		// The target is resolved per tool effect (RUN-LOP-9) before the
+		// The target is resolved per tool effect before the
 		// pre-start check, so the Validate probe carries what the Assignment
 		// will carry.
 		target, err := l.targetFor(ctx, EffectContext{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID,
@@ -81,7 +80,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 			// The call fails before its effect is requested: no start
 			// barrier, no effect, no attempt. A call is declined at most
 			// once, so the decline is identified by the call alone and a
-			// retry of the same rejection is idempotent (RUN-EXE-5).
+			// retry of the same rejection is idempotent.
 			res, err := l.commit(ctx, rt, runID, schema.Identity().DeriveDeclineCommandID(runID, act.StepID, callID), snapshot.Position,
 				run.DeclineToolCall{StepID: act.StepID, CallID: callID, Failure: *known})
 			if err != nil {
@@ -164,7 +163,7 @@ func executingCall(step *run.ToolStep, id run.EffectID) (run.ToolCallState, bool
 
 // toolCompletion maps a tool Outcome to the settlement of the call's tool
 // effect. A sealed outcome maps directly; a missing outcome or a transport
-// error is Unknown, because the effect may have happened (RUN-LOP-5).
+// error is Unknown, because the effect may have happened.
 func toolCompletion(stepID run.StepID, callID run.CallID, eff run.EffectID, out Outcome) run.AgentCommand {
 	switch o := out.Result.(type) {
 	case ToolExecutionSucceeded:
@@ -194,7 +193,7 @@ func toolCompletion(stepID run.StepID, callID run.CallID, eff run.EffectID, out 
 			Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: msg}, Outcome: run.ToolOutcomeUnknown}
 	}
 	// A model result or no result for a tool call: the effect may have
-	// happened, so it is Unknown (RUN-LOP-5).
+	// happened, so it is Unknown.
 	return run.SubmitToolFailure{StepID: stepID, CallID: callID, Effect: eff,
 		Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: fmt.Sprintf("executor delivered %T for a tool call", out.Result)}, Outcome: run.ToolOutcomeUnknown}
 }

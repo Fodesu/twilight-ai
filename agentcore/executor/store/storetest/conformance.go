@@ -67,7 +67,7 @@ func step(s executionstore.Store, lease executionstore.Lease, seq ledger.CommitS
 // One execution ledger, two handles: the second handle stands for a second
 // process. Commits appended through one are read through the other, leases
 // fence across them, and the state machine, identity and lease checks
-// answer with the store's sentinel errors (RUN-EXE-3, RUN-EXE-6).
+// answer with the store's sentinel errors.
 func testLedger(t *testing.T, f Fixture) { //nolint:gocyclo // one scenario, checked step by step
 	ctx := context.Background()
 	a := f.Store
@@ -205,7 +205,7 @@ func testLedger(t *testing.T, f Fixture) { //nolint:gocyclo // one scenario, che
 	}
 }
 
-// A seeded aborted key has the ledger a real Abort leaves (RUN-EXE-16): the
+// A seeded aborted key has the ledger a real Abort leaves: the
 // tombstone alone at Seq 0 under the abort identity, so a Dispatch's
 // acceptance is already applied against it and no lease exists. A seeded
 // live key carries the lease it was given.

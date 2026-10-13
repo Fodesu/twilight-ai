@@ -8,7 +8,7 @@ import (
 )
 
 // CommitObserver sees every commit a Writer applies, in commit order, after
-// it is durable (EXT-WRT-7). It is the one source every observation of a
+// it is durable. It is the one source every observation of a
 // Session derives from: Loop events, turn lifecycle and chatlog entries are
 // all events of applied commits. Observers run outside the Writer's critical
 // section and are best effort: a panic is contained and never reaches the

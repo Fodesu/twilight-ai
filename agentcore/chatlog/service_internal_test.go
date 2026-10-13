@@ -8,7 +8,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 )
 
-// APP-CKP-1: compaction identifiers are a function of the Session, the base
+// compaction identifiers are a function of the Session, the base
 // context digest and the summary text, so a Compaction retried over the same
 // base replays the same CommitID.
 func TestCompactionIDsAreDerived(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 )
 
 // heartbeat renews a Writer's kernel lease at a third of its duration
-// (EXT-WRT-11), the same shape as the Executor Worker's heartbeat over an
+// the same shape as the Executor Worker's heartbeat over an
 // execution record. A fenced Renew reports the loss once and the heartbeat
 // ends; any other failure is retried at the next tick, because the lease
 // stays held until it expires or is superseded.

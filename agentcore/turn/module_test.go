@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// EXT-COD-1: every registered event type's current codec is canonical
+// every registered event type's current codec is canonical
 // round-trip stable — Encode, Decode, Encode reproduces the bytes.
 func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	samples := map[ledger.EventType]any{

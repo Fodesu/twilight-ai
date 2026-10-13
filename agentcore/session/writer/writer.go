@@ -1,5 +1,5 @@
 // Package writer is the single in-process write entry of one Session
-// (EXT-SCP-1). A commit is a pipeline of stages, one per file: encoding and
+// A commit is a pipeline of stages, one per file: encoding and
 // stream affinity (encode.go), artifact admission and retention claims
 // (admission.go), projection folding and cache (projector.go), observer
 // fan-out (observers.go). The Writer itself reads the head, evaluates the
@@ -42,7 +42,7 @@ type SemanticGroup struct {
 }
 
 // View is what a CommitFn may read: head, idempotency index and projections
-// folded to the current head (EXT-WRT-1).
+// folded to the current head.
 type View interface {
 	Head() ledger.Head
 	Epoch() ledger.Epoch
@@ -69,7 +69,7 @@ type CommitOutcome string
 
 const (
 	CommitApplied        CommitOutcome = "applied"
-	CommitAlreadyApplied CommitOutcome = "already_applied" // the CommitID is in the ledger (EXT-WRT-2)
+	CommitAlreadyApplied CommitOutcome = "already_applied" // the CommitID is in the ledger
 	CommitConflict       CommitOutcome = "conflict"        // the kernel refused the commit as a conflict
 	CommitInvalid        CommitOutcome = "invalid"
 	CommitNoop           CommitOutcome = "noop"
@@ -86,7 +86,7 @@ type CommitResult struct {
 	Detail  string
 }
 
-// Writer is the single in-process write entry of one Session (EXT-SCP-1).
+// Writer is the single in-process write entry of one Session.
 type Writer interface {
 	SessionID() session.SessionID
 	Epoch() ledger.Epoch
@@ -98,7 +98,7 @@ type Writer interface {
 	Close(context.Context) error
 }
 
-// Writers is the host-maintained SessionID to Writer map (EXT-WRT-6).
+// Writers is the host-maintained SessionID to Writer map.
 type Writers interface {
 	Writer(context.Context, session.SessionID) (Writer, error)
 }
@@ -109,13 +109,13 @@ type Writers interface {
 // notified.
 type WritersConfig struct {
 	// Cache holds folded projection states, so a reopening Writer starts from
-	// one instead of refolding the whole log (EXT-PRJ-3).
+	// one instead of refolding the whole log.
 	Cache session.ProjectionCache
 	// CachePolicy decides which projections the Writer refreshes and when; nil
 	// means module.CacheEvery(module.DefaultCacheEvery). It never affects reading: an entry
 	// the cache already holds is used whoever wrote it.
 	CachePolicy module.CachePolicy
-	// Observers are notified of every applied commit (EXT-WRT-7).
+	// Observers are notified of every applied commit.
 	Observers []CommitObserver
 }
 
@@ -132,14 +132,14 @@ type sessionWriter struct {
 	admission   *admitter
 	observers   *observers
 	// heartbeat renews the kernel lease while the Writer is open
-	// (EXT-WRT-11); nil when the lease never expires.
+	// nil when the lease never expires.
 	heartbeat *heartbeat
 }
 
 // OpenWriter takes ownership of sid and rebuilds the idempotency index and
-// every registered projection from the whole log (EXT-WRT-1). When a ledger
+// every registered projection from the whole log. When a ledger
 // is configured it reconciles this Session's claims before returning
-// (ART-RET-3): no Commit can be in flight yet.
+// no Commit can be in flight yet.
 func OpenWriter(ctx context.Context, store session.Store, registry *module.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error) {
 	return openWriter(ctx, store, registry, admission, sid, opts, WritersConfig{})
 }
@@ -161,7 +161,7 @@ func openWriter(ctx context.Context, store session.Store, registry *module.Regis
 		w.heartbeat = startHeartbeat(kernel, opts.LeaseDuration, w.onLeaseLost)
 	}
 	// The log is read from the earliest cache entry any projection resumes
-	// from (EXT-PRJ-5): judging an entry costs one commit read, and a clean
+	// judging an entry costs one commit read, and a clean
 	// Close leaves every entry at the head.
 	at := func(seq ledger.CommitSeq) (ledger.Commit, bool) {
 		one, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: seq, Limit: 1})
@@ -221,7 +221,7 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 var errWriterClosed = &ledger.Error{Code: ledger.CodeInvalid, Detail: "writer closed"}
 
 // onLeaseLost is the heartbeat's report that Renew was fenced: the Writer
-// is lost exactly as it would be by a fenced Append (EXT-WRT-4).
+// is lost exactly as it would be by a fenced Append.
 func (w *sessionWriter) onLeaseLost(err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -236,7 +236,7 @@ func (w *sessionWriter) Close(ctx context.Context) error {
 	}
 	w.mu.Lock()
 	var writes []cacheWrite
-	// An entry at an inherited boundary is never started from (EXT-PRJ-3).
+	// An entry at an inherited boundary is never started.
 	head := w.kernel.Head()
 	if ledger.OwnBoundary(w.kernel.Header().Seed(), head) {
 		writes = w.projections.planRefresh(head, true)
@@ -280,9 +280,8 @@ func (w *sessionWriter) Projections() session.ProjectionReader { return memoryRe
 
 // Commit is the pipeline: read (View) -> decide (fn) -> encode -> CommitID
 // replay check -> projection pre-fold -> retention claim -> Append -> advance
-// projections -> refresh cache / notify observers (EXT-WRT-1). Cache writes
+// projections -> refresh cache / notify observers. Cache writes
 // and observer notifications run after the Writer's lock is released
-// (EXT-PRJ-7, EXT-WRT-7).
 func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, error) {
 	if fn == nil {
 		return CommitResult{}, errors.New("writer: nil fn")
@@ -335,7 +334,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		return CommitResult{}, err
 	} else if committed {
 		// The CommitID names the operation: a second commit under it is the
-		// same operation and is not written again (EXT-WRT-2).
+		// same operation and is not written again.
 		return CommitResult{Outcome: CommitAlreadyApplied, Commit: existing}, nil
 	}
 	// Projections must accept the commit before anything is persisted. The
@@ -373,7 +372,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		// The claim stays active until reopening can verify the owner
 		// commit. Anything else leaves the log's content unknown to this
 		// Writer: fail closed; a replay of the same commit is answered by
-		// the kernel's index (EXT-WRT-4).
+		// the kernel's index.
 		w.lost = &ledger.Error{Code: ledger.CodeUnknownOutcome, Detail: err.Error()}
 		return CommitResult{}, w.lost
 	}

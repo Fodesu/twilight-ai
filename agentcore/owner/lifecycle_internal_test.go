@@ -9,7 +9,7 @@ import (
 )
 
 // A generation that is still closing keeps Open out until its release has
-// completed (OWN-HDL-1): the table entry, not the resources, decides.
+// completed: the table entry, not the resources, decides.
 func TestOpenRefusesWhileClosing(t *testing.T) {
 	a := &Owner{open: map[session.SessionID]*openSession{"s": {state: closing}}}
 	if _, err := a.Open(context.Background(), "s"); !errors.Is(err, ErrSessionOpen) {

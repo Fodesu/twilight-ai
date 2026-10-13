@@ -167,7 +167,7 @@ func modelResultWithNamedCalls(toolName, args string, callIDs ...string) model.M
 }
 
 // startModel is the start of the current Prepared step's next model effect
-// (RUN-WIR-1): the step's rejected count is the effect's sequence.
+// the step's rejected count is the effect's sequence.
 func startModel(s run.MachineState, stepID run.StepID) run.StartModelExecution {
 	ms, _ := s.Current.(run.ModelStep)
 	return run.StartModelExecution{StepID: stepID, Effect: schema.Identity().DeriveEffectID(s.RunID, stepID, "", ms.Rejects)}
@@ -609,7 +609,7 @@ func TestAcceptInputDuplicateIsGuarded(t *testing.T) {
 	}
 }
 
-// Inputs queue in every non-terminal state (RUN-MCH-4). A Prepared step whose
+// Inputs queue in every non-terminal state. A Prepared step whose
 // request predates the input is withdrawn and replanned; an Executing step
 // keeps the input for the Open that follows it.
 func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
@@ -791,7 +791,7 @@ func TestDerivedCallIDToleratesProviderIDReuse(t *testing.T) {
 }
 
 // TestSettlementNamesExecutingEffect: a settlement carries the effect it
-// closes and Decide checks it against the Executing step or call (RUN-WIR-1).
+// closes and Decide checks it against the Executing step or call.
 // Decide is called directly because mustDecide fills a missing effect in.
 func TestSettlementNamesExecutingEffect(t *testing.T) {
 	defA, defB := testToolDef("a"), testToolDef("b")
@@ -862,7 +862,7 @@ func TestSettlementNamesExecutingEffect(t *testing.T) {
 }
 
 // TestDeclineToolCallFailsPendingCallWithoutStart: DeclineToolCall records
-// the Known failure of a Pending call with no start and no effect (RUN-EXE-5);
+// the Known failure of a Pending call with no start and no effect;
 // any other call state is rejected.
 func TestDeclineToolCallFailsPendingCallWithoutStart(t *testing.T) {
 	defA, defB := testToolDef("a"), testToolDef("b")

@@ -79,7 +79,7 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 
 // Adopting a model record whose execution the backend no longer finds
 // restarts it as a new generation: the previous Ref moves to Superseded and
-// Start receives the new one (RUN-EXE-9).
+// Start receives the new one.
 func TestWorkerRestartSupersedesRef(t *testing.T) {
 	ctx := context.Background()
 	records := storetest.NewMap(nil)
@@ -226,7 +226,7 @@ func TestWorkerRecoverExecutionLeavesLiveLease(t *testing.T) {
 }
 
 // Adoption never re-dispatches an unbound tool whose prior execution may have
-// crossed the effect boundary (TRN-DUR-4); it settles Unknown instead. A
+// crossed the effect boundary; it settles Unknown instead. A
 // record that never dispatched (Accepted) still executes on adoption, and
 // model assignments stay replayable (TestWorkerReconcileAdoptsExpiredLease).
 func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
@@ -344,7 +344,7 @@ func TestWorkerHeartbeatRetriesTransientRenewErrors(t *testing.T) {
 // A takeover whose backend cannot confirm the execution (orphaned) holds the
 // lease and asks again instead of restarting: nothing is re-dispatched until
 // the backend proves the execution missing, and a backend that then observes
-// it hands the Worker the original Outcome (RUN-EXE-3, TRN-DUR-4).
+// it hands the Worker the original Outcome.
 func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 	rows := []struct {
 		name         string
@@ -429,7 +429,7 @@ func modelText(out effect.Outcome) string {
 // A lost tool execution is re-dispatched by adoption only when the Replay
 // policy its Assignment carries is allowed; a forbidden or unjudged tool is
 // settled Unknown, the message naming the declaration, and never started
-// again (RUN-EXE-9, TRN-DUR-4).
+// again.
 func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -541,7 +541,7 @@ func (b *transientBackend) Cancel(ctx context.Context, _ string) error {
 // Restart within the Worker's budget, the earlier Refs kept in Superseded:
 // a model failure by the disposition the effect layer derived from its
 // code, a tool failure by the disposition the tool gave it. A failure that
-// does not, or an exhausted budget, settles the failure (RUN-EXE-11).
+// does not, or an exhausted budget, settles the failure.
 func TestWorkerRetriesRetryableFailures(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -635,7 +635,7 @@ func (s *gateStore) Append(ctx context.Context, lease store.Lease, key effect.As
 // A Dispose that settles the execution between its acceptance and the
 // execution_started the Worker commits next wins: the Worker's step is a
 // state conflict, Backend.Start is never called, and the ledger keeps the
-// Dispose's Unknown settlement (RUN-EXE-16, TRN-DUR-4).
+// Dispose's Unknown settlement.
 func TestWorkerStartYieldsToSettlementBeforeStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

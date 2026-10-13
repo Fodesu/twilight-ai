@@ -516,7 +516,7 @@ func (f *Feature) facts() []run.Fact {
 }
 
 // withEffect fills the derived effect identity of a start or recovery that
-// names none (RUN-WIR-1): the model effect from the current step's rejected
+// names none: the model effect from the current step's rejected
 // count, the tool effect from the call, the recovered effect from the step.
 func (f *Feature) withEffect(cmd run.AgentCommand, snap store.Snapshot) run.AgentCommand {
 	switch c := cmd.(type) {

@@ -22,7 +22,7 @@ func pairEntries() []chatlog.Entry {
 }
 
 // CheckRetainClosure rejects a retained set that splits a tool pair in either
-// direction and accepts closed sets (APP-CKP-2).
+// direction and accepts closed sets.
 func TestCheckRetainClosure(t *testing.T) {
 	entries := pairEntries()
 	pair := func(i int) chatlog.EntryDigestPair { return entries[i].Pair() }
@@ -46,7 +46,7 @@ func TestCheckRetainClosure(t *testing.T) {
 		})
 	}
 	// An assistant whose call has no result yet must be retained, whatever
-	// else is (APP-CKP-2): the result will land after the compaction.
+	// else is the result will land after the compaction.
 	open := openEntries()
 	openPair := func(i int) chatlog.EntryDigestPair { return open[i].Pair() }
 	openCases := []struct {

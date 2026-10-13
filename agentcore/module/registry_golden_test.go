@@ -9,7 +9,7 @@ type goldenPayload struct {
 }
 
 // TestEncodeWireGolden freezes the framework's payload wire: the canonical
-// bytes after the `v` field is injected (EXT-COD-2). A drift with a non-empty
+// bytes after the `v` field is injected. A drift with a non-empty
 // want is an intentional wire change or an accident — update the fixture and
 // agent-session-md only for the former.
 func TestEncodeWireGolden(t *testing.T) {

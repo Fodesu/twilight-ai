@@ -9,7 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 )
 
-// MapBindings is artifact.BindingStore over a Go map (ART-BND-1): the
+// MapBindings is artifact.BindingStore over a Go map: the
 // reference the suite is written against and the store the kernel's own
 // tests bind through. The zero value is ready.
 type MapBindings struct {
@@ -60,8 +60,7 @@ func (s *MapBindings) ResolveBinding(ctx context.Context, id artifact.BindingID)
 	return b, nil
 }
 
-// MapLedger is artifact.RetentionLedger over a Go map (ART-RET-2,
-// ART-RET-3). Builder, when set, verifies every activated set against the
+// MapLedger is artifact.RetentionLedger over a Go map. Builder, when set, verifies every activated set against the
 // bindings it was built from.
 type MapLedger struct {
 	Builder artifact.BindingSetBuilder
@@ -126,7 +125,7 @@ func (l *MapLedger) ReleaseActive(_ context.Context, id artifact.ClaimID) error 
 }
 
 // ClaimsByOwner pages the owner's claims in ClaimID order under a watermark
-// cursor (ART-RET-3): a first page fixes its watermark at the last matching
+// cursor: a first page fixes its watermark at the last matching
 // id, so claims activated while paging stay out of the enumeration.
 func (l *MapLedger) ClaimsByOwner(_ context.Context, q artifact.ClaimOwnerQuery, cursor artifact.ClaimCursor) (artifact.ClaimPage, error) {
 	if q.Kind == "" || q.Authority == "" {
@@ -162,7 +161,7 @@ func (l *MapLedger) ClaimsByOwner(_ context.Context, q artifact.ClaimOwnerQuery,
 	return artifact.ClaimPage{Items: items}, nil
 }
 
-// matchesIdentity is ART-RET-3: nil selects every identity, an explicit
+// matchesIdentity is nil selects every identity, an explicit
 // list selects its members, and an empty identity never matches.
 func matchesIdentity(q artifact.ClaimOwnerQuery, identity string) bool {
 	if identity == "" {

@@ -23,11 +23,10 @@ func namespacedHash(namespace string, parts ...string) string {
 // calls, responses, effects, command ids) is a namespaced hash of its
 // preimage. The preimages are persisted semantics and never change: a
 // different derivation would give a replayed command another CommitID
-// (RUN-CMT-8).
 type Identity struct{}
 
 // DeriveModelRequestCommandID derives the CommandID for PrepareModelRequest
-// from the Run and the RunPosition the prompt builder loaded (RUN-WIR-3): concurrent
+// from the Run and the RunPosition the prompt builder loaded: concurrent
 // prompt builders on the same position converge on one command identity.
 func (Identity) DeriveModelRequestCommandID(runID run.RunID, position run.RunPosition) run.CommandID {
 	return run.CommandID(namespacedHash("twilight/model-request", string(runID), fmt.Sprintf("%d", position)))
@@ -87,7 +86,7 @@ func (Identity) DeriveWithdrawCommandID(runID run.RunID, step run.StepID) run.Co
 }
 
 // DeriveEffectID derives the identity of one request for an external effect
-// (RUN-WIR-1): the model call of a ModelStep (empty call) or one tool call of
+// the model call of a ModelStep (empty call) or one tool call of
 // a ToolStep. sequence distinguishes the requests one step makes: a ModelStep
 // whose result was rejected requests its model call again, so its sequence
 // is the count of rejections before the request; a tool call starts at most
@@ -100,7 +99,7 @@ func (Identity) DeriveEffectID(runID run.RunID, step run.StepID, call run.CallID
 
 // DeriveStartCommandID derives the CommandID of StartModelExecution or
 // StartToolCall from the effect it requests. Commit enforces this derivation
-// so a caller-minted ID cannot bypass the idempotency index (RUN-WIR-3).
+// so a caller-minted ID cannot bypass the idempotency index.
 func (Identity) DeriveStartCommandID(effect run.EffectID) run.CommandID {
 	return run.CommandID(namespacedHash("twilight/start-command", string(effect)))
 }
@@ -114,7 +113,7 @@ func (Identity) DeriveSettlementCommandID(effect run.EffectID) run.CommandID {
 }
 
 // DeriveRecoveryCommandID derives the CommandID of the recovery of one effect
-// whose outcome cannot be reached (RUN-CMT-7): RecoverModelExecution for a
+// whose outcome cannot be reached: RecoverModelExecution for a
 // model effect, the Unknown SubmitToolFailure for a tool effect. The identity
 // is a function of the effect alone, so whichever owner repeats the recovery
 // replays the same command.

@@ -9,7 +9,7 @@ import (
 )
 
 // FoldRun rebuilds a MachineState from the complete fact sequence of one Run
-// in stream order (RUN-NEW-2): the first fact must be RunCreated. No Decide,
+// in stream order: the first fact must be RunCreated. No Decide,
 // no effects, no replay.
 func FoldRun(facts []run.Fact) (run.MachineState, error) {
 	if len(facts) == 0 {

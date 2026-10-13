@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// EXT-WRT-11: a Writer opened with a lease keeps it renewed for as long as
+// a Writer opened with a lease keeps it renewed for as long as
 // it is open, and learns of a takeover through the heartbeat, after which
 // it refuses to commit like a Writer fenced at Append.
 func TestWriterHeartbeatRenewsAndReportsLoss(t *testing.T) {

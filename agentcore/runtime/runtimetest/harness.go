@@ -301,7 +301,7 @@ func (h *harness) load(runID run.RunID) store.Snapshot {
 
 // --- driving a Run without a Loop ----------------------------------------------------
 
-// modelEffect derives the next model effect of the Prepared step (RUN-WIR-1).
+// modelEffect derives the next model effect of the Prepared step.
 func (h *harness) modelEffect(runID run.RunID, step run.StepID) run.EffectID {
 	h.t.Helper()
 	ms, ok := h.load(runID).State.Current.(run.ModelStep)
@@ -441,7 +441,7 @@ func (h *harness) waitingTool(runID run.RunID) {
 }
 
 // appCancel is the Application's own CancelRun: the Run ends stopped and
-// its Turn settles as failed from the run_ended alone (TRN-PRJ-1).
+// its Turn settles as failed from the run_ended alone.
 func (h *harness) appCancel(runID run.RunID) {
 	h.t.Helper()
 	h.seq++

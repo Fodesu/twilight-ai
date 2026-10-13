@@ -82,7 +82,7 @@ type StreamSeq uint64
 // ValidateStreamRef checks a domain as a stream attribution: ledger-valid
 // and not empty. The empty domain is the unpartitioned ledger's group, not
 // a stream; which domains a writer owns and which ID an event binds to are
-// the module framework's checks (EXT-STR-1).
+// the module framework's checks.
 func ValidateStreamRef(r Domain) error {
 	if r.Name == "" {
 		return errors.New("stream domain is empty")

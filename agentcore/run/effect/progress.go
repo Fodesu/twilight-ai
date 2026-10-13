@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 )
 
-// ProgressKind names one kind of progress frame (RUN-EXE-12).
+// ProgressKind names one kind of progress frame.
 type ProgressKind string
 
 const (
@@ -16,7 +16,7 @@ const (
 	// ProgressToolProgress carries a tool's own progress payload.
 	ProgressToolProgress ProgressKind = "tool_progress"
 	// ProgressReset opens a new generation of the same effect: the Worker
-	// re-dispatched it (RUN-EXE-9/11), so every frame of the earlier
+	// re-dispatched it, so every frame of the earlier
 	// generation is void and the receiver starts over.
 	ProgressReset ProgressKind = "reset"
 	// ProgressEnd closes the stream: the execution reached a terminal state
@@ -25,7 +25,7 @@ const (
 )
 
 // ProgressFrame is one provisional observation of an execution in flight
-// (RUN-EXE-12). Frames are not facts: they may be lost, and a Reset voids
+// Frames are not facts: they may be lost, and a Reset voids
 // the ones before it. Generation counts the effect's attempts under the
 // Worker (a Reset raises it), Sequence orders frames within the key.
 type ProgressFrame struct {
@@ -43,7 +43,7 @@ type ProgressSink interface {
 	Publish(context.Context, ProgressFrame)
 }
 
-// ProgressPort is the progress side of an ExecutionPort (RUN-EXE-12), an
+// ProgressPort is the progress side of an ExecutionPort, an
 // optional capability. Progress delivers the frames of key with Sequence
 // greater than after to fn, in order, until fn returns false, ctx ends, or
 // an End frame closes the stream; a key the port never saw is

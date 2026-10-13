@@ -1,4 +1,4 @@
-// Package storetest is the RunStore conformance suite (RUN-CMP-2). It takes a
+// Package storetest is the RunStore conformance suite. It takes a
 // session.Store factory so the Memory store and every durable adapter run the
 // same assertions; it asserts Run semantics only and leaves group atomicity,
 // ownership fencing and cache equivalence to the kernel and
@@ -117,7 +117,7 @@ func (h *harness) takeover() (*sessionstore.SessionRunStore, writer.Writer) {
 	old, oldWriter := h.rt, h.writer()
 	h.open()
 	// Ownership changes hands when the new process opens its Writer, not
-	// when it reads: reads take no lease (OWN-HDL-2).
+	// when it reads: reads take no lease.
 	h.writer()
 	return old, oldWriter
 }
@@ -189,7 +189,7 @@ func (h *harness) submitInputs(inputs ...run.AgentInput) {
 	}
 }
 
-// startGroup is TRN-STR-2 without a Coordinator: turn/started,
+// startGroup builds the atomic turn-start group without a Coordinator: turn/started,
 // attempt/started, input_delivered*, run/created, input_accepted*. Owner
 // is the TurnID.
 func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32, inputs ...run.AgentInput) writer.SemanticGroup {
@@ -223,7 +223,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	for _, f := range facts {
 		runEvents = append(runEvents, writer.TypedEvent{Type: sessionstore.EventType(f), RecordedAtUnixMilli: 1, Value: sessionstore.Event{RunID: runID, Fact: f}})
 	}
-	// One batch per stream: the Turn's (naming its Run, TRN-SCP-2), the
+	// One batch per stream: the Turn's (naming its Run), the
 	// chatlog's when inputs are delivered, and the Run's.
 	if len(turnEvents) > 0 {
 		group.Batches = append(group.Batches, writer.TypedBatch{Domain: turn.Stream(turnID), Events: turnEvents})
@@ -353,7 +353,7 @@ func (h *harness) mustCommit(runID run.RunID, id run.CommandID, base run.RunPosi
 	return res
 }
 
-// modelEffect derives the next model effect of the Prepared step (RUN-WIR-1):
+// modelEffect derives the next model effect of the Prepared step:
 // the step's rejected-result count is the effect's sequence.
 func (h *harness) modelEffect(runID run.RunID, step run.StepID) run.EffectID {
 	h.t.Helper()

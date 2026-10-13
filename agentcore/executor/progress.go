@@ -11,7 +11,7 @@ import (
 // WorkerOptions.Progress is built with a zero window.
 const DefaultProgressWindow = 256
 
-// ProgressHub is the Worker's in-memory progress buffer (RUN-EXE-12): the
+// ProgressHub is the Worker's in-memory progress buffer: the
 // effect.ProgressSink its backends publish into and the effect.ProgressPort
 // the Owner reads from. Each key keeps a bounded ring of frames stamped
 // with the key's generation and a running sequence; a Reset opens the next

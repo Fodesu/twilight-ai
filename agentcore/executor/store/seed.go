@@ -30,7 +30,6 @@ func SeedCommits(state Execution, at int64) ([]ledger.Commit, error) { //nolint:
 	case effect.ExecutionAborted:
 		// A tombstone is the whole ledger of an aborted key: the abort stood
 		// at Seq 0, so no acceptance, binding or lease ever existed
-		// (RUN-EXE-16).
 		if err := add(EventExecutionAborted, Aborted{Reason: "seeded"}); err != nil {
 			return nil, err
 		}

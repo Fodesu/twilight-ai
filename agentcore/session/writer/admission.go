@@ -19,7 +19,7 @@ type Admission struct {
 	Ledger   artifact.RetentionLedger
 }
 
-// ClaimOwnerKind is the ClaimOwner.Kind of Session commits (EXT-WRT-5).
+// ClaimOwnerKind is the ClaimOwner.Kind of Session commits.
 const ClaimOwnerKind = "twilight/session/commit"
 
 // claimDerivationVersion versions the claim identity preimages of this
@@ -27,7 +27,7 @@ const ClaimOwnerKind = "twilight/session/commit"
 // outlives the segment version that wrote its commit.
 const claimDerivationVersion uint16 = 1
 
-// DeriveClaimID is EXT-WRT-5: the retention root of one commit's references,
+// DeriveClaimID is the retention root of one commit's references,
 // named by the segment that holds the commit. No Session and no protocol
 // version enter it: the segment is the canonical owner of the commit, and a
 // Session that forks or advances keeps reading the same claim.
@@ -48,9 +48,9 @@ func CommitOwner(segment session.SegmentID, id ledger.CommitID) artifact.ClaimOw
 }
 
 // admitter is the artifact stage of the commit pipeline: it admits the
-// Bindings a group references against their declarations (EXT-REF-2),
-// activates the commit's retention claim before Append (EXT-WRT-3) and
-// reconciles this Session's claims when the Writer opens (ART-RET-3). It
+// Bindings a group references against their declarations,
+// activates the commit's retention claim before Append and
+// reconciles this Session's claims when the Writer opens. It
 // knows nothing of projections or ownership.
 type admitter struct {
 	Admission
@@ -102,7 +102,7 @@ func (a *admitter) admit(ctx context.Context, id artifact.BindingID, decl *modul
 	return "", nil
 }
 
-// claim activates the retention claim before Append (EXT-WRT-3); a commit
+// claim activates the retention claim before Append; a commit
 // without references claims nothing.
 func (a *admitter) claim(ctx context.Context, commitID ledger.CommitID, refs []artifact.BindingID) (*artifact.RetentionClaim, string, error) {
 	if len(refs) == 0 {

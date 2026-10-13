@@ -10,7 +10,7 @@ import (
 )
 
 // The tool's Replay policy travels with the Assignment across the wire and
-// the execution record (RUN-EXE-9); an unjudged tool omits the field, so an
+// the execution record; an unjudged tool omits the field, so an
 // Assignment written before the declaration existed still decodes as unknown.
 func TestToolAssignmentCarriesReplayPolicy(t *testing.T) {
 	cases := []struct {

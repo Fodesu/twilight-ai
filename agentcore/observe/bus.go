@@ -1,4 +1,4 @@
-// Package observe carries a Session's observations (OBS-1) in two streams.
+// Package observe carries a Session's observations in two streams.
 // Bus and Progresses are process-local fan-outs for committed and transient
 // observations. SessionLedgerTailer is the durable stream: it follows the
 // shared ledger and uses CommitObserver notifications only as polling hints.

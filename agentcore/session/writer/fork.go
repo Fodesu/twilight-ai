@@ -21,7 +21,7 @@ type ForkRequest struct {
 
 // Fork creates req.Child from req.Parent's history at commit req.At
 // . It holds no claim of its
-// own (EXT-WRT-8): the content the inherited prefix references is retained
+// own: the content the inherited prefix references is retained
 // by the commit claims of the segments that hold those commits. Those
 // commits stay while a live path's span still covers them.
 // Fork is idempotent: a repeat with the same arguments returns the same

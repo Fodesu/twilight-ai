@@ -1,4 +1,4 @@
-// Package inbox is the durable command inbox of a Session (CLD-CMD): the
+// Package inbox is the durable command inbox of a Session: the
 // place a caller that does not own the Session -- a gateway, another
 // process, the same process before it opened the Session -- leaves a
 // command for whoever owns the Session next. A command becomes a fact the
@@ -91,7 +91,7 @@ type Store interface {
 	Resolve(ctx context.Context, sid session.SessionID, seq uint64, r Result) error
 	// Sessions returns Sessions with at least one pending entry, in
 	// SessionID order, at most limit of them (0 means every one): the
-	// activation index of an owner pool (CLD-CMD-4). A page is a sample of
+	// activation index of an owner pool. A page is a sample of
 	// what needs an owner, not a cursor over all of it: a Session left out
 	// appears once earlier ones are drained.
 	Sessions(ctx context.Context, limit int) ([]session.SessionID, error)

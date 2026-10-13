@@ -205,7 +205,7 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	}
 	// Validate caught the missing model before the start barrier: the step is
 	// still Prepared and no start or recovery fact was written, so a working
-	// Loop starts the same step (RUN-EXE-5, RUN-LOP-3).
+	// Loop starts the same step.
 	step, isModel := snap.State.Current.(ModelStep)
 	if !isModel || step.Status != ModelPrepared {
 		t.Fatalf("current = %+v, want the Prepared model step", snap.State.Current)
@@ -393,7 +393,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	}
 	// The first Loop reaches the start barrier; both start responses are lost,
 	// so the Owner remains Executing while the worker's attempt is gone
-	// with the aborted process. A second Run has nothing to execute (RUN-LOP-4).
+	// with the aborted process. A second Run has nothing to execute.
 	if current, ok := snapshot.State.Current.(ModelStep); !ok || current.Status != ModelExecuting {
 		t.Fatalf("current = %#v, want Executing ModelStep", snapshot.State.Current)
 	}
@@ -402,7 +402,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 		t.Fatalf("run with an orphaned Executing step = %+v %v, want waiting for recovery", res, err)
 	}
 	// The owner's takeover disposition withdraws the orphaned step; the next
-	// Run plans again and calls the model exactly once (RUN-CMT-7).
+	// Run plans again and calls the model exactly once.
 	if n, err := rt.RecoverInterrupted(context.Background(), w, &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v", n, err)
 	}
@@ -496,7 +496,7 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	// The model step is withdrawn via RecoverModelExecution: the Run is Open,
-	// still active, and the aborted step is not counted (RUN-LOP-3).
+	// still active, and the aborted step is not counted.
 	snap, _ := rt.Bind(w).Load(context.Background(), "run-1")
 	if _, open := snap.State.Current.(Open); !open {
 		t.Fatalf("current = %#v, want Open", snap.State.Current)

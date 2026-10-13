@@ -184,7 +184,7 @@ func TestCanonicalGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The input body is not in the fact (RUN-WIR-4): the Run records the
+	// The input body is not in the fact: the Run records the
 	// input's identity and content digest, the chatlog holds the body.
 	wantFact := `v1:14:input_accepted:{"input":{"digest":"sha256:e7b995efa755c5ff3b84d2188b58cb4ae916a59470eb3761df8a814f11763500","id":"in-1"}}`
 	if string(fbody) != wantFact {

@@ -6,7 +6,7 @@ import (
 
 // Table is the persistent map of the Surface projection. A state derived by
 // Apply shares the previous state's storage and never writes it, so every
-// state a reader holds keeps the contents it had (EXT-PRJ-1); Set returns a new
+// state a reader holds keeps the contents it had; Set returns a new
 // Table and leaves the receiver untouched.
 // Storage is two layers that are both immutable once built: base carries the
 // bulk and is shared by every state derived from the one that merged it;

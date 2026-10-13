@@ -11,7 +11,7 @@ import (
 
 // effectRef is one effect of a Run as this Loop addresses it: the derived
 // EffectID the start fact records, with the schema whose Identity derives the
-// start, settlement and recovery CommandIDs from it (RUN-WIR-1). It holds
+// start, settlement and recovery CommandIDs from it. It holds
 // nothing of the physical execution -- worker, lease and backend handle stay
 // in the executor -- so any owner that reads the same state derives the same
 // identities and a repeated command replays instead of granting twice.
@@ -60,7 +60,7 @@ func (l *Loop) settle(ctx context.Context, rt store.RunStore, events EventSink, 
 	}
 	l.emitCommitted(ctx, events, rt.Scope(), e.runID, res.Facts)
 	// The settlement is a Session fact: the executor may collect the
-	// effect's record (RUN-EXE-13). A refused or failed acknowledgement
+	// effect's record. A refused or failed acknowledgement
 	// changes nothing here; the executor's time-based collection covers it.
 	if a, ok := l.Executor.(Acknowledger); ok {
 		_ = a.Acknowledge(ctx, AssignmentKey{Session: rt.Scope(), RunID: e.runID, Effect: e.id})
@@ -71,5 +71,5 @@ func (l *Loop) settle(ctx context.Context, rt store.RunStore, events EventSink, 
 	return nil, nil
 }
 
-// ownershipLost reports the terminal ownership error (RUN-LOP-5).
+// ownershipLost reports the terminal ownership error.
 func ownershipLost(err error) bool { return errors.Is(err, store.ErrOwnershipLost) }

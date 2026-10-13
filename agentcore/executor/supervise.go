@@ -23,10 +23,10 @@ import (
 // from outside the package.
 
 // acquireAndStart takes the key's lease and continues the execution from its
-// fold (RUN-EXE-3, RUN-EXE-9): an execution with an attachable backend
+// fold: an execution with an attachable backend
 // execution is observed, one whose execution the backend proves missing is
 // re-started (a model, or a tool whose Replay policy allows it) or settled
-// Unknown (any other tool, TRN-DUR-4), one whose execution the backend
+// Unknown (any other tool), one whose execution the backend
 // cannot confirm (orphaned) is held under the lease and asked about again
 // until the backend can, and one never started is started.
 func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) error {
@@ -46,7 +46,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	}
 	// A ledger opened without its binding (an older store, a test fixture)
 	// is routed and prepared here, before any backend call, and the Ref is
-	// committed first (RUN-EXE-9).
+	// committed first.
 	if claimed.ExecutionRef.Provider == "" && claimed.State != effect.ExecutionCancelRequested {
 		route, err := w.route(claimed.Assignment)
 		if err != nil {
@@ -125,7 +125,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 // heartbeat leaseDone ends, until the backend observes the execution (then
 // it is watched), proves it missing (then it is replayed or settled as a
 // missing one would be), or this incarnation loses the lease. Nothing is
-// re-dispatched while the backend is undecided (RUN-EXE-3, TRN-DUR-4).
+// re-dispatched while the backend is undecided.
 func (w *Worker) awaitBackend(lease executionstore.Lease, claimed *executionstore.Execution, backend ExecutionBackend, ref string, leaseDone chan struct{}) {
 	delay := 10 * time.Millisecond
 	for {
@@ -157,13 +157,13 @@ func (w *Worker) awaitBackend(lease executionstore.Lease, claimed *executionstor
 // replay is what a takeover does with an execution the backend proved
 // missing. A model is always replayed; a tool only when the Replay policy
 // its Assignment carries allows it, because its lost execution may have
-// crossed the effect boundary before its worker died (TRN-DUR-4). The policy
+// crossed the effect boundary before its worker died. The policy
 // travels with the Assignment, so a local and a remote Worker decide alike
 // from the ledger; a forbidden or unjudged tool settles Unknown, the message
 // naming the declaration. Restart replays the same Assignment as a new
 // generation: it allocates the Ref of the new physical execution and the old
 // Ref, just proved missing, moves to the audit trail as execution_restarted
-// (RUN-EXE-9). leaseDone ends the running heartbeat when nothing is left to
+// leaseDone ends the running heartbeat when nothing is left to
 // watch.
 func (w *Worker) replay(ctx context.Context, lease executionstore.Lease, claimed *executionstore.Execution, backend ExecutionBackend, ref string, leaseDone chan struct{}) error {
 	if tool, ok := claimed.Assignment.Tool(); ok && tool.Replay != run.ReplayAllowed {
@@ -258,7 +258,7 @@ func (w *Worker) watch(lease executionstore.Lease, backend ExecutionBackend, ref
 // observe reads the Outcome of ref and settles it, or restarts the effect
 // after a retryable failure and reports true with ref moved to the new
 // execution; false ends the watch. It reads once, then waits for the
-// Backend's notice that the Ref settled (RUN-EXE-17); a read at intervals
+// Backend's notice that the Ref settled; a read at intervals
 // bounded by the lease covers a Backend without notices and a notice that
 // was lost, and every wait re-checks that this Worker still owns the record.
 func (w *Worker) observe(lease executionstore.Lease, backend ExecutionBackend, ref *string) bool {
@@ -289,7 +289,7 @@ func (w *Worker) observe(lease executionstore.Lease, backend ExecutionBackend, r
 		case errors.Is(err, effect.ErrExecutionNotFound), errors.Is(err, effect.ErrOutcomeUnavailable):
 			// A definitive answer: the Backend will never produce this
 			// Outcome. The record settles Unknown instead of waiting on a
-			// read that cannot change (RUN-EXE-3).
+			// read that cannot change.
 			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: lease.Key, Unknown: true,
 				Error: &protocol.WireError{Code: "outcome_unavailable", Message: err.Error()}}
 			w.settleWithRetry(lease, &env, effect.ExecutionUnknown, delay)
@@ -305,14 +305,14 @@ func (w *Worker) observe(lease executionstore.Lease, backend ExecutionBackend, r
 		break
 	}
 	// A Known transient failure of an effect whose policy allows it is
-	// re-dispatched under the same ledger within the budget (RUN-EXE-11):
+	// re-dispatched under the same ledger within the budget:
 	// the old Ref joins the audit trail and the watch continues on the new one.
 	if next, ok := w.retryAfter(lease, backend, *ref, out); ok {
 		*ref = next
 		return true
 	}
 	// The backend knows the Ref, not the attempt: the ledger's key is the
-	// Outcome's key (RUN-EXE-9).
+	// Outcome's key.
 	out.Key = lease.Key
 	env := protocol.EncodeOutcome(out)
 	w.settleWithRetry(lease, &env, protocol.StatusForOutcome(out), delay)
@@ -381,7 +381,7 @@ func (w *Worker) retryAfter(lease executionstore.Lease, backend ExecutionBackend
 		return "", false
 	}
 	// The next generation of frames starts here; what the receiver saw of
-	// the failed attempt is void (RUN-EXE-12).
+	// the failed attempt is void.
 	w.progress.Reset(lease.Key)
 	if err := backend.Start(context.WithoutCancel(ctx), fresh, state.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
 		// The retry itself was refused before starting: settle the original
@@ -392,7 +392,7 @@ func (w *Worker) retryAfter(lease executionstore.Lease, backend ExecutionBackend
 }
 
 // retryableFailure reports whether a Known outcome declares itself worth a
-// second execution (RUN-EXE-11): the disposition the effect layer derived
+// second execution: the disposition the effect layer derived
 // for a model failure, or the one the tool gave its failure.
 func retryableFailure(result effect.OutcomeResult) bool {
 	switch r := result.(type) {

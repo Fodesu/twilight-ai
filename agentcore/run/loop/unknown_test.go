@@ -64,7 +64,7 @@ func (p *refusingPort) Settlements(ctx context.Context, epoch string, after uint
 	return ctx.Err()
 }
 
-// RUN-EXE-3: a retryable refusal is dispatched again inside the Advance and
+// a retryable refusal is dispatched again inside the Advance and
 // the call completes; a refusal that persists past the bound is a Known
 // dispatch failure of the call, and the Run continues.
 func TestRetryableDispatchRefusal(t *testing.T) {

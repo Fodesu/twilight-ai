@@ -24,14 +24,14 @@ type (
 )
 
 // SourceTwilight is the source reserved for this repository's first-party
-// modules; application modules register under their own SourceID (EXT-REG-1).
+// modules; application modules register under their own SourceID.
 const SourceTwilight SourceID = "twilight"
 
 // TwilightModule is the ModuleKey of a first-party module.
 func TwilightModule(id ModuleID) ModuleKey { return ModuleKey{Source: SourceTwilight, ID: id} }
 
 // PayloadCodec encodes and decodes one payload version. Encode never writes
-// the `v` field: the Registry adds it (EXT-COD-2).
+// the `v` field: the Registry adds it.
 type PayloadCodec interface {
 	Encode(value any) (jsonstable.Value, error)
 	Decode(wire jsonstable.Value) (any, error)
@@ -39,7 +39,7 @@ type PayloadCodec interface {
 }
 
 // PayloadVersion is the version of one event type's payload codec
-// (, EXT-REG-2). It belongs to the event type, not to the segment:
+// It belongs to the event type, not to the segment:
 // every payload carries the version it was written under as `v`, the module
 // keeps a codec for every version it ever published, and every codec of one
 // type decodes to the module's current in-memory value (upcasting inside the
@@ -56,16 +56,16 @@ type EventDefinition struct {
 	Version  PayloadVersion
 	Bindings []BindingReferenceDefinition
 	// Ignorable marks purely informational events: a fold that cannot decode
-	// the event's payload version skips it instead of failing (EXT-PRJ-2).
+	// the event's payload version skips it instead of failing.
 	Ignorable bool
 	// Stream names the stream domain the event may be appended to: one the
-	// same module declares in ModuleDescriptor.Streams (EXT-STR-1). The
+	// same module declares in ModuleDescriptor.Streams. The
 	// Writer rejects an event placed in a batch of another domain.
 	Domain string
 }
 
 // StreamDefinition declares one logical stream domain a module owns
-// (EXT-STR-1): the boundary of the invariants its events keep. The kernel
+// the boundary of the invariants its events keep. The kernel
 // names no domain; every domain a Session writes is declared here by
 // exactly one module, which is the only module allowed to append to it.
 type StreamDefinition struct {
@@ -75,7 +75,7 @@ type StreamDefinition struct {
 	// stream it belongs to. Nil declares a singleton domain: one stream, no
 	// ID. Non-nil declares a keyed domain whose streams are domain/<id>; the
 	// Writer requires Key(value) to equal the batch's stream ID
-	// (EXT-STR-1). The binding is a property of the module's Go values, not
+	// The binding is a property of the module's Go values, not
 	// of a payload field name.
 	Key StreamKey
 	// Inheritance is how a child segment reads the domain:
@@ -97,7 +97,7 @@ func (d StreamDefinition) Ref(id string) ledger.Domain {
 }
 
 // ModuleRequirement declares that a module consumes another module's events
-// (EXT-REG-4). Source is required: module identity is the (Source, ID)
+// Source is required: module identity is the (Source, ID)
 // pair. Versions are not part of the handshake: the producer's codecs
 // upcast every version to its current value, which is all a consumer sees.
 type ModuleRequirement struct {
@@ -113,7 +113,7 @@ type ModuleDescriptor struct {
 	Source   SourceID
 	ID       ModuleID
 	Requires []ModuleRequirement
-	// Streams are the stream domains the module owns (EXT-STR-1). Every
+	// Streams are the stream domains the module owns. Every
 	// event the module declares names one of them.
 	Streams     []StreamDefinition
 	Events      []EventDefinition
@@ -138,7 +138,7 @@ type DecodedEvent struct {
 	Unknown  bool
 }
 
-// Registry is the immutable index built once at startup (EXT-REG-1).
+// Registry is the immutable index built once at startup.
 type Registry struct {
 	modules     map[ModuleKey]ModuleDescriptor
 	streams     map[string]streamEntry
@@ -182,7 +182,7 @@ func validSegment(kind, v string) error {
 
 // BuildRegistry validates the module set and freezes the indexes. Every
 // module passed here is trusted: the caller vouches for it, so it may
-// declare authoritative projections (EXT-PRJ-9). Modules from outside the
+// declare authoritative projections. Modules from outside the
 // deployment's trust boundary go through BuildRegistryWithExtensions.
 func BuildRegistry(modules ...ModuleDescriptor) (*Registry, error) {
 	return BuildRegistryWithExtensions(modules, nil)
@@ -251,7 +251,7 @@ func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry
 				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("projection %q is incomplete", p.ID)}
 			}
 			// Refusing commits is a capability of trusted core modules, not
-			// something a descriptor declares for itself (EXT-PRJ-9); the
+			// something a descriptor declares for itself; the
 			// extension path above already refused it, this guards the map.
 			if p.Authoritative && !trusted[key] {
 				return nil, &ledger.Error{Code: ledger.CodeInvalid, Detail: fmt.Sprintf("projection %q of module %s/%s declares Authoritative without trust", p.ID, m.Source, m.ID)}
@@ -269,7 +269,7 @@ func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry
 	return r, nil
 }
 
-// checkRequirements enforces EXT-REG-4: registered dependencies, no cycles,
+// checkRequirements enforces registered dependencies, no cycles,
 // projection consumption within scope, and handled payload versions.
 func (r *Registry) checkRequirements() error {
 	state := make(map[ModuleKey]int) // 0 unvisited, 1 visiting, 2 done
@@ -326,7 +326,7 @@ func (r *Registry) checkRequirements() error {
 }
 
 // scopeOf is the module plus its Requires: the modules whose unknown events a
-// projection must not silently skip (EXT-PRJ-2).
+// projection must not silently skip.
 func (r *Registry) scopeOf(key ModuleKey) map[ModuleKey]struct{} {
 	scope := map[ModuleKey]struct{}{key: {}}
 	for _, req := range r.modules[key].Requires {
@@ -433,7 +433,7 @@ func ModulePrefix(source SourceID, id ModuleID) ledger.EventType {
 }
 
 // Encode validates value, encodes it with the codec of the event type's
-// write Version and records that Version as the payload's `v` (EXT-REG-2).
+// write Version and records that Version as the payload's `v`.
 func (r *Registry) Encode(typ ledger.EventType, value any) (jsonstable.Value, error) {
 	_, def, ok := r.LookupEvent(typ)
 	if !ok {
@@ -452,12 +452,12 @@ func (r *Registry) Encode(typ ledger.EventType, value any) (jsonstable.Value, er
 		return jsonstable.Value{}, &ledger.Error{Code: ledger.CodeCodec, Type: typ, Detail: err.Error()}
 	}
 	// The canonical Encode/Decode/Encode round trip is a module test
-	// obligation (EXT-COD-1), not re-verified per Encode.
+	// obligation, not re-verified per Encode.
 	return wire, nil
 }
 
 // Decode selects the codec by (EventType, v). Unknown types or versions are
-// returned as Unknown with the raw payload retained (EXT-REG-3).
+// returned as Unknown with the raw payload retained.
 func (r *Registry) Decode(e ledger.Event) (DecodedEvent, error) {
 	out := DecodedEvent{Event: e}
 	module, def, ok := r.LookupEvent(e.Type)

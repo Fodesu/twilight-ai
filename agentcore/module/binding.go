@@ -11,7 +11,7 @@ type Cardinality struct {
 }
 
 // BindingExtractor returns every Artifact reference inside a decoded typed
-// value, in appearance order (EXT-REF-1).
+// value, in appearance order.
 type BindingExtractor interface {
 	BindingIDs(value any) ([]artifact.BindingID, error)
 }
@@ -22,7 +22,7 @@ type BindingExtractorFunc func(value any) ([]artifact.BindingID, error)
 func (f BindingExtractorFunc) BindingIDs(value any) ([]artifact.BindingID, error) { return f(value) }
 
 // BindingReferenceDefinition declares where an event may reference Artifacts
-// and what admission requires of them (EXT-REF-2).
+// and what admission requires of them.
 type BindingReferenceDefinition struct {
 	Extractor          BindingExtractor
 	Cardinality        Cardinality

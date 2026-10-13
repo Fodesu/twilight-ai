@@ -52,7 +52,6 @@ type TurnSurface struct {
 	Order []TurnID            `json:"order"`
 	Turns map[TurnID]TurnView `json:"turns"`
 	// RunOwner routes a Run to the Turn it executes, from twilight/turn/started
-	// (TRN-PRJ-1).
 	RunOwner map[run.RunID]TurnID `json:"runOwner"`
 }
 
@@ -75,7 +74,7 @@ func (s TurnSurface) clone() TurnSurface {
 	return out
 }
 
-// Active returns the single active Turn of the Session, if any (TRN-SCP-2).
+// Active returns the single active Turn of the Session, if any.
 func (s *TurnSurface) Active() (TurnView, bool) {
 	for _, id := range s.Order {
 		if v := s.Turns[id]; v.Status == TurnActive {
@@ -91,8 +90,8 @@ var SurfaceProjection = module.ProjectionDefinition{
 		chatlog.TypeInputDelivered, sessionstore.Prefix + "run_ended"},
 	// Attempt settlement is folded from run_ended, so inherited Turns settle
 	// from the parent's run streams, whose domain is of segment lineage and
-	// would otherwise be skipped (EXT-PRJ-8); a fork point inside a Turn is
-	// refused by the Owner (OWN-FRK-1).
+	// would otherwise be skipped; a fork point inside a Turn is
+	// refused by the Owner.
 	Inherits:      module.InheritAll,
 	Authoritative: true,
 	Initial: func() (any, error) {
@@ -200,7 +199,7 @@ func (s *TurnSurface) settling(id TurnID) (TurnView, error) {
 	}
 	// A Turn is settled once: while active, or right after its Run ended
 	// without completing, when the unit that ended the Run (Stop) writes
-	// the Turn's own settlement beside it (TRN-STP-1).
+	// the Turn's own settlement beside it.
 	if v.Status == TurnActive || (v.Status == TurnFailed && v.Settlement == "") {
 		return v, nil
 	}

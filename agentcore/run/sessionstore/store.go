@@ -36,9 +36,9 @@ type Config struct {
 	Registry *module.Registry
 	// Store is the read side: Record folds from it (through Cache) without
 	// taking ownership; commands write through the Writer a port is bound
-	// to (OWN-HDL-2).
+	// to.
 	Store session.Store
-	// Frozen holds the bodies facts name by digest (RUN-WIR-4). It is
+	// Frozen holds the bodies facts name by digest. It is
 	// required, and it must register each body's Binding for the Writers'
 	// admission: FrozenValues over a ContentStore and a BindingStore does.
 	Frozen frozen.Store
@@ -102,7 +102,7 @@ func loadMachine(view writer.View) (Machine, error) {
 
 // Bind returns the store.RunStore over one Session Writer: the caller's
 // ownership capability, so every command of a drive lands on the same Writer,
-// epoch and projection view (OWN-HDL-2).
+// epoch and projection view.
 func (s *SessionRunStore) Bind(w writer.Writer) store.RunStore { return &bound{s: s, w: w} }
 
 type bound struct {
@@ -112,12 +112,12 @@ type bound struct {
 
 func (b *bound) Scope() run.Scope { return run.Scope(b.w.SessionID()) }
 
-// Writer is the ownership capability the store is bound to (OWN-HDL-2);
+// Writer is the ownership capability the store is bound to;
 // a Loop hook that must commit through the same Writer takes it from here.
 func (b *bound) Writer() writer.Writer { return b.w }
 
-// Load reads the Writer's transactional projection (RUN-CMT-2); a Run the
-// projection no longer holds is folded from its own stream (RUN-CMT-1).
+// Load reads the Writer's transactional projection; a Run the
+// projection no longer holds is folded from its own stream.
 func (b *bound) Load(ctx context.Context, runID run.RunID) (store.Snapshot, error) {
 	if err := store.CheckContext(ctx); err != nil {
 		return store.Snapshot{}, err
@@ -142,7 +142,7 @@ func (b *bound) Load(ctx context.Context, runID run.RunID) (store.Snapshot, erro
 }
 
 // Commit is one Run command as a unit of work of its own: the Run module's
-// Part alone (RUN-CMT-3).
+// Part alone.
 func (b *bound) Commit(ctx context.Context, req store.CommitRequest) (store.CommitResult, error) {
 	if err := store.CheckContext(ctx); err != nil {
 		return store.CommitResult{}, err
@@ -163,7 +163,7 @@ func (b *bound) FrozenRequest(ctx context.Context, digest run.Digest) (model.Mod
 }
 
 // FrozenRequest returns the request body a Prepared or Executing ModelStep
-// names by RequestDigest (RUN-WIR-4).
+// names by RequestDigest.
 func (s *SessionRunStore) FrozenRequest(ctx context.Context, digest run.Digest) (model.ModelRequest, error) {
 	if err := store.CheckContext(ctx); err != nil {
 		return model.ModelRequest{}, err
@@ -183,7 +183,7 @@ func (s *SessionRunStore) FrozenRequest(ctx context.Context, digest run.Digest) 
 
 // --- Command part -------------------------------------------------------------------
 
-// Command is the Run module's Part for one command (RUN-CMT-3): constructing
+// Command is the Run module's Part for one command: constructing
 // it freezes the bodies the command's facts will name, Prepare evaluates the
 // command inside the Writer against the machine projection and contributes
 // the facts to the Run's stream, Result reads the accepted decision back
@@ -222,7 +222,7 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 	}
 	state, active := proj.Active[runID]
 	if !active {
-		// Terminal Runs leave the projection (RUN-CMT-2): tell terminal from
+		// Terminal Runs leave the projection: tell terminal from
 		// unknown by the Run's own stream.
 		if _, exists := view.StreamHead(Stream(runID)); exists {
 			return nil, run.ErrRunTerminal
@@ -268,7 +268,7 @@ func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.Commi
 			Snapshot: store.Snapshot{State: c.after, Position: c.position}}, nil
 	case writer.CommitAlreadyApplied:
 		// Idempotency is the Session's (SessionID, CommitID) index alone
-		// (RUN-CMT-5): every Run CommandID is content-derived, so a hit is the
+		// every Run CommandID is content-derived, so a hit is the
 		// same command and nothing is re-decided.
 		snapshot, err := c.s.Bind(w).Load(ctx, c.req.Command.RunID)
 		if err != nil {
@@ -307,11 +307,10 @@ func (s *SessionRunStore) factsOf(c ledger.Commit, runID run.RunID) ([]run.Fact,
 }
 
 // freezeBodies stores the bodies a command's facts will name by digest
-// (RUN-WIR-4): the request of a Prepare, the result of a model settlement,
+// the request of a Prepare, the result of a model settlement,
 // the output of a tool settlement and the payload of an external response.
 // Each body is encoded under the Run's schema as the envelope its digest was
-// computed from (RUN-CMT-8: digest rules and body encoding are versioned
-// together with Decide and Evolve).
+// computed from (digest rules and body encoding are versioned together with Decide and Evolve).
 func (s *SessionRunStore) freezeBodies(ctx context.Context, cmd run.AgentCommand) error {
 	var digest run.Digest
 	var body []byte
@@ -341,7 +340,7 @@ func (s *SessionRunStore) freezeBodies(ctx context.Context, cmd run.AgentCommand
 }
 
 // afterCommit writes the machine projection to the cache when the policy asks
-// for it (RUN-CMT-2). Cache failures never affect the commit.
+// for it. Cache failures never affect the commit.
 func (s *SessionRunStore) afterCommit(ctx context.Context, w writer.Writer, before, after *run.MachineState) {
 	if s.cfg.Cache == nil || !s.cfg.Snapshot(before, after) {
 		return
@@ -359,7 +358,7 @@ func (s *SessionRunStore) afterCommit(ctx context.Context, w writer.Writer, befo
 // ErrRunExists reports a creation of a RunID this Session already holds.
 var ErrRunExists = errors.New("sessionstore: run already exists")
 
-// CreateRun is the Part that establishes a Run (RUN-NEW-1): RunCreated and
+// CreateRun is the Part that establishes a Run: RunCreated and
 // one InputAccepted per initial input, in the Run's own stream. The owning
 // module places it in its creation unit beside its own facts. A RunID whose
 // stream this Session already wrote -- active or ended -- is ErrRunExists.
@@ -399,7 +398,6 @@ type Record struct {
 }
 
 // Record folds a Run from the Store by SessionID; it needs no ownership
-// (OWN-HDL-2).
 func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, runID run.RunID) (Record, error) {
 	if err := store.CheckContext(ctx); err != nil {
 		return Record{}, err
@@ -420,7 +418,7 @@ func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, run
 }
 
 // record reads the Run's events from the Store and folds them: the ledger
-// fold is the authoritative read (RUN-CMT-1). When expect is given, the fold
+// fold is the authoritative read. When expect is given, the fold
 // is compared with the projection state, but only if both were read at the
 // same head: the two reads are separate round trips, and a commit landing
 // between them makes both correct at different points, not divergent.

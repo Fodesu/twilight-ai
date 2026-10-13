@@ -36,7 +36,7 @@ func healthModule() module.ModuleDescriptor {
 		Projections: []module.ProjectionDefinition{mk("h/authoritative", true), mk("h/derived", false)}}
 }
 
-// EXT-PRJ-9: a derived projection that cannot fold a commit does not refuse
+// a derived projection that cannot fold a commit does not refuse
 // the commit; it is marked unhealthy, reads report it, and it is not cached.
 // An authoritative projection that cannot fold refuses the commit.
 func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
@@ -104,7 +104,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	}
 }
 
-// EXT-PRJ-9 across a reopen: a derived projection that cannot fold the log
+// across a reopen: a derived projection that cannot fold the log
 // does not keep the Session from opening; it stops at its last good commit
 // and is unhealthy, the authoritative projections fold to head.
 func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {

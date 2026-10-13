@@ -12,15 +12,15 @@ import (
 )
 
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped
-// as AgentEvents; Machine.Evolve folds them mechanically (RUN-MCH-3). The
+// as AgentEvents; Machine.Evolve folds them mechanically. The
 // interface is sealed: only the variants below exist. Facts carry execution
 // state and content digests only: a digest is the canonical identity of an
 // immutable body in the frozen.Store, and the fact that names it is the
-// body's retention root (RUN-WIR-4). Conversation and Turn state are
+// body's retention root. Conversation and Turn state are
 // projections of these facts; no second copy of a body is written.
 type Fact interface{ fact() }
 
-// RunCreated is the first fact of a Run (RUN-NEW-1). Folding it onto the zero
+// RunCreated is the first fact of a Run. Folding it onto the zero
 // MachineState yields the initial state; a second RunCreated is an error.
 type RunCreated struct {
 	RunID       RunID              `json:"runId"`
@@ -32,7 +32,7 @@ func (RunCreated) fact() {}
 // ModelStepPrepared establishes the frozen ModelStep and consumes the listed
 // pending inputs. The request body is not in the fact: RequestDigest names it
 // in the frozen.Store. StepID derives from the Run and the preparing
-// command (RUN-WIR-3); the fact carries the step's content beside it.
+// command; the fact carries the step's content beside it.
 type ModelStepPrepared struct {
 	StepID        StepID     `json:"stepId"`
 	Model         ModelRef   `json:"model"`
@@ -53,8 +53,7 @@ func (ModelStepWithdrawn) fact() {}
 
 // ModelStepStarted: Prepared -> Executing. Effect identifies the model effect
 // the step requested: a late Outcome is accepted only under it, and a new
-// owner recovers the step under a CommandID derived from it (RUN-WIR-1,
-// RUN-CMT-7).
+// owner recovers the step under a CommandID derived from it.
 type ModelStepStarted struct {
 	StepID StepID   `json:"stepId"`
 	Effect EffectID `json:"effect"`
@@ -63,14 +62,14 @@ type ModelStepStarted struct {
 func (ModelStepStarted) fact() {}
 
 // ModelStepRecovered: Executing -> Open. The model effect the step requested
-// is lost and its result cannot be reached (RUN-CMT-7), so the step is withdrawn
+// is lost and its result cannot be reached, so the step is withdrawn
 // like a Prepared step whose request went stale: the frozen request is not
 // resent. Recovery is a decision point -- the next Prepare plans again from
 // the state at recovery time, including inputs delivered meanwhile -- and the
-// record shows it as one (TRN-DUR-1). ModelSteps is not counted for it.
+// record shows it as one. ModelSteps is not counted for it.
 type ModelStepRecovered struct {
 	StepID StepID `json:"stepId"`
-	// Effect is the model effect the recovery closes (RUN-CMT-7).
+	// Effect is the model effect the recovery closes.
 	Effect EffectID `json:"effect,omitempty"`
 }
 
@@ -81,7 +80,7 @@ func (ModelStepRecovered) fact() {}
 // settles the model effect the step was executing.
 type ModelStepRejected struct {
 	StepID StepID `json:"stepId"`
-	// Effect is the model effect this rejection settles (RUN-WIR-1).
+	// Effect is the model effect this rejection settles.
 	Effect  EffectID    `json:"effect,omitempty"`
 	Usage   model.Usage `json:"usage"`
 	Failure StepFailure `json:"failure"`
@@ -95,10 +94,10 @@ func (ModelStepRejected) fact() {}
 // CancelRun writes it with class effect_unknown for a model call still
 // executing, before RunEnded(stopped). RunEnded itself settles no effect:
 // every effect a Run requested is closed by a fact that names it
-// (RUN-WIR-1), so a Run never ends with a step or call still Executing.
+// so a Run never ends with a step or call still Executing.
 type ModelStepFailed struct {
 	StepID StepID `json:"stepId"`
-	// Effect is the model effect this failure settles (RUN-WIR-1).
+	// Effect is the model effect this failure settles.
 	Effect  EffectID    `json:"effect"`
 	Failure StepFailure `json:"failure"`
 }
@@ -112,7 +111,7 @@ func (ModelStepFailed) fact() {}
 type ModelStepCompleted struct {
 	StepID StepID `json:"stepId"`
 	// Effect is the model effect this settlement closes: the fact names the
-	// execution it answers, as its start fact did (RUN-WIR-1).
+	// execution it answers, as its start fact did.
 	Effect       EffectID           `json:"effect,omitempty"`
 	Usage        model.Usage        `json:"usage"`
 	FinishReason model.FinishReason `json:"finishReason"`
@@ -158,7 +157,7 @@ func (ToolCallApproved) fact() {}
 type ToolCallCompleted struct {
 	StepID StepID `json:"stepId"`
 	CallID CallID `json:"callId"`
-	// Effect is the tool effect this settlement closes (RUN-WIR-1).
+	// Effect is the tool effect this settlement closes.
 	Effect       EffectID `json:"effect,omitempty"`
 	OutputDigest Digest   `json:"outputDigest"`
 }

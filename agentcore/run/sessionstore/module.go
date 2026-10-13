@@ -29,7 +29,7 @@ const (
 // lineage, so a fork never reads an ancestor's Runs as its own.
 var streamDefinition = module.StreamDefinition{Domain: StreamDomain, Key: streamKey, Inheritance: module.Own}
 
-// streamKey binds a run event to its Run's stream (EXT-STR-1).
+// streamKey binds a run event to its Run's stream.
 func streamKey(value any) (string, error) {
 	ev, ok := value.(Event)
 	if !ok {
@@ -52,7 +52,7 @@ func EventType(f run.Fact) ledger.EventType {
 }
 
 // Event is the typed value of one twilight/run/ event: the fact plus the
-// RunID that every payload carries at its first level (RUN-WIR-2).
+// RunID that every payload carries at its first level.
 type Event struct {
 	RunID run.RunID
 	Fact  run.Fact
@@ -139,7 +139,7 @@ func (c factCodec) Decode(w jsonstable.Value) (any, error) {
 
 // frozenBodyFacts are the fact types whose digest names a frozen body; each
 // declares one artifact reference so the Writer admits the body's Binding
-// and claims it for the commit (RUN-WIR-4, EXT-REF-2).
+// and claims it for the commit.
 var frozenBodyFacts = map[string]bool{
 	"model_step_prepared": true, "model_step_completed": true, "tool_call_completed": true, "tool_call_answered": true,
 }
@@ -153,11 +153,11 @@ var frozenBinding = module.BindingReferenceDefinition{
 
 var one uint32 = 1
 
-// Module is the run ModuleDescriptor (RUN-SCP-2: no Requires). Conversation
+// Module is the run ModuleDescriptor (no Requires). Conversation
 // and Turn projections consume its facts; nothing of theirs is written here.
 var Module = buildModule()
 
-// factCodecs is the codec history of one fact type (, EXT-REG-2):
+// factCodecs is the codec history of one fact type:
 // one PayloadCodec per payload version ever written, keyed by version, and
 // the current version. older holds the superseded versions 1..n-1, each a
 // codec of its own that decodes that version's wire shape and upcasts to

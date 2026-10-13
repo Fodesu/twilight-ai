@@ -77,7 +77,7 @@ func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 }
 
 // Summary parts round-trip through the discriminated wire; foreign fields
-// and unknown kinds are rejected (CHT-COD-1).
+// and unknown kinds are rejected.
 func TestPartsCodecRoundTripAndRejects(t *testing.T) {
 	parts := Parts{TextPart{Text: "hello"}, ReferencePart{BindingID: "b1", Name: "file.txt"}}
 	raw, err := parts.MarshalJSON()
@@ -109,7 +109,7 @@ func TestPartsCodecRoundTripAndRejects(t *testing.T) {
 	}
 }
 
-// CHT-ENT-1/2: Run facts project into structural entries. The assistant
+// Run facts project into structural entries. The assistant
 // names the frozen result and the calls its ToolStepOpened assigned; each
 // call's terminal fact projects one tool_result; a verified supersession
 // replaces the unknown result in place.
@@ -183,7 +183,7 @@ func TestRunFactsProjectEntries(t *testing.T) {
 
 // Surface and Context agree on the input lifecycle: only delivered inputs
 // enter the context, in fold order; withdrawn and rejected inputs leave the
-// queue; a second delivery is a reducer error (CHT-EVT-2).
+// queue; a second delivery is a reducer error.
 func TestSurfaceAndContextFold(t *testing.T) {
 	content := jsonstable.MustParse(`{"text":"hi"}`)
 	steps := []step{
@@ -220,7 +220,7 @@ func TestSurfaceAndContextFold(t *testing.T) {
 	}
 }
 
-// EXT-COD-1: every registered event type's current codec is canonical
+// every registered event type's current codec is canonical
 // round-trip stable — Encode, Decode, Encode reproduces the bytes.
 func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	summary := Summary{ID: "sum1", Parts: Parts{TextPart{Text: "so far"}, ReferencePart{BindingID: "b1", Name: "f"}}}
@@ -282,7 +282,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	}
 }
 
-// --- materialization (CHT-MAT-1) ---------------------------------------------
+// --- materialization ---------------------------------------------
 
 type fakeContent struct {
 	results map[jsonstable.Digest]model.ModelResult
@@ -364,7 +364,7 @@ func TestMaterialize(t *testing.T) {
 	}
 }
 
-// --- compaction fold (CHT-EVT-3, CHT-CTX-2, CHT-SUR-1) --------------------------
+// --- compaction fold --------------------------
 
 func mustSummary(t *testing.T, id SummaryID, text string) Summary {
 	t.Helper()

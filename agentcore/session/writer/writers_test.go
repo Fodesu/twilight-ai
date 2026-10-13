@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// EXT-WRT-6: a Writers value confines a failed Writer to that instance. After
+// a Writers value confines a failed Writer to that instance. After
 // an unknown outcome or a Close the next Writer(sid) reopens from the log;
 // after ownership loss it keeps answering ownership_lost until the host
 // forgets the Session with CloseWriter, because reopening would take the

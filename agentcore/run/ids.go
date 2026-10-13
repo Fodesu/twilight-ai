@@ -52,5 +52,5 @@ type Scope string
 // RunPosition is the index of a Run's last fact in the Run's own stream.
 // Only the Run's own facts move it; whatever else the surrounding store
 // appends leaves it untouched, which is what makes Prepare's hard CAS
-// insensitive to concurrent writes of other modules (RUN-CMT-4).
+// insensitive to concurrent writes of other modules.
 type RunPosition uint64

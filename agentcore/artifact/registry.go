@@ -11,7 +11,7 @@ type (
 	ProviderInstanceID string
 )
 
-// SchemeDefinition is the resolution contract of one Scheme (ART-CAP-2).
+// SchemeDefinition is the resolution contract of one Scheme.
 type SchemeDefinition struct {
 	Scheme                Scheme
 	SupportedDurabilities []Durability
@@ -35,7 +35,7 @@ type ProviderBinding struct {
 }
 
 // Registry is the immutable scheme and provider index of one deployment
-// (ART-PRO-1): every Scheme has one definition, every (Scheme, Authority) one
+// every Scheme has one definition, every (Scheme, Authority) one
 // provider instance, and verified use requires both.
 type Registry struct {
 	schemes   map[Scheme]SchemeDefinition
@@ -99,7 +99,7 @@ func (r *Registry) Provider(scheme Scheme, authority Authority) (ProviderBinding
 // Verify admits a Ref for verified use: a registered scheme that supports the
 // Ref's durability, the scheme's own rules, and a bound provider for its
 // Authority. An unknown scheme is ErrUnsupported so callers can keep such a
-// Ref conservatively (ART-RET-2) rather than treat it as invalid.
+// Ref conservatively rather than treat it as invalid.
 //
 //nolint:gocritic // Ref is intentionally passed by value as an immutable wire value.
 func (r *Registry) Verify(ref Ref) error {
@@ -131,7 +131,7 @@ func (r *Registry) Verify(ref Ref) error {
 }
 
 // CASScheme is the standard cas definition: every durability, and a Key that
-// equals the Ref's integrity in <algorithm>:<value> form (ART-CAP-2).
+// equals the Ref's integrity in <algorithm>:<value> form.
 func CASScheme() SchemeDefinition {
 	return SchemeDefinition{
 		Scheme:                SchemeCAS,

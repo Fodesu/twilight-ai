@@ -13,8 +13,8 @@ import (
 	"testing"
 )
 
-// This file covers the durable side of EXT-PRJ-3: the cache entries a Writer
-// leaves in the session directory, and a fresh process resuming from them.
+// This file covers cache entries persisted by a Writer in the session
+// directory and a fresh process resuming from them.
 
 const projectID = module.ProjectionID("twilight/z/rows")
 

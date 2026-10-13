@@ -8,7 +8,7 @@ import (
 
 // WriterCachePolicy is the module's answer to "who may cache this projection":
 // the Writer may cache every projection except the machine projection, whose
-// checkpoints the Runtime owns (RUN-CMT-2), and the interval is the
+// checkpoints the Runtime owns, and the interval is the
 // deployment's, not a constant of this module.
 func TestWriterCachePolicyExcludesTheMachineProjection(t *testing.T) {
 	other := module.ProjectionID("twilight/chatlog/surface")

@@ -72,7 +72,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events Eve
 // --- StartModelCall ---
 
 // startModelStep commits the start barrier of the step's next model effect
-// and hands the call to the Executor (RUN-LOP-3). It returns the dispatched key, or nil when
+// and hands the call to the Executor. It returns the dispatched key, or nil when
 // the reload should decide (another actor moved the step). A model catalog
 // that cannot serve the step withdraws it to Open and reports the error: no
 // model call has happened.
@@ -89,7 +89,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events Eve
 	}
 	assignment := Assignment{Session: rt.Scope(), RunID: runID, StepID: stepID, Effect: ref.id, Target: target,
 		Body: ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
-	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model
+	// Pre-start check: an executor that cannot serve the model
 	// fails here, with the step still Prepared and no start or recovery fact.
 	unavailable, err := l.Executor.Validate(ctx, assignment)
 	if err != nil {
@@ -134,7 +134,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events Eve
 			return nil, fmt.Errorf("agent: loop: model dispatch outcome: %w", err)
 		}
 		// Nothing was called: withdraw the step to Open under this effect's
-		// recovery identity and surface the condition (RUN-LOP-3).
+		// recovery identity and surface the condition.
 		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
 			run.RecoverModelExecution{StepID: stepID, Effect: ref.id}); serr != nil {
 			return nil, serr
@@ -146,7 +146,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events Eve
 }
 
 // modelCompletion maps a model Outcome to the effect's settlement command
-// (RUN-LOP-3): a cancelled call withdraws the step to Open (the next Advance
+// a cancelled call withdraws the step to Open (the next Advance
 // plans again from the current state); a provider failure is
 // SubmitModelFailure; a result that cannot be bound or frozen is
 // RejectModelResult with the host's disposition; a result binds its tool
@@ -168,7 +168,7 @@ func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentComma
 		// provider answer (Dispose, an adoption that could not restart).
 		// A model effect has no world side effect, so the step is withdrawn
 		// to Open and the next Advance replans, the same disposition the
-		// recovery path gives a missing execution (RUN-CMT-7, RUN-EXE-6).
+		// recovery path gives a missing execution.
 		return withdraw, nil
 	case effect.Cancelled:
 		return withdraw, nil
@@ -204,7 +204,7 @@ func (l *Loop) modelRejectDisposition(step *run.ModelStep, _ run.StepFailure) ru
 	return run.ModelRejectFailRun
 }
 
-// bindToolCalls produces bindings from the frozen ToolSpecs (RUN-MCH-2).
+// bindToolCalls produces bindings from the frozen ToolSpecs.
 // It never calls local.ExecutableTool.
 func (l *Loop) bindToolCalls(result *model.ModelResult, step *run.ModelStep) []run.ToolCallBinding {
 	if len(result.ToolCalls) == 0 {

@@ -41,7 +41,7 @@ type ContentStoreOptions struct {
 // the two leaves an entry the store treats as absent and the next Put
 // completes. Two instances over one root see each other's content, which is
 // what lets a restarted process read the frozen request of an interrupted
-// ModelStep (RUN-WIR-4).
+// ModelStep.
 // Operation names of the content store's errors.
 const (
 	opPut     = "put"
