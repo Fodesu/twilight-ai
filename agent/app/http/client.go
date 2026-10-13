@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/observability"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/inbox"
@@ -142,6 +143,13 @@ func (c *Client) Await(ctx context.Context, sid session.SessionID, id inbox.Comm
 			return inbox.Result{}, ctx.Err()
 		}
 	}
+}
+
+// History is the durable, materialized chatlog and its snapshot cursor.
+func (c *Client) History(ctx context.Context, sid session.SessionID) (app.ChatHistory, error) {
+	var out app.ChatHistory
+	err := c.do(ctx, stdhttp.MethodGet, sessionPath(sid, "/history"), nil, nil, &out)
+	return out, err
 }
 
 // Turns is the Session's Turn surface.

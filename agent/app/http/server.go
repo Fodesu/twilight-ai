@@ -38,12 +38,16 @@ const DefaultMaxWait = 30 * time.Second
 // Handler routes the command face.
 func (s *Server) Handler() stdhttp.Handler {
 	mux := stdhttp.NewServeMux()
+	mux.HandleFunc("GET /chat/capabilities", s.chatCapabilities)
+	mux.HandleFunc("GET /sessions/{sid}/chat/snapshot", s.chatSnapshot)
+	mux.HandleFunc("GET /sessions/{sid}/chat/events", s.chatEvents)
 	mux.HandleFunc("PUT /sessions/{sid}", s.ensure)
 	mux.HandleFunc("POST /sessions/{sid}/open", s.open)
 	mux.HandleFunc("POST /sessions/{sid}/close", s.close)
 	mux.HandleFunc("POST /sessions/{sid}/wake", s.wake)
 	mux.HandleFunc("POST /sessions/{sid}/commands", s.enqueue)
 	mux.HandleFunc("GET /sessions/{sid}/commands/{id}", s.command)
+	mux.HandleFunc("GET /sessions/{sid}/history", s.history)
 	mux.HandleFunc("GET /sessions/{sid}/turns", s.turns)
 	mux.HandleFunc("GET /sessions/{sid}/turns/{turn}", s.turn)
 	mux.HandleFunc("GET /sessions/{sid}/events", s.events)
@@ -268,6 +272,15 @@ func (s *Server) command(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	writeJSON(w, stdhttp.StatusOK, entry)
+}
+
+func (s *Server) history(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	history, err := s.App.History(r.Context(), sid(r))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, stdhttp.StatusOK, history)
 }
 
 func (s *Server) turns(w stdhttp.ResponseWriter, r *stdhttp.Request) {
