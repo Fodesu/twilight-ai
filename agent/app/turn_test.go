@@ -80,16 +80,13 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	}()
 	<-tool.started
 
-	// Send commits AcceptInput + input_delivered without waiting for the
-	// tool; the Run is already driven here, so the result reports
-	// already_driving (or finished when the running driver settles first).
-	deliverDone := make(chan app.Result, 1)
+	// Deliver explicitly commits AcceptInput + input_delivered without
+	// waiting for the tool. The Run is already driven, so its next model
+	// request consumes the delivered input.
+	deliverDone := make(chan error, 1)
 	go func() {
-		results, err := s.Send(ctx, "and tomorrow?")
-		if err != nil {
-			t.Error(err)
-		}
-		deliverDone <- results[0]
+		_, err := s.DeliverInput(ctx, "t1", "in-2", "and tomorrow?")
+		deliverDone <- err
 	}()
 	// The Deliver commit lands while the tool runs; the Loop sees PendingInputs
 	// at its next Load. Release the tool and let both drivers finish.
@@ -97,10 +94,10 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		surface, err := h.TurnSurface(ctx, sid)
 		return err == nil && len(surface.Turns["t1"].InputIDs) == 2
 	})
-	close(tool.release)
-	if resp := <-deliverDone; !resp.AlreadyDriving && resp.Disposition != sessionkernel.ResumeFinished {
-		t.Fatalf("deliver = %+v, want already driving or finished", resp)
+	if err := <-deliverDone; err != nil {
+		t.Fatal(err)
 	}
+	close(tool.release)
 	resp := <-done
 	if resp.Status != turn.TurnCompleted {
 		t.Fatalf("turn status = %s, want completed", resp.Status)

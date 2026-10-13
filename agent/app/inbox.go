@@ -18,11 +18,18 @@ import (
 // The command Kinds this agent applies from a Session's inbox,
 // with their payload types. A Kind outside this set is rejected.
 const (
-	// CommandSubmit submits text under a caller-chosen InputID and routes
-	// it (Send without waiting); payload SubmitCommand.
+	// CommandSubmit queues text under a caller-chosen InputID for the next
+	// available Turn; payload SubmitCommand.
 	CommandSubmit inbox.Kind = "submit"
+	// CommandSteer explicitly delivers an input to an active Turn; payload
+	// SteerCommand.
+	CommandSteer inbox.Kind = "steer"
 	// CommandStop stops the active Turn; payload StopCommand.
 	CommandStop inbox.Kind = "stop"
+	// CommandResume requests a background advance of active/pending work.
+	// Applied means scheduled, not settled; repeated kicks are safe through
+	// the runtime's single-driver gate, including after an inbox replay.
+	CommandResume inbox.Kind = "resume"
 	// CommandWithdraw withdraws a submitted, undelivered input; payload
 	// WithdrawCommand.
 	CommandWithdraw inbox.Kind = "withdraw"
@@ -47,11 +54,22 @@ type SubmitCommand struct {
 	Text    string      `json:"text"`
 }
 
+type SteerCommand struct {
+	TurnID  turn.TurnID `json:"turnId"`
+	InputID run.InputID `json:"inputId"`
+	Text    string      `json:"text"`
+}
+
 type StopCommand struct {
 	// TurnID, when set, must be the active Turn; the Stop is rejected
 	// otherwise, so a stale client never stops a Turn it did not see.
 	TurnID turn.TurnID `json:"turnId,omitempty"`
 	Reason string      `json:"reason,omitempty"`
+}
+
+type ResumeCommand struct {
+	// An observed turn guards against resuming unrelated replacement work.
+	TurnID turn.TurnID `json:"turnId,omitempty"`
 }
 
 type WithdrawCommand struct {
@@ -283,6 +301,14 @@ func decode[T any](c *inbox.Command) (T, error) {
 	return v, nil
 }
 
+func (s *Session) resumeInBackground(active turn.TurnID) {
+	s.host.run(func(ctx context.Context) {
+		if _, _, err := s.Resume(ctx); err != nil {
+			s.backgroundFailed(s.ref(active), fmt.Errorf("resuming session: %w", err))
+		}
+	})
+}
+
 // apply runs one command against the Session.
 func (s *Session) apply(ctx context.Context, c *inbox.Command) error {
 	switch c.Kind {
@@ -294,7 +320,24 @@ func (s *Session) apply(ctx context.Context, c *inbox.Command) error {
 		if cmd.InputID == "" {
 			return fmt.Errorf("%w: submit without an input id", errRejected)
 		}
-		_, err = s.SubmitInput(ctx, cmd.InputID, cmd.Text)
+		err = s.QueueInput(ctx, cmd.InputID, cmd.Text)
+		return err
+	case CommandSteer:
+		cmd, err := decode[SteerCommand](c)
+		if err != nil {
+			return err
+		}
+		if cmd.TurnID == "" || cmd.InputID == "" {
+			return fmt.Errorf("%w: steer requires turn and input ids", errRejected)
+		}
+		status, err := s.Status(ctx)
+		if err != nil {
+			return err
+		}
+		if status.Active != cmd.TurnID {
+			return fmt.Errorf("%w: turn %s is not the active turn", errRejected, cmd.TurnID)
+		}
+		_, err = s.DeliverInput(ctx, cmd.TurnID, cmd.InputID, cmd.Text)
 		return err
 	case CommandStop:
 		cmd, err := decode[StopCommand](c)
@@ -313,6 +356,20 @@ func (s *Session) apply(ctx context.Context, c *inbox.Command) error {
 		}
 		_, err = s.app.Kernel.Turns.Stop(ctx, s.h.Writer(), sessionkernel.StopRequest{Ref: s.ref(status.Active), Reason: cmd.Reason})
 		return err
+	case CommandResume:
+		cmd, err := decode[ResumeCommand](c)
+		if err != nil {
+			return err
+		}
+		status, err := s.Status(ctx)
+		if err != nil {
+			return err
+		}
+		if cmd.TurnID != "" && cmd.TurnID != status.Active {
+			return fmt.Errorf("%w: turn %s is not the active turn", errRejected, cmd.TurnID)
+		}
+		s.resumeInBackground(status.Active)
+		return nil
 	case CommandWithdraw:
 		cmd, err := decode[WithdrawCommand](c)
 		if err != nil {

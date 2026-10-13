@@ -154,15 +154,16 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 		_ = s.Close(context.WithoutCancel(ctx))
 		return nil, err
 	}
-	// Commands left while no one owned the Session are applied before
-	// anything else this owner does.
-	s.startInbox(ctx)
+	// Recover an active Turn before applying queued commands. This ordering
+	// prevents a queued input's background pump from racing ResumeActive.
 	if opts.ResumeActive {
 		if _, _, err := s.Resume(ctx); err != nil {
 			_ = s.Close(context.WithoutCancel(ctx))
 			return nil, err
 		}
 	}
+	// Commands left while no one owned the Session are applied after recovery.
+	s.startInbox(ctx)
 	s.startIdleRelease()
 	return s, nil
 }
@@ -216,31 +217,63 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 	return s.SubmitInput(ctx, chatlog.NewInputID(), text)
 }
 
-// SubmitInput submits text under the caller's InputID, commits its route
-// and returns the Turn it landed in without waiting. The InputID is the
-// idempotency key: a retried submission replays. The Turn is advanced to
-// settlement in the background; progress and the reply arrive on Events,
-// failures on Events and Config.Warn. Close cancels the background
-// advance; a cancelled Turn stays active and resumes on the next open.
+// SubmitInput starts a new Turn from the caller's InputID when the Session
+// is idle. It never appends input to an active Turn; use DeliverInput
+// explicitly for that behavior.
 func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) (turn.TurnRef, error) {
-	sub, err := s.rt.Submit(ctx, id, input.Text(text))
+	ref, err := s.rt.StartInput(ctx, id, input.Text(text))
+	if err != nil {
+		return turn.TurnRef{}, err
+	}
+	s.host.run(func(ctx context.Context) {
+		st, err := s.rt.Advance(ctx, ref.TurnID)
+		if err != nil {
+			s.backgroundFailed(ref, fmt.Errorf("advancing turn %s: %w", ref.TurnID, err))
+		}
+		if st.Quiescent {
+			s.quiescentPolicies(ctx)
+		}
+	})
+	return ref, nil
+}
+
+// DeliverInput explicitly delivers text to the named active Turn. It is the
+// application-level primitive for steering an existing Turn.
+func (s *Session) DeliverInput(ctx context.Context, turnID turn.TurnID, id run.InputID, text string) (turn.TurnRef, error) {
+	sub, err := s.rt.DeliverInput(ctx, turnID, id, input.Text(text))
 	if err != nil {
 		return turn.TurnRef{}, err
 	}
 	if sub.AlreadyDriving {
-		// A running driver carries the input; nothing to advance here.
 		return sub.Ref, nil
 	}
 	s.host.run(func(ctx context.Context) {
 		st, err := s.rt.Advance(ctx, sub.Ref.TurnID)
 		if err != nil {
-			s.backgroundFailed(sub.Ref, fmt.Errorf("advancing turn %s: %w", sub.Ref.TurnID, err))
+			s.backgroundFailed(sub.Ref, fmt.Errorf("advancing delivered input: %w", err))
 		}
 		if st.Quiescent {
 			s.quiescentPolicies(ctx)
 		}
 	})
 	return sub.Ref, nil
+}
+
+// QueueInput durably submits text for the next available Turn. It never
+// delivers the input into an already active Turn.
+func (s *Session) QueueInput(ctx context.Context, id run.InputID, text string) error {
+	if _, err := s.rt.QueueInput(ctx, id, input.Text(text)); err != nil {
+		return err
+	}
+	s.host.run(func(ctx context.Context) {
+		st, _, err := s.rt.Resume(ctx)
+		if err != nil {
+			s.app.fail(s.sid, fmt.Errorf("app: advancing queued input: %w", err))
+			return
+		}
+		s.settled(ctx, st)
+	})
+	return nil
 }
 
 // Stop stops the active Turn; ok is false when no Turn is active. The
