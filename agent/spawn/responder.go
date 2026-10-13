@@ -43,7 +43,7 @@ func (o Options) ToolRef() run.ToolRef {
 
 // ExecutableTool is the model-facing definition of the spawn tool for preset
 // catalogs. Its Execute never runs: the tool's ResponsePolicy is
-// ExternalResponse and the Responder answers the wait (SPN-1).
+// ExternalResponse and the Responder answers the wait.
 func (o Options) ExecutableTool() local.ExecutableTool { return Tool(o.ToolRef()) }
 
 func (o Options) depth() int {
@@ -53,13 +53,13 @@ func (o Options) depth() int {
 	return o.MaxDepth
 }
 
-// Responder is the subagent tool's driver.Responder (SPN-1, DRV-4): a spawn
+// Responder is the subagent tool's driver.Responder: a spawn
 // call waits for an external response, and this answers it by creating the
 // child Session (or continuing the one on record), driving it through the
 // authority to a settled Turn and returning the child's reply. Every step
 // is idempotent against the child's durable state, so a process that died
 // anywhere in the sequence is continued, not repeated, when the next owner
-// opens the parent and the Driver asks again (SPN-4). Nothing about the call
+// opens the parent and the Driver asks again. Nothing about the call
 // lives in an execution record: the child Session is the durable state.
 type Responder struct {
 	opts Options
@@ -101,7 +101,7 @@ func (r *Responder) Close() {
 
 // Respond is driver.Responder. Argument, preset and depth errors are
 // returned before any child exists, so the call is rejected and no Session
-// is created (SPN-3); a child on record for different arguments is a
+// is created; a child on record for different arguments is a
 // conflict.
 func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *driver.WaitingCall) (run.CanonicalJSON, error) {
 	if r.a == nil {
@@ -186,7 +186,7 @@ func (r *Responder) track(ctx context.Context, child session.SessionID) (context
 }
 
 // depthOf is the nesting depth of a Session from its provenance chain
-// (SPN-3): zero for a Session no spawn created.
+// zero for a Session no spawn created.
 func (r *Responder) depthOf(ctx context.Context, sid session.SessionID) (int, error) {
 	prov, ok, err := r.provenance(ctx, sid)
 	if err != nil || !ok {
@@ -213,7 +213,7 @@ func (r *Responder) provenance(ctx context.Context, sid session.SessionID) (Prov
 // create makes the child Session with its provenance in the segment's spawn
 // extension slot:
 // empty for Empty, a fork of the parent's history before the calling Turn
-// for Fork (SPN-5).
+// for Fork.
 func (r *Responder) create(ctx context.Context, parent session.SessionID, runID run.RunID, callID run.CallID, child session.SessionID, args Arguments, depth int) (Provenance, error) {
 	prov := Provenance{ParentSession: parent, ParentRun: runID, CallID: callID, Depth: depth, Arguments: args}
 	ext, err := Extension(prov)
@@ -318,8 +318,7 @@ func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, pref pre
 }
 
 // driveTurn drives the Turn to settlement. A drive that quiesces waiting
-// for recovery (the child's own execution records belong to a dead owner
-// and await the control plane, RUN-EXE-6) is not the end of the Turn: this
+// for recovery (the child's own execution records belong to a dead owner and await the control plane) is not the end of the Turn: this
 // waits for the Turn to move and drives again.
 func (r *Responder) driveTurn(ctx context.Context, h *owner.Handle, turnID turn.TurnID) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turnID}

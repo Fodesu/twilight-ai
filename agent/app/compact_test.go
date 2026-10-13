@@ -77,7 +77,7 @@ func openCompactSession(t *testing.T, store session.Stores, content artifact.Con
 
 // An explicit Compact shrinks the next model request to the summary plus the
 // retained suffix, and a restarted process assembles exactly the same context
-// from the compacted log (CHT-EVT-3, APP-CKP-1).
+// from the compacted log.
 func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	store, content := filestoretest.Store(t), durableContent(t)
@@ -137,7 +137,7 @@ func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 }
 
 // The automatic policy compacts after settlement once the context passes the
-// threshold; failures reach CompactWarn only (APP-CKP-1).
+// threshold; failures reach CompactWarn only.
 func TestAutoCompactAfterSettlement(t *testing.T) {
 	ctx := context.Background()
 	var warned []error
@@ -172,7 +172,7 @@ func TestAutoCompactAfterSettlement(t *testing.T) {
 }
 
 // Compact refuses while a Turn is active: compaction is a between-turns
-// policy (APP-CKP-1).
+// policy.
 func TestCompactRefusesWhileTurnActive(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
@@ -195,8 +195,7 @@ func TestCompactRefusesWhileTurnActive(t *testing.T) {
 
 // The compactor's model Assignment must carry the frozen request inline: the
 // durable Worker (the remote executor shape) cannot read the Owner's
-// frozen store and rejects digest-only model assignments (APP-CKP-1,
-// RUN-EXE-1, RUN-EXE-3).
+// frozen store and rejects digest-only model assignments.
 func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	ctx := context.Background()
 	store := filestoretest.Store(t)

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// The Session binding is a Session fact (APP-WSP-1): which Workspace the
+// The Session binding is a Session fact: which Workspace the
 // Session's workspace-placed tools run in. It lives in the Session ledger on
 // the module's own logical stream, so the resolver reads it in the same view
 // the Loop drives with, the PromptBuilder can tell the model where it works,
@@ -20,7 +20,7 @@ import (
 // parent's binding with the parent's Scope and treats it as inherited, which
 // is the Share policy; the other fork policies write the child's own fact.
 const (
-	// Source is the SourceID of this agent's application modules (EXT-REG-1).
+	// Source is the SourceID of this agent's application modules.
 	Source module.SourceID = "agent"
 	// ModuleID names the module.
 	ModuleID module.ModuleID = "workspace"
@@ -34,7 +34,7 @@ const (
 	// binding of its own or an inherited one.
 	TypeUnbound ledger.EventType = "agent/workspace/unbound"
 	// TypeSnapshotted records a Snapshot of the Session's bound Workspace
-	// at this point of the conversation (APP-WSP-7): what a fork at this
+	// at this point of the conversation: what a fork at this
 	// point restores.
 	TypeSnapshotted ledger.EventType = "agent/workspace/snapshotted"
 	// BindingProjectionID is the module's projection.
@@ -160,7 +160,7 @@ func Read(ctx context.Context, reader session.ProjectionReader, sid session.Sess
 	return b, nil
 }
 
-// Commands write the binding facts through a Session's Writer (APP-WSP-2).
+// Commands write the binding facts through a Session's Writer.
 type Commands struct {
 	// Now stamps the facts; nil selects time.Now.
 	Now func() time.Time
@@ -217,7 +217,7 @@ func (c *Commands) Unbind(ctx context.Context, w writer.Writer, reason string) e
 }
 
 // RecordSnapshot records that snap is the latest Snapshot of the Session's
-// bound Workspace (APP-WSP-7); a Session bound to another Workspace, or to
+// bound Workspace; a Session bound to another Workspace, or to
 // none, is an error, and a snapshot already recorded writes nothing.
 func (c *Commands) RecordSnapshot(ctx context.Context, w writer.Writer, snap *Snapshot) error {
 	if snap == nil || snap.Ref == "" || snap.Workspace == "" {

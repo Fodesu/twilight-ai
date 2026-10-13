@@ -81,7 +81,7 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (preset.Pre
 // Process 2 cannot reattach (a colocated executor died with process 1) and
 // runs without a dispatch ledger, so the takeover withdraws the Executing
 // step and Resume plans again from the state at recovery time: a new
-// request, not a replay of the frozen one (RUN-CMT-7, TRN-DUR-1).
+// request, not a replay of the frozen one.
 func TestRestartWithoutReattachReplans(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -151,7 +151,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 
 // With a dispatch ledger, an effect the executor holds nothing for is not
 // disposed: the takeover hands the frozen Assignment to the executor again
-// within the budget (RUN-EXE-15). The Run keeps its Executing step, the
+// within the budget. The Run keeps its Executing step, the
 // redispatched request is the one that was frozen, and the Turn completes
 // from its Outcome without a second plan.
 func TestRestartRedispatchesMissingEffect(t *testing.T) {
@@ -442,7 +442,7 @@ func (e *reattachingExecutor) complete(key loop.AssignmentKey, out loop.Outcome)
 
 // When the attempt is still running on an executor that outlived the
 // authority, the new owner reattaches: nothing is withdrawn, no new plan is
-// made, and the attempt's own Outcome completes the same step (RUN-CMT-7).
+// made, and the attempt's own Outcome completes the same step.
 func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -487,7 +487,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 		t.Fatalf("recovered = %d, want 0 (the attempt was reattached, not disposed)", s2.Recovered)
 	}
 	// The reconciler attaches to read the Outcome and the effect process
-	// relay asks whether the Executor holds the effect (RUN-EXE-15): every
+	// relay asks whether the Executor holds the effect: every
 	// Attach names the one running attempt.
 	exec.mu.Lock()
 	var key loop.AssignmentKey
@@ -649,7 +649,7 @@ func mustRecord(t *testing.T, h *localagent.Agent, sid session.SessionID, runID 
 }
 
 // RedispatchMissing is a stated policy, and the dispatch ledger it needs is
-// checked against it at Build (OWN-PRT-3): a nil ledger is an error, not a
+// checked against it at Build: a nil ledger is an error, not a
 // silent fall-back to disposal.
 func TestBuildRejectsRedispatchWithoutDispatchLedger(t *testing.T) {
 	cfg := durablePorts(t, app.Config{})

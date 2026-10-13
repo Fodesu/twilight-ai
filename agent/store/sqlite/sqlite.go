@@ -14,7 +14,7 @@
 // The database runs in WAL mode with a busy timeout, and every
 // read-modify-write of a lease runs in an immediate transaction, so two
 // Workers over one file serialize on the store, which remains the fencing
-// authority (RUN-EXE-6).
+// authority.
 package sqlite
 
 import (
@@ -173,7 +173,7 @@ func (d *DB) Executions() *ExecutionStore { return &ExecutionStore{db: d.db, now
 func (d *DB) Bindings() *BindingStore { return &BindingStore{db: d.db} }
 
 // Ledger is the artifact RetentionLedger over this database. builder, when
-// set, rebuilds and verifies every incoming BindingSet (ART-RET-1); the
+// set, rebuilds and verifies every incoming BindingSet; the
 // usual choice is artifact.SetBuilder over Bindings.
 func (d *DB) Ledger(builder artifact.BindingSetBuilder) *RetentionLedger {
 	return &RetentionLedger{db: d.db, builder: builder}

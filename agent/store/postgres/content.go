@@ -22,7 +22,7 @@ type ContentStoreOptions struct {
 }
 
 // ContentStore is the cas artifact.ContentStore of one Authority over the
-// content table (ART-CAP-2): the frozen bodies every replica reads.
+// content table: the frozen bodies every replica reads.
 type ContentStore struct {
 	d         *DB
 	authority artifact.Authority

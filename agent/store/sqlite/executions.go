@@ -20,8 +20,8 @@ import (
 // per key. Every write is one immediate transaction that reads the ledger,
 // folds it, judges the commit and appends, so the store is the fence and
 // the state machine's guard for any number of Workers over the same file
-// (RUN-EXE-6). Nothing is ever deleted: an acknowledged ledger keeps
-// answering for its key (RUN-EXE-13).
+// Nothing is ever deleted: an acknowledged ledger keeps
+// answering for its key.
 type ExecutionStore struct {
 	db  *sql.DB
 	now func() time.Time

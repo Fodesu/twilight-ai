@@ -324,7 +324,7 @@ func TestControlEndpoints(t *testing.T) {
 	}
 	// The tombstone travels over the wire: an aborted key answers aborted,
 	// rejects a later Dispatch with a definite 409, and its Outcome reads
-	// as a definitive error (RUN-EXE-16).
+	// as a definitive error.
 	if closed, err := client.Abort(ctx, c.Key()); err != nil || closed.State != effect.AttachmentAborted {
 		t.Fatalf("abort over http = %+v %v", closed, err)
 	}
@@ -339,7 +339,6 @@ func TestControlEndpoints(t *testing.T) {
 // The Worker's refusal classes cross the wire as statuses and come back as
 // the same sentinels: a retryable refusal is a 503 and ErrDispatchRetryable,
 // a definite rejection is a 400 and a plain error; neither is unknown
-// (RUN-EXE-3, CLD-WIR-2).
 func TestDispatchRefusalStatus(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -368,7 +367,7 @@ func TestDispatchRefusalStatus(t *testing.T) {
 
 // The settlement stream over a real server: a subscriber under the hub's
 // epoch sees a's settlement, a resubscription after its sequence delivers
-// what was missed, and the Worker's Close ends the stream (RUN-EXE-17).
+// what was missed, and the Worker's Close ends the stream.
 func TestSettlementStreamOverHTTP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

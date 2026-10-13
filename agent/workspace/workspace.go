@@ -89,7 +89,7 @@ var (
 )
 
 // Snapshotter takes a Snapshot of a Workspace's current environment,
-// records it and makes it the Workspace's latest (APP-WSP-7). The workspace
+// records it and makes it the Workspace's latest. The workspace
 // backend implements it in its process; a remote one is reached through
 // agent/workspace/http. A Workspace never materialized is
 // ErrNothingToSnapshot; an unknown one ErrNotFound.
@@ -131,7 +131,7 @@ type Store interface {
 }
 
 // InheritedPolicy is what a Session does with a binding it inherited from
-// its fork parent, decided when the Session is first opened (APP-WSP-5).
+// its fork parent, decided when the Session is first opened.
 type InheritedPolicy uint8
 
 const (
@@ -148,7 +148,7 @@ const (
 	// latest Snapshot, whenever that was taken.
 	InheritClone
 	// InheritRestore binds a Workspace forked from the Snapshot recorded on
-	// the Session's history at the fork point (APP-WSP-7): the files as the
+	// the Session's history at the fork point: the files as the
 	// parent had them when the forked Turn began.
 	InheritRestore
 )

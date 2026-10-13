@@ -69,7 +69,7 @@ func spawnOutput(t *testing.T, h *localagent.Agent, sid session.SessionID) (spaw
 	return spawn.Result{}, chatlog.ToolResult{}
 }
 
-// SPN-1/2/3: a spawn call runs a child Session under the parent's
+// a spawn call runs a child Session under the parent's
 // preset, the child's reply becomes the tool result, the child's identity is
 // derived from the call, its creation metadata records the provenance, and
 // fork mode gives it the parent's history before the calling Turn.
@@ -162,7 +162,7 @@ func (m *gatedModel) Generate(_ context.Context, _ sdk.Request) (sdk.ModelResult
 	return text("late"), nil
 }
 
-// SPN-4: after the parent's process dies while the child is executing,
+// after the parent's process dies while the child is executing,
 // the new owner finds the parent's call Executing, derives the child from it
 // and continues the same child Session; the parent's Turn then completes with
 // the child's reply. No second child is created.
@@ -173,7 +173,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 	// Both processes share the Session store on disk. The second process
 	// takes the parent over, finds its spawn call waiting for the
 	// Responder's answer, and continues the same child from its durable
-	// state (SPN-4); no execution record is involved.
+	// state; no execution record is involved.
 	open := func(model local.ModelInvoker, takeover bool) (*localagent.Agent, *app.Session, preset.PresetRef) {
 		t.Helper()
 		store, err := filestore.New(root)
@@ -188,7 +188,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		// The child's own model execution belongs to process 1's Worker; process
 		// 2's clock runs an hour ahead so that record reads as orphaned, and
 		// RecoverInterrupted asks process 2's Worker (effect.Recoverer) to
-		// take it back and restart it (RUN-CMT-7, RUN-EXE-6).
+		// take it back and restart it.
 		var clock func() time.Time
 		if takeover {
 			clock = func() time.Time { return time.Now().Add(time.Hour) }

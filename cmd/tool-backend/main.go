@@ -1,4 +1,4 @@
-// Command tool-backend is the tool sandbox backend component (CLD-TOL-1).
+// Command tool-backend is the tool sandbox backend component.
 package main
 
 import (

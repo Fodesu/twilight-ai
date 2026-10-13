@@ -1,4 +1,4 @@
-// Package ownerservice composes the owner service component (CLD-OWN-1):
+// Package ownerservice composes the owner service component:
 // an app.Application over the shared stores, driving effects through the
 // worker's ExecutionPort client, exposed through the command face. The
 // process holds Session leases and the Writers' projections; every durable
@@ -45,7 +45,7 @@ type Config struct {
 	Content Filestore `json:"content,omitempty"`
 	// Stores is the durable database: artifact bindings and claims,
 	// dispatch ledger, inbox, workspace records, and with Postgres the
-	// Session ledger and cas content too (CLD-STO-1).
+	// Session ledger and cas content too.
 	Stores config.Store `json:"stores"`
 	// Executor is the worker's ExecutionPort endpoint.
 	Executor string `json:"executor"`
@@ -54,15 +54,15 @@ type Config struct {
 	ToolBackend string `json:"toolBackend,omitempty"`
 	// Lease is the Session lease duration; zero means until Release.
 	Lease config.Duration `json:"lease,omitempty"`
-	// Takeover makes every Open take over a live lease (CLD-CTL-2); a
+	// Takeover makes every Open take over a live lease; a
 	// deployment sets it on the owner the controller hands a Session to.
 	Takeover bool `json:"takeover,omitempty"`
 	// Presets are the decision identities registered at start.
 	Presets []Preset `json:"presets"`
 	// SnapshotAfterTurn snapshots the bound workspace after each settled
-	// Turn (APP-WSP-7); needs ToolBackend.
+	// Turn; needs ToolBackend.
 	SnapshotAfterTurn bool `json:"snapshotAfterTurn,omitempty"`
-	// InboxPoll is the applier's poll interval (APP-INB-3).
+	// InboxPoll is the applier's poll interval.
 	InboxPoll config.Duration `json:"inboxPoll,omitempty"`
 	// MissingEffects decides what takeover does when the executor has no
 	// record for an executing effect. Empty and "dispose" preserve the
@@ -79,7 +79,7 @@ type Config struct {
 	// worker record. Zero selects the runtime default.
 	OrphanProbe config.Duration `json:"orphanProbe,omitempty"`
 	// Activation makes this owner hold Sessions for active work only
-	// (APP-ACT): a command reaching it opens the Session, quiescence
+	// a command reaching it opens the Session, quiescence
 	// releases it, and a scan picks up Sessions left by a dead owner. It
 	// requires Lease, so a dead owner's Sessions expire.
 	Activation *Activation `json:"activation,omitempty"`
@@ -137,7 +137,7 @@ func (cfg Config) validateRecovery() (reconcile.MissingPolicy, error) {
 	return missing, nil
 }
 
-// Activation is the owner's activation model (APP-ACT).
+// Activation is the owner's activation model.
 type Activation struct {
 	// Preset is the decision identity an activation opens with.
 	Preset preset.PresetID `json:"preset"`
@@ -162,7 +162,7 @@ type Preset struct {
 	ID           preset.PresetID `json:"id"`
 	Model        run.ModelRef    `json:"model"`
 	SystemPrompt string          `json:"systemPrompt,omitempty"`
-	// WorkspaceTools adds the workspace tool set (APP-WSP-3).
+	// WorkspaceTools adds the workspace tool set.
 	WorkspaceTools bool `json:"workspaceTools,omitempty"`
 }
 

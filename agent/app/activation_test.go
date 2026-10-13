@@ -56,7 +56,6 @@ func completedTurns(t *testing.T, h *localagent.Agent, sid session.SessionID) in
 // work and released once the Session is quiescent, a command reaching the
 // process that does not hold the Session is applied by the one that does,
 // and a command nobody woke an owner for is picked up by the scan
-// (APP-ACT-1, APP-ACT-2, APP-ACT-3).
 func TestTurnsOfOneSessionRunOnDifferentProcesses(t *testing.T) {
 	ctx := context.Background()
 	shared := sqlitetest.Open(t)

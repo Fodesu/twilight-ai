@@ -1,4 +1,4 @@
-// Command model-backend is the model backend component (CLD-MDL).
+// Command model-backend is the model backend component.
 package main
 
 import (

@@ -15,7 +15,7 @@ import (
 )
 
 // The benchmarks measure the reopen path the activation model turns into a
-// per-Turn cost (APP-ACT-5), against a Postgres a run is given with
+// per-Turn cost, against a Postgres a run is given with
 // -postgres.dsn; without one they are skipped. Sizes are commits per
 // Session: 1k, 10k, 100k.
 //	go test./agent/store/postgres/ -run xxx -bench. -benchtime 3x -args -postgres.dsn=...

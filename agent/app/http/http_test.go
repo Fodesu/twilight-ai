@@ -212,7 +212,7 @@ func TestCommandFaceDrivesASession(t *testing.T) {
 
 // Workspace allocation and binding through the face, and a fork before a
 // Turn whose child opens with the restore policy refused for want of a
-// snapshot (APP-WSP-5).
+// snapshot.
 func TestEventsFromIncludesZeroAndDoesNotRetryClientErrors(t *testing.T) {
 	var (
 		mu      sync.Mutex

@@ -21,7 +21,7 @@ func pairEntries() []chatlog.Entry {
 }
 
 // RetainLast expands a window that cuts a tool pair back to the issuing
-// assistant, so the retained suffix stays valid provider input (APP-CKP-2).
+// assistant, so the retained suffix stays valid provider input.
 func TestRetainLastPairClosure(t *testing.T) {
 	entries := pairEntries()
 	cases := []struct {
@@ -48,7 +48,7 @@ func TestRetainLastPairClosure(t *testing.T) {
 		})
 	}
 	// An assistant with an unsettled call is kept even outside the window
-	// (APP-CKP-2): a2 issues c2 and no result has landed; in2 arrived after.
+	// a2 issues c2 and no result has landed; in2 arrived after.
 	open := pairEntries()
 	a2 := *open[3].Assistant
 	a2.CallIDs = []chatlog.CallID{"c2"}

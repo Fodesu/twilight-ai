@@ -68,7 +68,7 @@ func Example_jsonlPrototype() {
 	}
 	<-stage1.started
 
-	// Steer: a second Submit while turn-1 runs goes to Deliver (APP-RTE-1):
+	// Steer: a second Submit while turn-1 runs goes to Deliver:
 	// the input joins the running Turn, whose driver carries it on.
 	if _, err := s1.SubmitInput(ctx, "in-2", "and tomorrow?"); err != nil {
 		panic(err)

@@ -1,14 +1,14 @@
 // Package backendhttp is the wire between a Worker and a remote
-// ExecutionBackend (CLD-WIR-1): Server exposes one backend over HTTP, Client
+// ExecutionBackend: Server exposes one backend over HTTP, Client
 // implements executor.ExecutionBackend against such a server. The wire is
 // the Go contract as it is: Outcome is a read (outcome, 204 while
 // unsettled) and the backend's notice.Source is a stream (notices), so no
 // request is held open for the length of an execution and the Client keeps
-// no state of its own (RUN-EXE-17).
+// no state of its own.
 // The Server keeps nothing: every endpoint is a call on the backend behind
 // it. A server that restarts loses no table, and the backend answers Attach
 // with missing for every ref it no longer holds, which is what the Worker's
-// recovery expects of a stateless backend (RUN-EXE-3, RUN-EXE-9).
+// recovery expects of a stateless backend.
 package backendhttp
 
 import (
@@ -28,12 +28,12 @@ import (
 const DefaultMaxBodyBytes int64 = 16 << 20
 
 // Server exposes Backend over HTTP. Progress, when set, serves /progress:
-// the hub the backend publishes its frames into (RUN-EXE-12). Every endpoint
+// the hub the backend publishes its frames into. Every endpoint
 // accepts POST only.
 type Server struct {
 	Backend executor.ExecutionBackend
 	// Progress, when set, serves /progress: the hub the backend publishes
-	// its frames into (RUN-EXE-12).
+	// its frames into.
 	Progress     effect.ProgressPort
 	MaxBodyBytes int64
 }

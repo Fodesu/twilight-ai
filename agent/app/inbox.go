@@ -15,7 +15,7 @@ import (
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
-// The command Kinds this agent applies from a Session's inbox (APP-INB-2),
+// The command Kinds this agent applies from a Session's inbox,
 // with their payload types. A Kind outside this set is rejected.
 const (
 	// CommandSubmit submits text under a caller-chosen InputID and routes
@@ -26,7 +26,7 @@ const (
 	// CommandWithdraw withdraws a submitted, undelivered input; payload
 	// WithdrawCommand.
 	CommandWithdraw inbox.Kind = "withdraw"
-	// CommandBindWorkspace binds the Session to a Workspace (APP-WSP-2);
+	// CommandBindWorkspace binds the Session to a Workspace;
 	// payload BindWorkspaceCommand.
 	CommandBindWorkspace inbox.Kind = "bind_workspace"
 	// CommandUnbindWorkspace ends the Session's workspace binding; payload
@@ -81,10 +81,10 @@ func NewCommand(id inbox.CommandID, kind inbox.Kind, payload any) (inbox.Command
 	return inbox.Command{ID: id, Kind: kind, Payload: raw}, nil
 }
 
-// Enqueue is the caller side of APP-INB-1: the command is durable when
+// Enqueue persists a command in the inbox. The command is durable when
 // Enqueue returns, whoever owns the Session and whether anyone does. When
 // this process holds the Session open, its applier is woken; otherwise the
-// command waits for the next owner's Open (APP-INB-3) or poll.
+// command waits for the next owner's Open or poll.
 func (app *Application) Enqueue(ctx context.Context, sid session.SessionID, c inbox.Command) (inbox.Entry, error) {
 	if app.inbox == nil {
 		return inbox.Entry{}, ErrNoInbox
@@ -172,7 +172,7 @@ func (app *Application) LookupCommand(ctx context.Context, sid session.SessionID
 	return app.inbox.Lookup(ctx, sid, id)
 }
 
-// PendingSessions returns Sessions with unapplied commands (CLD-CMD-4), at
+// PendingSessions returns Sessions with unapplied commands, at
 // most limit of them (0 for all): what the activation scan opens next.
 func (app *Application) PendingSessions(ctx context.Context, limit int) ([]session.SessionID, error) {
 	if app.inbox == nil {
@@ -183,7 +183,7 @@ func (app *Application) PendingSessions(ctx context.Context, limit int) ([]sessi
 
 // --- owner side ---------------------------------------------------------------
 
-// Wake asks the Session's applier to read its inbox now (CLD-GWY-2): the
+// Wake asks the Session's applier to read its inbox now: the
 // wake-up a gateway sends after enqueuing a command. It never blocks.
 func (s *Session) Wake() { s.wakeInbox() }
 
@@ -198,7 +198,7 @@ func (s *Session) wakeInbox() {
 }
 
 // startInbox applies the pending commands once, then keeps applying them
-// on every wake-up and every poll until Close (APP-INB-3).
+// on every wake-up and every poll until Close.
 func (s *Session) startInbox(ctx context.Context) {
 	if s.app.inbox == nil {
 		return
@@ -229,7 +229,7 @@ func (s *Session) startInbox(ctx context.Context) {
 }
 
 // ApplyPending applies the Session's pending commands in Seq order through
-// this Session's Writer and resolves each (APP-INB-2). A command the
+// this Session's Writer and resolves each. A command the
 // committed state does not admit resolves rejected; a transient failure
 // (store, fenced Writer) leaves the command pending, stops the pass so the
 // order is kept, and is returned. It returns the number of commands

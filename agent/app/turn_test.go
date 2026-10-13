@@ -52,7 +52,7 @@ func setup(t *testing.T, model local.ModelInvoker, tool *gateTool, opts app.Sess
 
 // An input delivered while a tool call is Executing queues on the Run, is
 // delivered to the same Turn in the same commit, and reaches the model in the
-// next request together with the tool result (TRN-DLV, RUN-LOP-8).
+// next request together with the tool result.
 func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
@@ -68,7 +68,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	go func() {
 		resp, err := h.Kernel.Turns.Start(ctx, s.Handle().Writer(), sessionkernel.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: pref})
 		if err == nil {
-			// The Coordinator only commits; the host drives (DRV-1).
+			// The Coordinator only commits; the host drives.
 			if _, err = h.Execution.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID); err == nil {
 				resp, err = h.Kernel.Turns.Status(ctx, ref1)
 			}
@@ -185,7 +185,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 		t.Fatalf("second send = %+v", results)
 	}
 	// The new Turn's request carried the stopped Turn's assistant tool call and
-	// its unknown tool_result (DEC-PMT-6), then the new input.
+	// its unknown tool_result, then the new input.
 	seen := model.requests()
 	last := seen[len(seen)-1].Messages
 	if got := roles(last); len(got) != 5 || got[0] != "system" || got[1] != "user" || got[2] != "assistant" || got[3] != "tool" || got[4] != "user" {

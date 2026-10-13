@@ -224,7 +224,7 @@ func TestWorkerOverBackendWire(t *testing.T) {
 
 // A backend that lost its state (its Server restarted) answers Attach with
 // missing; a Worker recovering the execution restarts the model assignment
-// as a new generation on the new backend (RUN-EXE-9).
+// as a new generation on the new backend.
 func TestRecoveryRestartsOnAFreshBackend(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

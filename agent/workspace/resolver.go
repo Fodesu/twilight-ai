@@ -7,7 +7,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 )
 
-// Resolver is the application's loop.TargetResolver (APP-TGT-1, RUN-LOP-9):
+// Resolver is the application's loop.TargetResolver:
 // a workspace-placed tool effect gets the Session's bound Workspace as its
 // target, own or inherited; every other effect gets none. A Session with no
 // binding yields no target, and the workspace backend then refuses the call

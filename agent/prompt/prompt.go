@@ -1,5 +1,5 @@
 // Package prompt is the first-party prompt builder of the reference agent: it
-// folds the chatlog context projection into one sdk.Request (DEC-PMT). The
+// folds the chatlog context projection into one sdk.Request. The
 // agent core only knows the PromptBuilder seam and the catalog that resolves a
 // PromptBuilderRef (agentcore/decision); which builder a preset names, and
 // how it assembles context, is this agent's strategy.
@@ -24,23 +24,23 @@ import (
 )
 
 // PromptContextV1 names the context prompt builder: the chatlog context projection
-// folded into one provider request (DEC-PMT-1).
+// folded into one provider request.
 const PromptContextV1 preset.PromptBuilderRef = "twilight/decision/prompt/context-v1"
 
-// ContextPromptBuilder is the context-v1 PromptBuilder (DEC-PMT): it reads the
+// ContextPromptBuilder is the context-v1 PromptBuilder: it reads the
 // chatlog context projection, materializes its entries and assembles the next
 // sdk.Request. Every assistant and tool_result of the Session is in the fold
-// already, including those of earlier attempts of the same Turn (DEC-PMT-6).
+// already, including those of earlier attempts of the same Turn.
 type ContextPromptBuilder struct {
 	Sources decision.Sources
 	Preset  preset.AgentPreset
 	// InputText extracts the user text of one input payload; nil selects the
-	// v1 shape {"text":...} (DEC-INP-1).
+	// v1 shape {"text":...}.
 	InputText func(run.CanonicalJSON) (string, error)
 	// Preface, when set, contributes text the builder appends to the system
 	// prompt of every request, read from the Session's projections: the
 	// application's standing facts the model must know, such as the
-	// workspace it works in (APP-WSP-4). An empty string adds nothing.
+	// workspace it works in. An empty string adds nothing.
 	Preface Preface
 }
 
@@ -111,7 +111,6 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint decision.Input) (
 	}, nil
 }
 
-// messages is DEC-PMT-2.
 func (p *ContextPromptBuilder) messages(system string, entries []chatlog.Materialized) ([]sdk.Message, error) {
 	var msgs []sdk.Message
 	if system != "" {
@@ -122,11 +121,11 @@ func (p *ContextPromptBuilder) messages(system string, entries []chatlog.Materia
 		inputText = input.TextOf
 	}
 	// ProviderCallID and tool name per CallID, from the assistant that issued
-	// the call, for pairing tool results (DEC-PMT-2 step 2).
+	// the call, for pairing tool results (step 2).
 	type callInfo struct{ provider, name string }
 	calls := map[chatlog.CallID]callInfo{}
 	// Inputs delivered mid-turn are committed while tool calls are still open
-	// (TRN-DLV-2); providers require tool results to follow their assistant
+	// providers require tool results to follow their assistant
 	// message directly, so such inputs are held until the open calls resolve.
 	open := map[chatlog.CallID]struct{}{}
 	var deferred []sdk.Message
@@ -222,7 +221,7 @@ func CatalogWith(preface Preface) *decision.Catalog {
 }
 
 // WorkspacePreface tells the model which workspace the Session works in
-// (APP-WSP-4): the binding projection's current Workspace, own or inherited,
+// the binding projection's current Workspace, own or inherited,
 // and nothing when the Session is bound to none.
 func WorkspacePreface(ctx context.Context, sources decision.Sources, sid session.SessionID) (string, error) {
 	b, err := workspace.Read(ctx, sources.Projections, sid)

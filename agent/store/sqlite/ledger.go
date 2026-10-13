@@ -10,7 +10,7 @@ import (
 )
 
 // RetentionLedger is artifact.RetentionLedger over the claims table
-// (ART-RET-2, ART-RET-3). Activate returns once the claim's row is
+// Activate returns once the claim's row is
 // committed, which is what makes the claim durable.
 type RetentionLedger struct {
 	db      *sql.DB
@@ -106,7 +106,7 @@ func (l *RetentionLedger) ReleaseActive(ctx context.Context, id artifact.ClaimID
 }
 
 // ClaimsByOwner pages the owner's claims in ClaimID order under a watermark
-// cursor (ART-RET-3). The rows are selected by Kind and Authority in SQL;
+// cursor. The rows are selected by Kind and Authority in SQL;
 // the identity rule (nil selects every identity, a list selects its
 // non-empty members) is applied while scanning, so no query is built from
 // caller strings.
@@ -216,7 +216,7 @@ func (l *RetentionLedger) lastMatching(ctx context.Context, q artifact.ClaimOwne
 	}
 }
 
-// matchesIdentity is ART-RET-3: nil selects every identity, an explicit
+// matchesIdentity is nil selects every identity, an explicit
 // list selects its members, and an empty identity never matches.
 func matchesIdentity(q artifact.ClaimOwnerQuery, identity string) bool {
 	if identity == "" {

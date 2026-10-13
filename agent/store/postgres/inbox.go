@@ -10,7 +10,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 )
 
-// InboxStore is inbox.Store over the inbox table (APP-INB-1).
+// InboxStore is inbox.Store over the inbox table.
 type InboxStore struct{ d *DB }
 
 var _ inbox.Store = (*InboxStore)(nil)

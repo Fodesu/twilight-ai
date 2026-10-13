@@ -70,8 +70,7 @@ var auditModule = module.ModuleDescriptor{
 
 // An application module registered through Ports.Modules writes its own
 // events into the stream domain it declares and folds its own projection,
-// while the first-party projections skip its rows as out-of-scope (EXT-REG-1,
-// EXT-PRJ-2).
+// while the first-party projections skip its rows as out-of-scope.
 func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	ctx := context.Background()
 	h := newHost(t, app.Config{Kernel: sessionkernel.Ports{Modules: []module.ModuleDescriptor{auditModule}}}, map[run.ModelRef]local.ModelInvoker{"m-1": &scriptedRequests{}})

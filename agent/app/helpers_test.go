@@ -30,8 +30,8 @@ import (
 
 // newHost builds a colocated agent for tests (localagent.Compose): a
 // LocalExecutor over the given models and tools behind a Worker; the
-// Runtime still writes request bodies to cfg.Content (RUN-WIR-4) and the
-// executor never reads them back (RUN-EXE-7).
+// Runtime still writes request bodies to cfg.Content and the
+// executor never reads them back.
 func newHost(t testing.TB, cfg app.Config, models map[run.ModelRef]local.ModelInvoker, tools ...local.ExecutableTool) *localagent.Agent {
 	t.Helper()
 	return newLocalHost(t, durablePorts(t, cfg), models, tools...)
@@ -77,7 +77,7 @@ func durablePorts(t testing.TB, cfg app.Config) localagent.Config {
 }
 
 // runState reads a Run's committed state by SessionID: the lease-free read
-// (OWN-HDL-2), so a test observes without owning.
+// so a test observes without owning.
 func runState(a *localagent.Agent, sid session.SessionID, runID run.RunID) (store.Snapshot, error) {
 	record, err := a.Kernel.Runs.Record(context.Background(), sid, runID)
 	if err != nil {

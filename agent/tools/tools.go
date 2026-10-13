@@ -23,7 +23,7 @@ type Tool interface {
 	Definition() sdk.ToolDefinition
 	ResponsePolicy() run.ResponsePolicy
 	// Replay declares whether Run may happen again for the same call after
-	// an earlier execution was lost (RUN-EXE-9).
+	// an earlier execution was lost.
 	Replay() run.ReplayPolicy
 	// ValidateArguments runs before the start barrier and touches no
 	// environment.

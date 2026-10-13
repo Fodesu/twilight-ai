@@ -8,7 +8,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 )
 
-// BindingStore is artifact.BindingStore over the bindings table (ART-BND-1).
+// BindingStore is artifact.BindingStore over the bindings table.
 type BindingStore struct{ d *DB }
 
 var _ artifact.BindingStore = (*BindingStore)(nil)
@@ -81,7 +81,6 @@ func (s *BindingStore) ResolveBinding(ctx context.Context, id artifact.BindingID
 }
 
 // RetentionLedger is artifact.RetentionLedger over the claims table
-// (ART-RET-2, ART-RET-3).
 type RetentionLedger struct {
 	d       *DB
 	builder artifact.BindingSetBuilder
@@ -90,7 +89,7 @@ type RetentionLedger struct {
 var _ artifact.RetentionLedger = (*RetentionLedger)(nil)
 
 // Ledger is the artifact RetentionLedger over this database; builder, when
-// set, rebuilds and verifies every incoming BindingSet (ART-RET-1).
+// set, rebuilds and verifies every incoming BindingSet.
 func (d *DB) Ledger(builder artifact.BindingSetBuilder) *RetentionLedger {
 	return &RetentionLedger{d: d, builder: builder}
 }
@@ -178,7 +177,7 @@ func (l *RetentionLedger) ReleaseActive(ctx context.Context, id artifact.ClaimID
 }
 
 // ClaimsByOwner pages the owner's claims in ClaimID order under a watermark
-// cursor (ART-RET-3); the identity rule is applied while scanning.
+// cursor; the identity rule is applied while scanning.
 func (l *RetentionLedger) ClaimsByOwner(ctx context.Context, query artifact.ClaimOwnerQuery, cursor artifact.ClaimCursor) (artifact.ClaimPage, error) {
 	if query.Kind == "" || query.Authority == "" {
 		return artifact.ClaimPage{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: "claims_by_owner", Detail: "empty owner kind or authority"}
@@ -229,7 +228,7 @@ func (l *RetentionLedger) ClaimsByOwner(ctx context.Context, query artifact.Clai
 	}
 }
 
-// lastMatching is the watermark of a fresh enumeration (ART-RET-3): the
+// lastMatching is the watermark of a fresh enumeration: the
 // greatest ClaimID of the owner that matches the identity rule, found by
 // reading identities downwards in batches.
 func (l *RetentionLedger) lastMatching(ctx context.Context, query artifact.ClaimOwnerQuery, batch int) (artifact.ClaimID, error) {

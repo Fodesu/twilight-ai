@@ -89,7 +89,6 @@ func (w *workspaceHost) open(t *testing.T, sid session.SessionID) *app.Session {
 // A bound Session's shell call runs inside the workspace's environment: the
 // model is told which workspace it works in, the command's file lands in the
 // environment's directory, and the workspace records the materialization
-// (APP-WSP-2, APP-WSP-3, APP-WSP-4).
 func TestWorkspaceToolsRunInTheBoundWorkspace(t *testing.T) {
 	ctx := context.Background()
 	model := &scriptedRequests{answers: []sdk.ModelResult{shellCall("printf hi > out.txt && cat out.txt")}}
@@ -136,7 +135,7 @@ func TestWorkspaceToolsRunInTheBoundWorkspace(t *testing.T) {
 
 // A Session bound to no workspace still completes: the call is refused
 // before any effect as a Known failure the model reads, and the system
-// prompt carries no workspace (APP-WSP-3).
+// prompt carries no workspace.
 func TestUnboundSessionToolCallIsAKnownFailure(t *testing.T) {
 	ctx := context.Background()
 	model := &scriptedRequests{answers: []sdk.ModelResult{shellCall("true")}}
@@ -161,7 +160,7 @@ func TestUnboundSessionToolCallIsAKnownFailure(t *testing.T) {
 }
 
 // A fork's child reads the parent's binding as inherited (Share); Unbind
-// ends it for the child alone, and Bind gives the child its own (APP-WSP-5).
+// ends it for the child alone, and Bind gives the child its own.
 func TestForkChildInheritsTheBindingUntilItDecides(t *testing.T) {
 	ctx := context.Background()
 	done := sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}
@@ -220,7 +219,7 @@ func TestForkChildInheritsTheBindingUntilItDecides(t *testing.T) {
 
 // The binding is a command anyone can leave in the inbox: a bind_workspace
 // enqueued before the Session is opened is applied on open; an unknown
-// workspace resolves rejected (APP-INB-2, APP-WSP-2).
+// workspace resolves rejected.
 func TestBindWorkspaceThroughTheInbox(t *testing.T) {
 	ctx := context.Background()
 	inboxStore := sqlitetest.Open(t).Inbox()
@@ -263,7 +262,7 @@ func toolResultText(t *testing.T, model *scriptedRequests, n int) string {
 // Session; a fork's child settles the inherited binding by its policy on
 // open: Restore forks the workspace from the snapshot at the fork point,
 // Clone from the latest, Allocate gives an empty one, None unbinds
-// (APP-WSP-5, APP-WSP-7).
+//
 //
 //nolint:gocyclo // This scenario intentionally covers all fork policies.
 func TestForkPoliciesRestoreCloneAllocateNone(t *testing.T) {
@@ -320,7 +319,7 @@ func TestForkPoliciesRestoreCloneAllocateNone(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = s.Close(context.Background()) })
 		// The fork point precedes turn 2, so the child inherits its still
-		// submitted input; the edit flow withdraws it (OWN-FRK-2).
+		// submitted input; the edit flow withdraws it.
 		chat, err := w.h.ChatlogSurface(ctx, name)
 		if err != nil {
 			t.Fatal(err)

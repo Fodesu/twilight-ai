@@ -14,7 +14,7 @@ import (
 )
 
 // countingCache wraps the in-memory cache to count writes, so a test can see
-// whether the Host's interval reached the Writer (APP-MEM-2, EXT-PRJ-7).
+// whether the Host's interval reached the Writer.
 type countingCache struct {
 	inner *session.MemoryProjectionCache
 	mu    sync.Mutex
@@ -75,7 +75,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 			if err := h.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
-			// Close obeys the same interval (EXT-PRJ-7): a large one never
+			// Close obeys the same interval: a large one never
 			// writes a whole state per Turn, and the next owner folds the tail.
 			if got := cache.count() > 0; got != tc.wantBefore {
 				t.Errorf("wrote entries by Close = %v, want %v (every=%d)", got, tc.wantBefore, tc.every)
@@ -84,8 +84,8 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 	}
 }
 
-// TestHostNeverCachesTheMachineProjection is the other half of APP-MEM-2:
-// the Writer leaves the machine projection to the Runtime's SnapshotPolicy, so
+// TestHostNeverCachesTheMachineProjection verifies that the Writer leaves
+// the machine projection to the Runtime's SnapshotPolicy, so
 // no entry appears for it however small the interval is.
 func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	ctx := context.Background()

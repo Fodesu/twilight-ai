@@ -73,7 +73,7 @@ func Example_recoverableTurn() {
 		_, err := p1.Kernel.Turns.Start(ctx, owned1.Writer(), sessionkernel.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
 			Preset: profile1})
 		if err == nil {
-			// The Coordinator only commits; the host drives (DRV-1).
+			// The Coordinator only commits; the host drives.
 			_, err = p1.Execution.Driver.Drive(ctx, owned1.Writer(), ref1.TurnID)
 		}
 		startDone <- err

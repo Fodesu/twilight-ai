@@ -1,5 +1,5 @@
 // Package postgres is the shared store of a multi-replica deployment
-// (CLD-STO-1): one Postgres database holds every durable fact the components
+// one Postgres database holds every durable fact the components
 // share -- execution records and leases, the dispatch ledger, checkpoints,
 // the command inbox, artifact bindings and claims, workspace records, the
 // Session Backend and the cas content store -- so any owner, worker or

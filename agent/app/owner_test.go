@@ -149,7 +149,7 @@ func (e *recordingExecutor) assignments() []loop.Assignment {
 	return append([]loop.Assignment(nil), e.assigned...)
 }
 
-// The Owner side needs no effect implementation (OWN-PRT-2): a Host built
+// The Owner side needs no effect implementation: a Host built
 // over an Executor that is only a recorder registers an AgentPreset, starts a Turn,
 // dispatches the model Assignment with the frozen request's digest, and
 // settles the Outcome the executor sends back. Every model client and tool
@@ -191,7 +191,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 		t.Fatalf("assignment = %+v", a)
 	}
 	// The body the executor would fetch is in the shared frozen store under
-	// the digest the Assignment carries (RUN-WIR-4).
+	// the digest the Assignment carries.
 	raw, ok, err := fz.Get(ctx, modelAssignment.RequestDigest)
 	if err != nil || !ok || len(raw) == 0 {
 		t.Fatalf("frozen request %s: ok=%v err=%v", modelAssignment.RequestDigest, ok, err)
@@ -205,7 +205,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	}
 }
 
-// Older Turns keep resolving their recorded decision identity (PST-2).
+// Older Turns keep resolving their recorded decision identity.
 func TestPresetVersionsRemainAvailable(t *testing.T) {
 	presets := preset.NewMemory()
 	ap := mustPreset("m-1", nil, app.WithSystemPrompt("original"))

@@ -267,7 +267,7 @@ func (c *cluster) startOwner(id string, takeover bool) (*ownerservice.Component,
 }
 
 // startOwnerWith starts an owner replica under an activation model
-// (APP-ACT); nil keeps Sessions open until Close.
+// nil keeps Sessions open until Close.
 func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activation) (*ownerservice.Component, *ownerhttp.Client) {
 	c.t.Helper()
 	store, err := filestore.NewWithClock(c.sessions, c.clock.Now)
@@ -405,7 +405,7 @@ func awaitTurn(t *testing.T, ctx context.Context, client *ownerhttp.Client, sid 
 // commands, the worker dispatches the model call to the model backend and
 // the shell call to the tool backend, the file lands in the workspace's
 // environment, the workspace is snapshotted after the Turn, and the reply
-// reads back through the face (CLD-CMP-2, Dispatch and GetOutcome).
+// reads back through the face (Dispatch and GetOutcome).
 func TestFourComponentsServeAConversation(t *testing.T) {
 	model := &scripted{answers: []sdk.ModelResult{shellCall("printf hi > f.txt && cat f.txt")}}
 	c := newCluster(t, model)
@@ -459,7 +459,7 @@ func TestFourComponentsServeAConversation(t *testing.T) {
 }
 
 // The worker is replaced while a model call is in flight and the owner
-// stays (CLD-DEV-2, first row): the owner's Watcher probes the waiting
+// stays (first row): the owner's Watcher probes the waiting
 // effect, finds its record orphaned once the dead worker's lease has
 // passed, and hands it to the new worker, which attaches the execution
 // still running in the model backend; the release settles through the new
@@ -486,7 +486,7 @@ func TestWorkerReplacementDuringALiveDrive(t *testing.T) {
 	// The model backend holds the call before the worker has even answered
 	// the owner's Dispatch; the scenario is a worker lost while the owner
 	// waits, so the record is let reach Running and the answer propagate
-	// first. A worker lost during the Dispatch itself is RUN-EXE-3's
+	// first. A worker lost during the Dispatch itself is
 	// ErrDispatchUnknown, settled by the next takeover, not by the probe.
 	key := c.modelEffectKey(comp, sid)
 	waitFor(t, c.ctx, func() bool {
@@ -523,7 +523,7 @@ func TestWorkerReplacementDuringALiveDrive(t *testing.T) {
 }
 
 // The worker and the owner are replaced while a model call is in flight
-// (CLD-DEV-2): the first worker dies holding the record's lease, a second
+// the first worker dies holding the record's lease, a second
 // incarnation takes the Service address, a second owner takes the Session
 // over; its takeover disposition finds the record orphaned, hands it to the
 // new worker, which attaches the execution still running in the model
@@ -629,7 +629,7 @@ func (c *cluster) completedTurns(client *ownerhttp.Client, sid session.SessionID
 
 // Two owner replicas under the activation model, and a gateway that sends
 // each Turn's command to a different one without opening the Session
-// (APP-ACT, CLD-OWN-4): the replica a command reaches acquires the
+// the replica a command reaches acquires the
 // Session, the lease names it while the Turn runs, quiescence releases it,
 // and the next command acquires it on the other replica. Both replicas
 // read the whole history from the shared store.

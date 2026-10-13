@@ -1,9 +1,8 @@
-// Package http is the HTTP binding of the owner's command face (CLD-GWY-1,
-// CLD-WIR-0): what a gateway, a controller or a test drives an
+// Package http is the HTTP binding of the owner's command face: what a gateway, a controller or a test drives an
 // app.Application through. Writes reach a Session only as inbox commands
-// (APP-INB-1), so every command is durable before it is answered and is
+// so every command is durable before it is answered and is
 // applied by whichever owner holds the Session; reads are the lease-free
-// read side (OWN-HDL-2). Server binds an Application, Client is the same
+// read side. Server binds an Application, Client is the same
 // face for the caller.
 package http
 
@@ -60,7 +59,7 @@ type OpenRequest struct {
 	// the registered PresetRef.
 	Preset preset.PresetID `json:"preset"`
 	// InheritedWorkspace is the policy for a binding inherited from the fork
-	// parent (APP-WSP-5): share (default), none, allocate, clone, restore.
+	// parent: share (default), none, allocate, clone, restore.
 	InheritedWorkspace string `json:"inheritedWorkspace,omitempty"`
 	// ResumeActive drives a still-active Turn inside the open call.
 	ResumeActive bool `json:"resumeActive,omitempty"`
@@ -99,21 +98,21 @@ type Lease struct {
 	UntilUnixMilli int64             `json:"untilUnixMilli"`
 }
 
-// AllocateWorkspaceRequest creates a Workspace record (APP-WSP-2).
+// AllocateWorkspaceRequest creates a Workspace record.
 type AllocateWorkspaceRequest struct {
 	Project string                `json:"project,omitempty"`
 	Base    workspace.RevisionRef `json:"base,omitempty"`
 }
 
-// ForkRequest forks a Session: before a Turn (OWN-FRK-2) when BeforeTurn is
-// set, at commit At otherwise (OWN-FRK-1).
+// ForkRequest forks a Session: before a Turn when BeforeTurn is
+// set, at commit At otherwise.
 type ForkRequest struct {
 	Child      session.SessionID `json:"child"`
 	BeforeTurn turn.TurnID       `json:"beforeTurn,omitempty"`
 	At         ledger.CommitSeq  `json:"at,omitempty"`
 }
 
-// Event is the wire form of an observe.Event (OBS-1): a committed fact with
+// Event is the wire form of an observe.Event: a committed fact with
 // its ledger position and decoded value, a transient progress observation,
 // or a stream failure.
 type Event struct {

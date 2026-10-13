@@ -147,7 +147,7 @@ func (s *Server) open(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	if req.Preset == "" {
-		// No preset names the activation's (APP-ACT-3): the owner opens the
+		// No preset names the activation's: the owner opens the
 		// Session as a command reaching it would.
 		opened, err := s.App.Activate(context.WithoutCancel(r.Context()), id)
 		if errors.Is(err, app.ErrNoActivation) {

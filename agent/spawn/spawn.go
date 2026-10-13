@@ -13,7 +13,7 @@
 // child segment's creation record records the provenance and the full
 // arguments. That record is what a takeover needs to continue the same
 // invocation after a crash; when the effect runs through a durable Worker,
-// the Worker persists it as ExecutionRef{twilight/session, child} (RUN-EXE-9).
+// the Worker persists it as ExecutionRef{twilight/session, child}.
 // This package is the protocol core. The orchestration that creates, drives
 // and settles child Sessions lives in the Host (Ports.Spawn).
 package spawn
@@ -51,7 +51,7 @@ const (
 	// Empty starts the child from an empty Session.
 	Empty Mode = "spawn"
 	// Fork starts the child from the parent's history before the Turn that
-	// made the call (OWN-FRK-2): the conversation so far, without the Turn
+	// made the call: the conversation so far, without the Turn
 	// that is still executing.
 	Fork Mode = "fork"
 )
@@ -83,7 +83,7 @@ type Provenance struct {
 
 // ChildID derives the child Session of one spawn call. The identity is a
 // function of the invocation alone, so a takeover recomputes it from the
-// Executing call it finds (RUN-CMT-7).
+// Executing call it finds.
 func ChildID(parent session.SessionID, runID run.RunID, callID run.CallID) session.SessionID {
 	raw, err := jsonstable.EncodeTypedPayload(1, "twilight/spawn/child", struct {
 		Parent session.SessionID `json:"parent"`
@@ -138,20 +138,20 @@ func ProvenanceFromHeader(header session.SegmentHeader) (prov Provenance, ok boo
 }
 
 // DepthExceeded reports whether a Session at depth has reached the nesting
-// limit and may no longer spawn (SPN-3).
+// limit and may no longer spawn.
 func DepthExceeded(depth, limit int) bool {
 	return depth >= limit
 }
 
 // ArgumentsConflict reports whether a recorded child was created for
-// different arguments than the call carries now (SPN-2, RUN-EXE-3).
+// different arguments than the call carries now.
 func ArgumentsConflict(prov Provenance, args Arguments) bool {
 	return prov.Arguments != args
 }
 
 // Tool is the model-facing definition of the spawn tool for preset
 // catalogs. Its ResponsePolicy is ExternalResponse: a call waits, and the
-// Responder the Driver holds for the tool answers it (SPN-1, DRV-4). Execute
+// Responder the Driver holds for the tool answers it. Execute
 // never runs.
 func Tool(ref run.ToolRef) local.ExecutableTool { return tool{ref: ref} }
 

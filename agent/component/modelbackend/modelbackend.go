@@ -1,4 +1,4 @@
-// Package modelbackend composes the model backend component (CLD-MDL): the
+// Package modelbackend composes the model backend component: the
 // in-process executor over a model catalog and no tools, exposed through
 // the Backend protocol. It is the one process that holds provider
 // credentials, resolved from a mounted secrets directory.
@@ -69,7 +69,7 @@ func (c *Component) Handler() stdhttp.Handler {
 }
 
 // Close releases nothing durable: executions in flight finish or are
-// observed missing by the Worker, which restarts model calls (RUN-EXE-9).
+// observed missing by the Worker, which restarts model calls.
 func (c *Component) Close(context.Context) error { return nil }
 
 type noTools struct{}

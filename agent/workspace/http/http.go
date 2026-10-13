@@ -1,5 +1,5 @@
 // Package http is the HTTP binding of the workspace control face a tool
-// backend exposes beside its Backend protocol (APP-WSP-7, CLD-TOL-1): the
+// backend exposes beside its Backend protocol: the
 // owner asks the process that holds the environments to take a Snapshot.
 // Server serves a workspace.Snapshotter; Client is one.
 package http

@@ -55,7 +55,6 @@ func (c *Client) Dispatch(ctx context.Context, a effect.Assignment) error {
 	case errors.As(err, &responseErr) && (responseErr.statusCode == stdhttp.StatusBadRequest || responseErr.statusCode == stdhttp.StatusConflict):
 		// The Server's own definite answers: 400 rejects the Assignment,
 		// 409 is a conflicting replay or an aborted key. Nothing started
-		// (RUN-EXE-3).
 		return err
 	case errors.As(err, &responseErr) && responseErr.statusCode < stdhttp.StatusInternalServerError:
 		// Any other 4xx did not come from the Server's dispatch handler: an
@@ -82,7 +81,7 @@ func (c *Client) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 	return response, nil
 }
 
-// Abort closes the key before any acceptance (RUN-EXE-16); the answer is
+// Abort closes the key before any acceptance; the answer is
 // the key's attachment afterwards.
 func (c *Client) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	var response effect.Attachment
@@ -118,7 +117,7 @@ func (c *Client) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effe
 }
 
 // Progress is effect.ProgressPort over the server's event stream
-// (RUN-EXE-12). The request is cancelled when fn stops or ctx ends.
+// The request is cancelled when fn stops or ctx ends.
 func (c *Client) Progress(ctx context.Context, key effect.AssignmentKey, after uint64, fn func(effect.ProgressFrame) bool) error {
 	return c.stream(ctx, "/progress", progressRequest{Key: key, After: after}, func(data []byte) bool {
 		var f effect.ProgressFrame
@@ -197,7 +196,7 @@ func (c *Client) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 }
 
 // RecoverExecution is effect.Recoverer over HTTP: the Worker takes the
-// orphaned record of key back and continues it (RUN-EXE-6). Not part of
+// orphaned record of key back and continues it. Not part of
 // effect.ExecutionPort.
 func (c *Client) RecoverExecution(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/recover", keyRequest{Key: key}, nil)
@@ -210,7 +209,7 @@ func (c *Client) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/dispose", keyRequest{Key: key}, nil)
 }
 
-// Acknowledge is effect.Acknowledger over HTTP (RUN-EXE-13); the Worker
+// Acknowledge is effect.Acknowledger over HTTP; the Worker
 // collects the record on acknowledgement.
 func (c *Client) Acknowledge(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/acknowledge", keyRequest{Key: key}, nil)
@@ -278,7 +277,7 @@ type responseError struct {
 
 // causeOf maps the statuses the Server writes for definitive answers back to
 // their errors: 404 is effect.ErrExecutionNotFound, 410 is
-// effect.ErrOutcomeUnavailable (RUN-EXE-13). Other statuses carry none.
+// effect.ErrOutcomeUnavailable. Other statuses carry none.
 func causeOf(status int) error {
 	switch status {
 	case stdhttp.StatusNotFound:
@@ -364,7 +363,7 @@ func sse(w stdhttp.ResponseWriter) func(v any) bool {
 }
 
 // progress streams an execution's frames as server-sent events
-// (RUN-EXE-12): one `data:` line per frame, flushed as it arrives, until the
+// one `data:` line per frame, flushed as it arrives, until the
 // Worker ends the stream or the client goes away.
 func (s *Server) progress(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req progressRequest
@@ -444,7 +443,7 @@ func (s *Server) dispatch(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	// The Worker has persisted acceptance and observes the backend even
 	// when the backend's dispatch acknowledgement is uncertain. Every other
 	// Dispatch error is a Known answer the client must be able to tell apart
-	// from a lost response (RUN-EXE-3): a definite rejection of the
+	// from a lost response: a definite rejection of the
 	// Assignment is 400 (a conflicting replay or an aborted key 409), a
 	// refusal the Worker itself may lift later is 503. 5xx other than 503
 	// never come from here.

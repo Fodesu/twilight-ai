@@ -1,8 +1,8 @@
-// Package sandbox is the workspace backend of the Worker (CLD-TOL-1): an
+// Package sandbox is the workspace backend of the Worker: an
 // executor.ExecutionBackend that runs workspace-placed tools inside the
 // Environment a Session's Workspace is materialized in. It composes the
 // kernel's in-process executor with an environment manager: every tool
-// call's Assignment carries a workspace target (RUN-LOP-9), the manager
+// call's Assignment carries a workspace target, the manager
 // resolves it to an attached Environment through the workspace Store and
 // the environment Provider, and the tool runs there. Routing by the tool's
 // Placement declaration sends only workspace-placed calls here.
@@ -159,7 +159,7 @@ func (b *Backend) Close(ctx context.Context) error { return b.envs.close(ctx) }
 
 // Snapshot takes a Snapshot of the Workspace's current environment through
 // the provider's Snapshotter capability, records it in the store and makes
-// it the Workspace's latest (APP-WSP-7). A Workspace never materialized has
+// it the Workspace's latest. A Workspace never materialized has
 // nothing to snapshot (ErrNothingToSnapshot); a provider without the
 // capability is environment.ErrUnsupported.
 func (b *Backend) Snapshot(ctx context.Context, id workspace.ID) (workspace.Snapshot, error) {
@@ -244,7 +244,7 @@ func environmentMayBeGone(class string) bool {
 
 // markRematerialized tells the model, on the first successful call after
 // the workspace's environment was rebuilt, that files written since the
-// last snapshot are gone (APP-WSP-7).
+// last snapshot are gone.
 func markRematerialized(out loop.ToolExecutionOutcome) loop.ToolExecutionOutcome {
 	ok, is := out.(loop.ToolExecutionSucceeded)
 	if !is {

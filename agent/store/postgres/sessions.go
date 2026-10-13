@@ -22,7 +22,7 @@ import (
 // is what lets a Session's Turns run on different machines.
 // It is also a session.ProjectionCacheProvider: folded projection
 // states live in the database, so a Session reopened on another replica
-// starts from the last saved state and folds only the tail (EXT-PRJ-3),
+// starts from the last saved state and folds only the tail,
 // instead of the whole history on every activation.
 type SessionStore struct {
 	*session.Ledger

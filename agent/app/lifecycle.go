@@ -20,18 +20,18 @@ import (
 
 // --- session lifecycle, forwarded from the Authority ---------------------------------
 
-// Fork creates a child session from a parent's ledger prefix (OWN-FRK-1).
+// Fork creates a child session from a parent's ledger prefix.
 func (app *Application) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
 	return app.Kernel.Fork(ctx, req)
 }
 
 // ForkBeforeTurn forks a session at the commit before the named turn started
-// (OWN-FRK-2), so the turn's inputs can be regenerated or edited in the child.
+// so the turn's inputs can be regenerated or edited in the child.
 func (app *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	return app.Kernel.ForkBeforeTurn(ctx, parent, turnID, child)
 }
 
-// DeleteSession tombstones a session and reclaims along its path (OWN-FRK-3).
+// DeleteSession tombstones a session and reclaims along its path.
 func (app *Application) DeleteSession(ctx context.Context, sid session.SessionID) error {
 	return app.Owner.DeleteSession(ctx, sid)
 }
@@ -51,12 +51,12 @@ func (app *Application) TurnSurface(ctx context.Context, sid session.SessionID) 
 	return turn.ReadSurface(ctx, app.Kernel.Projections, sid)
 }
 
-// Projection reads any registered projection of a Session (APP-MEM-1).
+// Projection reads any registered projection of a Session.
 func (app *Application) Projection(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
 	return app.Kernel.Projection(ctx, sid, id, v)
 }
 
-// Content materializes the frozen bodies projections name (CHT-MAT-1).
+// Content materializes the frozen bodies projections name.
 func (app *Application) Content() chatlog.ContentResolver { return app.Kernel.Content }
 
 // CreateSession creates the Session.
@@ -69,7 +69,7 @@ func (app *Application) EnsureSession(ctx context.Context, sid session.SessionID
 	return app.Kernel.EnsureSession(ctx, sid)
 }
 
-// Reply is the settled Turn's last assistant text (CHT-MAT-1): the
+// Reply is the settled Turn's last assistant text: the
 // conversation's reply, empty when the Turn produced none. That a reply is
 // the last assistant text is this agent's convention, not a kernel fact.
 func (app *Application) Reply(ctx context.Context, ref turn.TurnRef) (string, error) {
@@ -82,7 +82,7 @@ func (app *Application) Reply(ctx context.Context, ref turn.TurnRef) (string, er
 // without Config.Workspaces.
 var ErrNoWorkspaces = errors.New("app: no workspace layer is configured")
 
-// AllocateWorkspace creates a new Workspace record (APP-WSP-2); binding a
+// AllocateWorkspace creates a new Workspace record; binding a
 // Session to it is a separate command (Session.BindWorkspace or the
 // bind_workspace inbox command).
 func (app *Application) AllocateWorkspace(ctx context.Context, project string, base workspace.RevisionRef) (workspace.Workspace, error) {
@@ -117,7 +117,7 @@ func WithTools(defs ...preset.ToolContract) PresetOption {
 }
 
 // WorkspaceTools freezes the workspace tools' definitions for a preset with
-// their workspace placement (APP-WSP-3); nil selects tools.Default.
+// their workspace placement; nil selects tools.Default.
 func WorkspaceTools(ts []tools.Tool) ([]preset.ToolContract, error) {
 	if ts == nil {
 		ts = tools.Default()

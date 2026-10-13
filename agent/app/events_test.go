@@ -15,7 +15,7 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-//	OBS-1: Submit returns while the model is still blocked, and
+// Submit returns while the model is still blocked, and
 //
 // the Session's event stream carries the Turn's started and completed rows,
 // decoded, in commit order. Send over the same Session keeps its blocking

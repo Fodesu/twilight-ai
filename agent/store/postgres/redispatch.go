@@ -11,7 +11,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/redispatch"
 )
 
-// RedispatchStore is redispatch.Store over the process tables (RUN-EXE-15).
+// RedispatchStore is redispatch.Store over the process tables.
 type RedispatchStore struct{ d *DB }
 
 var _ redispatch.Store = (*RedispatchStore)(nil)

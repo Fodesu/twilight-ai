@@ -15,7 +15,7 @@ import (
 
 // ExecutionStore is executor/store.Store over the executions tables: every
 // write holds the key's advisory lock, so any number of Workers over the
-// database serialize per key (RUN-EXE-6).
+// database serialize per key.
 type ExecutionStore struct{ d *DB }
 
 var _ executionstore.Store = (*ExecutionStore)(nil)

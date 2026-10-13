@@ -79,7 +79,7 @@ func entries() (chatlog.Context, fixedContent) {
 	}}, content
 }
 
-// DEC-CAT-2 / DEC-PMT-1: two authorities resolving the same AgentPreset
+// two authorities resolving the same AgentPreset
 // against the same projection state and frozen bodies build the same prompt;
 // the registry refuses refs it does not hold.
 func TestPromptBuildersResolveDeterministically(t *testing.T) {
@@ -116,13 +116,13 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 		t.Fatal("nil registry resolved")
 	}
 	// A body the frozen store lost fails the build; the projection itself is
-	// unaffected (CHT-MAT-1).
+	// unaffected.
 	if _, err := prompt.NewContextPromptBuilder(testPreset(), sources(state, ledger.Head{}, fixedContent{})).Build(context.Background(), input); !errors.Is(err, frozen.ErrMissing) {
 		t.Fatalf("missing body: err = %v", err)
 	}
 }
 
-// DEC-CAT-1: registration rejects empty refs, nil factories and duplicates.
+// registration rejects empty refs, nil factories and duplicates.
 func TestPromptBuilderRegistration(t *testing.T) {
 	builders, err := decision.NewCatalog(nil)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestPromptBuilderRegistration(t *testing.T) {
 	}
 }
 
-// DEC-INP-1: the v1 input shape round-trips.
+// the v1 input shape round-trips.
 func TestInputContentRoundTrip(t *testing.T) {
 	for _, text := range []string{"hello", "", `quote " and \ slash`, "多字节"} {
 		got, err := input.TextOf(input.Text(text))

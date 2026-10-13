@@ -1,5 +1,5 @@
 // Package input is the reference agent's user input content shape
-// (DEC-INP-1): the canonical JSON a chatlog Input carries and the Run's
+// the canonical JSON a chatlog Input carries and the Run's
 // AgentInput payload names by digest. The kernel stores and digests the
 // content as an opaque value; what is inside it is this agent's decision.
 package input

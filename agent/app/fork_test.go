@@ -19,7 +19,7 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// OWN-FRK-1/2: forking before a Turn yields a child whose conversation ends
+// forking before a Turn yields a child whose conversation ends
 // where the Turn's inputs were still undelivered. Resuming the child
 // regenerates the Turn from the same input; withdrawing the input and sending
 // another edits it. The parent is unchanged either way, and both children
@@ -186,7 +186,7 @@ func lastReply(t *testing.T, h *localagent.Agent, sid session.SessionID) string 
 	return ""
 }
 
-// OWN-FRK-1: a fork point inside an active Turn is refused -- the child
+// a fork point inside an active Turn is refused -- the child
 // would inherit a Turn whose execution belongs to the parent -- and the same
 // parent forks once the Turn has settled.
 func TestForkInsideActiveTurnIsRefused(t *testing.T) {

@@ -166,7 +166,7 @@ func TestLostEnvironmentIsRematerialized(t *testing.T) {
 
 // Snapshot copies the workspace's environment, records the Snapshot with
 // its parent and makes it the workspace's latest; a workspace with no
-// environment has nothing to snapshot (APP-WSP-7).
+// environment has nothing to snapshot.
 func TestSnapshotRecordsTheLatest(t *testing.T) {
 	f := newFixture(t)
 	if _, err := f.backend.Snapshot(f.ctx, f.ws.ID); !errors.Is(err, sandbox.ErrNothingToSnapshot) {

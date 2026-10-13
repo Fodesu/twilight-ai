@@ -35,7 +35,7 @@ type Handle interface {
 }
 
 // Shared is a Handle that also holds the Session ledger and the cas
-// content: a database every replica reaches (CLD-STO-1). A SQLite file is
+// content: a database every replica reaches. A SQLite file is
 // not one; its process keeps those two in filestore directories.
 type Shared interface {
 	Handle

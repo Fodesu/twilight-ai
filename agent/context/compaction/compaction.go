@@ -43,7 +43,7 @@ type Policy struct {
 
 // Retain selects the pair-closed suffix of at most RetainEntries entries;
 // withinWindow reports whether the whole context already fits the window,
-// so compaction has nothing to replace (APP-CKP-1).
+// so compaction has nothing to replace.
 func (p Policy) Retain(entries []chatlog.Entry) (retain []chatlog.EntryDigestPair, withinWindow bool) {
 	n := p.RetainEntries
 	if n <= 0 {
@@ -57,7 +57,7 @@ func (p Policy) Retain(entries []chatlog.Entry) (retain []chatlog.EntryDigestPai
 // tool result pulls in the assistant that issued its call, and an assistant
 // with a call whose result is not in the context yet is always kept, so the
 // retained set stays valid provider input now and when that result lands
-// (APP-CKP-2). The suffix may exceed n by what those rules pull in.
+// The suffix may exceed n by what those rules pull in.
 func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 	if n <= 0 || len(entries) == 0 {
 		return nil
@@ -104,7 +104,7 @@ func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 }
 
 // Summarizer asks a preset's model for the compaction summary. The call is
-// an effect like any other and goes through the effect port (APP-CKP-1):
+// an effect like any other and goes through the effect port:
 // the request is frozen and dispatched as a model Assignment outside any
 // Run, so the Owner holds no model client and a remote executor serves
 // it the same way. A crash while it generates writes nothing.
@@ -117,7 +117,7 @@ type Summarizer struct {
 	Executor effect.ExecutionPort
 	// Watcher is where the summary's one effect is waited for: the Owner's
 	// shared Watcher over Executor, so compaction opens no subscription of
-	// its own (RUN-EXE-17).
+	// its own.
 	Watcher *effect.Watcher
 }
 

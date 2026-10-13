@@ -43,8 +43,8 @@ func (t *targetTool) Execute(_ context.Context, req local.ToolExecutionRequest) 
 
 // appResolver stands for the application's resource layer: it owns the
 // Session → workspace binding and answers the core's TargetResolver seam
-// (APP-TGT-1). Workspace-placed tool effects get the Session's binding;
-// model effects and process-placed tools get none (RUN-LOP-9).
+// Workspace-placed tool effects get the Session's binding;
+// model effects and process-placed tools get none.
 type appResolver struct {
 	mu       sync.Mutex
 	bindings map[session.SessionID]run.TargetRef
@@ -82,8 +82,7 @@ func (r *appResolver) contexts() []loop.EffectContext {
 
 // The core has no target fact of its own: with no resolver every effect has
 // no target; with the application's resolver each tool effect is resolved
-// once, by its own coordinates, and the answer reaches the tool (APP-TGT-1,
-// RUN-LOP-9).
+// once, by its own coordinates, and the answer reaches the tool.
 func TestTargetResolverSeam(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-1"
@@ -154,7 +153,7 @@ func TestTargetResolverSeam(t *testing.T) {
 
 // A conversation fork carries no resource binding: the child's target is
 // whatever the application's fork policy binds for it, never the parent's
-// binding by lineage (APP-TGT-1, TRN-DUR-3).
+// binding by lineage.
 func TestForkChildTargetIsApplicationPolicy(t *testing.T) {
 	ctx := context.Background()
 	resolver := &appResolver{}

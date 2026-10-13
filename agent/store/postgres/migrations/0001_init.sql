@@ -85,7 +85,7 @@ CREATE TABLE workspace_snapshots (
 
 -- parent_segment repeats the header's Parent edge as a foreign key, so a
 -- segment a fork still reaches cannot be removed and a fork cannot be
--- created on a parent that is gone (SES-GC-4): the database, not a
+-- created on a parent that is gone: the database, not a
 -- process-wide lock, arbitrates Create against Collect across replicas.
 CREATE TABLE session_segments (
 	id             TEXT PRIMARY KEY,
@@ -101,7 +101,7 @@ CREATE TABLE session_commits (
 	PRIMARY KEY (segment, seq),
 	UNIQUE (segment, commit_id)
 );
--- The CommitIndex's stream counts (SES-REP-3/5): one row per commit per
+-- The CommitIndex's stream counts: one row per commit per
 -- stream, written with the commit, so StreamHead is a sum over one stream's
 -- rows and Index derives its entries without decoding a body.
 CREATE TABLE session_commit_streams (
@@ -113,7 +113,7 @@ CREATE TABLE session_commit_streams (
 	PRIMARY KEY (segment, seq, domain, stream_id)
 );
 CREATE INDEX session_commit_streams_by_stream ON session_commit_streams (segment, domain, stream_id, seq);
--- A deleted Session keeps its row with deleted set (SES-GC-1): the id is
+-- A deleted Session keeps its row with deleted set: the id is
 -- never reused. tip is not a foreign key: a tombstone keeps naming a
 -- segment Collect may remove; RemoveSegment checks live roots itself.
 CREATE TABLE session_roots (
@@ -128,7 +128,7 @@ CREATE TABLE session_roots (
 	deleted     BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX session_roots_owned ON session_roots (owned);
--- The activation scan's read (APP-ACT-3): held leases by expiry.
+-- The activation scan's read: held leases by expiry.
 CREATE INDEX session_roots_expiry ON session_roots (lease_until) WHERE owned;
 -- A root's path is the reference relation: one span per segment that
 -- session retains. through_seq NULL is an open end. path_by_segment
@@ -153,7 +153,7 @@ CREATE TABLE session_path_spans (
 CREATE INDEX path_by_segment
 	ON session_path_spans (segment, through_seq DESC NULLS FIRST);
 
--- Folded projection states (EXT-PRJ-3), so a Session reopened on another
+-- Folded projection states, so a Session reopened on another
 -- replica folds only the tail.
 CREATE TABLE projection_cache (
 	session    TEXT   NOT NULL,

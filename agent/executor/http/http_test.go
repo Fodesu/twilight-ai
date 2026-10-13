@@ -41,7 +41,7 @@ func (t responseTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	}, nil
 }
 
-// RUN-EXE-3: 400 and 409 are the Server's own Known refusals, 503 is its
+// 400 and 409 are the Server's own Known refusals, 503 is its
 // retryable refusal, any other 4xx is an intermediary's refusal and
 // retryable, any other 5xx or a lost response is an unknown outcome.
 func TestDispatchResponseClassification(t *testing.T) {

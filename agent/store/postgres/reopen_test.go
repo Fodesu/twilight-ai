@@ -62,7 +62,7 @@ func counterRegistry(t testing.TB, c *foldCounter) *module.Registry {
 // A Session reopened by a second handle over the database (another
 // replica) starts its projections from the saved state and folds only the
 // commits past it: the cost of an activation is the tail, not the history
-// (EXT-PRJ-3, APP-ACT). The saved state is dropped with the root.
+// The saved state is dropped with the root.
 func TestReopenFoldsOnlyTheTail(t *testing.T) {
 	ctx := context.Background()
 	dsn := postgrestest.Schema(t)

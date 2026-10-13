@@ -62,7 +62,7 @@ func (echoTool) Execute(_ context.Context, req local.ToolExecutionRequest) loop.
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }
 
-// APP-CKP-1: with an automatic policy, a Turn of several tool steps is
+// with an automatic policy, a Turn of several tool steps is
 // compacted between its steps: each model request after the threshold
 // starts from a compaction's summary, the tool pairs stay closed, and the
 // Turn settles normally.

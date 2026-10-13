@@ -106,7 +106,7 @@ func (c *Client) Wake(ctx context.Context, sid session.SessionID) (bool, error) 
 	return out.Open, err
 }
 
-// Enqueue leaves a command in the Session's inbox (APP-INB-1).
+// Enqueue leaves a command in the Session's inbox.
 func (c *Client) Enqueue(ctx context.Context, sid session.SessionID, cmd inbox.Command) (inbox.Entry, error) {
 	var out inbox.Entry
 	err := c.do(ctx, stdhttp.MethodPost, sessionPath(sid, "/commands"), nil, cmd, &out)

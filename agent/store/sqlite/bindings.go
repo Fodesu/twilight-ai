@@ -9,7 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact"
 )
 
-// BindingStore is artifact.BindingStore over the bindings table (ART-BND-1):
+// BindingStore is artifact.BindingStore over the bindings table:
 // a BindingID maps to exactly one immutable Binding, and recreating it with a
 // different digest is a conflict.
 type BindingStore struct{ db *sql.DB }

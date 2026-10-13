@@ -1,4 +1,4 @@
-// Package worker composes the executor worker component (CLD-EXE-1): an
+// Package worker composes the executor worker component: an
 // executor.Worker over the execution record store, routing model calls to
 // the model backend and workspace-placed tool calls to the tool backend
 // over the Backend protocol, exposed through the ExecutionPort's HTTP
@@ -37,7 +37,7 @@ type Config struct {
 	// case such calls have no route and are refused at Dispatch.
 	Backends Backends `json:"backends"`
 	// Retry is the re-dispatch budget after a Known retryable failure
-	// (RUN-EXE-11); zero disables retries.
+	// zero disables retries.
 	Retry Retry `json:"retry,omitempty"`
 }
 
@@ -110,7 +110,7 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) {
 }
 
 // Routes are the Worker routes to the configured backends: model calls by
-// kind, tool calls by their workspace placement (RUN-LOP-9).
+// kind, tool calls by their workspace placement.
 func Routes(b Backends) []executor.Route {
 	var routes []executor.Route
 	if b.Model != "" {
@@ -126,7 +126,7 @@ func Routes(b Backends) []executor.Route {
 func (c *Component) Handler() stdhttp.Handler { return c.server.Handler() }
 
 // Close stops the Worker; its records keep their leases until they expire
-// and the next incarnation adopts them (RUN-EXE-8).
+// and the next incarnation adopts them.
 func (c *Component) Close(context.Context) error {
 	c.Worker.Close()
 	var first error

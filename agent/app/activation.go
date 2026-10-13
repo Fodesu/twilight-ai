@@ -13,7 +13,7 @@ import (
 )
 
 // Activation is the ownership model under which a Session is held for
-// active work only (APP-ACT-1): a command that reaches this process opens
+// active work only: a command that reaches this process opens
 // the Session here when no live owner holds it, the Session is driven while
 // there is work, and once it has been quiescent for IdleRelease its
 // ownership is released. Two Turns of one Session may then run on two
@@ -30,7 +30,7 @@ type Activation struct {
 	// released; zero keeps an activated Session open until Close.
 	IdleRelease time.Duration
 	// Scan is the period at which this process looks for Sessions that
-	// need an owner (APP-ACT-3): pending inboxes and expired leases. Zero
+	// need an owner: pending inboxes and expired leases. Zero
 	// disables the scan; activation then happens only through Enqueue.
 	Scan time.Duration
 	// ScanLimit bounds each scan's candidates from each source; zero
@@ -51,7 +51,7 @@ var ErrNoActivation = errors.New("app: no activation is configured")
 const activationTimeout = time.Minute
 
 // Activate opens the Session for work under the Activation options, or
-// wakes it when this process already holds it (APP-ACT-1). Another live
+// wakes it when this process already holds it. Another live
 // owner is session.ErrOwned: the command is durable and that owner applies
 // it. Concurrent activations of one Session in this process coalesce.
 func (app *Application) Activate(ctx context.Context, sid session.SessionID) (*Session, error) {
@@ -144,7 +144,7 @@ func (app *Application) scanLoop() {
 }
 
 // scan activates the Sessions that need an owner and have none here
-// (APP-ACT-3): those with pending commands (CLD-CMD-4) and those whose
+// those with pending commands and those whose
 // lease has expired, which a dead owner left. Open arbitrates between
 // replicas: a live foreign lease is ErrOwned and skipped.
 func (app *Application) scan(ctx context.Context) {
@@ -180,7 +180,7 @@ func (app *Application) scan(ctx context.Context) {
 	}
 }
 
-// startIdleRelease runs the Session's quiescence watch (APP-ACT-2) when
+// startIdleRelease runs the Session's quiescence watch when
 // the activation asks for one.
 func (s *Session) startIdleRelease() {
 	act := s.app.activation

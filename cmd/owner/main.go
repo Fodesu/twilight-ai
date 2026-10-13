@@ -1,4 +1,4 @@
-// Command owner is the owner service component (CLD-OWN-1).
+// Command owner is the owner service component.
 package main
 
 import (

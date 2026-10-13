@@ -2,7 +2,7 @@
 
 > 这里是 legacy 的单机多进程服务拓扑验证。k3d 部署使用 Helm chart：[`../helm/twilight`](../helm/twilight)。
 
-四个二进制各读一个 JSON 文档（`agent/config`，不读环境变量），共享 `./var` 下的文件：owner 与 tool-backend 共享 `owner.db` 的 workspaces 表，worker 独占 `executions.db`，Session ledger 与 CAS 正文在 filestore 目录。这只用于单机验证。跨进程与跨 Pod 共享时把各文档的 `{"sqlite": ...}` 换成 `{"postgres": {"dsn": "postgres://..."}}`（或 `dsnFile` 指向含 DSN 的文件）；owner 配置 Postgres 后不再需要 `sessions`/`content` 两个目录，Session ledger 与 CAS 正文都在该数据库（CLD-STO-1）。
+四个二进制各读一个 JSON 文档（`agent/config`，不读环境变量），共享 `./var` 下的文件：owner 与 tool-backend 共享 `owner.db` 的 workspaces 表，worker 独占 `executions.db`，Session ledger 与 CAS 正文在 filestore 目录。这只用于单机验证。跨进程与跨 Pod 共享时把各文档的 `{"sqlite":...}` 换成 `{"postgres": {"dsn": "postgres://..."}}`（或 `dsnFile` 指向含 DSN 的文件）；owner 配置 Postgres 后不再需要 `sessions`/`content` 两个目录，Session ledger 与 CAS 正文都在该数据库。
 
 准备：
 
@@ -20,7 +20,7 @@ go run ./cmd/worker        -config deploy/local/worker.json
 go run ./cmd/owner         -config deploy/local/owner.json
 ```
 
-owner 配置了 `activation`（APP-ACT）：命令到达即打开 Session，Session 静止 `idleRelease` 后释放所有权，`scan` 周期拾取无 owner 的 pending 命令与过期租约。下面的 `open` 一步因此可以省略；多副本 owner 共享 Postgres 时，同一 Session 的相邻 Turn 可以落在不同副本。
+owner 配置了 `activation`：命令到达即打开 Session，Session 静止 `idleRelease` 后释放所有权，`scan` 周期拾取无 owner 的 pending 命令与过期租约。下面的 `open` 一步因此可以省略；多副本 owner 共享 Postgres 时，同一 Session 的相邻 Turn 可以落在不同副本。
 
 驱动一轮对话（owner 的命令面，`agent/app/http`）：
 

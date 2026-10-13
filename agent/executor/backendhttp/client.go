@@ -20,7 +20,7 @@ import (
 
 // Client is executor.ExecutionBackend and notice.Source over a Server. It
 // keeps no state: Outcome is one read of /outcome, Settled one stream of
-// notices, and the Worker that drives it owns the waiting (RUN-EXE-17).
+// notices, and the Worker that drives it owns the waiting.
 type Client struct {
 	BaseURL string
 	HTTP    *stdhttp.Client
@@ -82,7 +82,7 @@ func (c *Client) Restart(ctx context.Context, previous string, a effect.Assignme
 }
 
 // Attach forwards to the Server. A transport failure is an error, never an
-// observation: the Worker keeps the lease and asks again (RUN-EXE-3).
+// observation: the Worker keeps the lease and asks again.
 func (c *Client) Attach(ctx context.Context, ref string) (effect.Attachment, error) {
 	var out effect.Attachment
 	if _, err := c.post(ctx, "/attach", refRequest{Ref: ref}, &out); err != nil {
@@ -119,7 +119,7 @@ func (c *Client) Cancel(ctx context.Context, ref string) error {
 }
 
 // Progress is effect.ProgressPort over the Server's /progress, so a Worker
-// routing to this Client relays the backend's frames (RUN-EXE-12).
+// routing to this Client relays the backend's frames.
 func (c *Client) Progress(ctx context.Context, key effect.AssignmentKey, after uint64, fn func(effect.ProgressFrame) bool) error {
 	return c.streamLines(ctx, "/progress", progressRequest{Key: key, After: after}, func(data []byte) bool {
 		var f effect.ProgressFrame

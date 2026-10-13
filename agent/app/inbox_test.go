@@ -78,7 +78,7 @@ func await(t *testing.T, h *localagent.Agent, sid session.SessionID, id string) 
 
 // A submit left in the inbox before anyone owns the Session is applied by
 // the owner that opens it; the same command enqueued again answers the
-// stored entry and starts nothing (APP-INB-1, APP-INB-3).
+// stored entry and starts nothing.
 func TestInboxSubmitAppliedOnOpen(t *testing.T) {
 	ctx := context.Background()
 	store := sqlitetest.Open(t).Inbox()
@@ -124,7 +124,7 @@ func TestInboxSubmitAppliedOnOpen(t *testing.T) {
 // Commands enqueued while this process holds the Session are applied on
 // the wake-up, without waiting for the poll: a stop of the active Turn
 // settles it; a stop with no active Turn, a stop naming another Turn and
-// an unknown kind resolve rejected (APP-INB-2).
+// an unknown kind resolve rejected.
 func TestInboxStopAndRejections(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
@@ -171,7 +171,7 @@ func TestInboxStopAndRejections(t *testing.T) {
 
 // The owner commits a command's effect and fails before resolving it: the
 // command stays pending, the next pass finds the effect already committed
-// and resolves it applied, and the Session saw the input once (APP-INB-2).
+// and resolves it applied, and the Session saw the input once.
 func TestInboxReplayAfterCrashBeforeResolve(t *testing.T) {
 	ctx := context.Background()
 	store := &resolveFails{Store: sqlitetest.Open(t).Inbox(), armed: true}

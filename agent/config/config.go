@@ -1,5 +1,5 @@
 // Package config loads the typed configuration documents of the reference
-// agent's components (CLD-CMP): one JSON document per process, read from a
+// agent's components: one JSON document per process, read from a
 // file the deployment mounts, never from the process environment. Unknown
 // fields and trailing content are errors, so a mistyped key cannot pass
 // silently as a default.
@@ -100,7 +100,7 @@ func (i Identity) Resolve() (string, error) {
 	}
 }
 
-// Store names one durable database (CLD-STO): a SQLite file for a single
+// Store names one durable database: a SQLite file for a single
 // machine, or a Postgres database every replica shares. Exactly one is
 // set.
 type Store struct {

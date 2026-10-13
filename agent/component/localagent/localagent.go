@@ -38,17 +38,17 @@ type Config struct {
 	Models map[run.ModelRef]local.ModelInvoker
 	Tools  []local.ExecutableTool
 
-	// Executions is the execution record store of the Worker (RUN-EXE-8):
+	// Executions is the execution record store of the Worker:
 	// required whenever a Worker is composed (always with a LocalExecutor;
 	// with a Port when the Sandbox adds a route). Like every store it is
-	// durable (OWN-PRT-3); a record that did not survive a restart would
+	// durable; a record that did not survive a restart would
 	// let the Owner dispose an execution that is still running.
 	Executions executionstore.Store
 	// Worker tunes the composed Worker (lease, id, reconcile loop, clock).
 	Worker executor.WorkerOptions
 
 	// Sandbox, when set, composes the workspace sandbox backend beside the
-	// Worker and serves the workspace-placed tool calls (APP-WSP-3).
+	// Worker and serves the workspace-placed tool calls.
 	Sandbox *SandboxConfig
 }
 
@@ -84,7 +84,6 @@ type Agent struct {
 // they apply, then the application over the decided effect port.
 func Compose(c Config) (*Agent, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
 	// One progress hub serves the Worker and every backend it routes to
-	// (RUN-EXE-12).
 	if c.Worker.Progress == nil {
 		c.Worker.Progress = executor.NewProgressHub(0)
 	}
@@ -122,7 +121,7 @@ func Compose(c Config) (*Agent, error) { //nolint:gocritic // hugeParam: Config 
 		c.Execution.Executor = port
 	}
 	if c.Execution.Executor == nil {
-		// A Worker owns the execution records (RUN-EXE-8): the local
+		// A Worker owns the execution records: the local
 		// executor always, a Port with routes beside it.
 		if c.Executions == nil {
 			ag.closeBackends()
@@ -158,7 +157,7 @@ func (ag *Agent) closeBackends() {
 }
 
 // Close closes the application, then the Worker and the sandbox backend:
-// the drives may still be settling outcomes through them (RUN-EXE-8).
+// the drives may still be settling outcomes through them.
 func (ag *Agent) Close(ctx context.Context) error {
 	err := ag.Application.Close(ctx)
 	if ag.Worker != nil {

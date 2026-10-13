@@ -1,7 +1,7 @@
 // Package toolbackend composes the tool sandbox backend component
-// (CLD-TOL-1): the workspace backend over a workspace store and an
+// the workspace backend over a workspace store and an
 // environment provider, exposed through the Backend protocol beside the
-// workspace control face (APP-WSP-7).
+// workspace control face.
 package toolbackend
 
 import (

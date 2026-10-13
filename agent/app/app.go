@@ -60,34 +60,34 @@ type Config struct {
 	Warn func(error)
 	// Spawn enables the subagent tool (SPN); nil leaves it unavailable.
 	Spawn *spawn.Options
-	// Inbox is the durable command inbox of the Sessions (APP-INB-1): the
+	// Inbox is the durable command inbox of the Sessions: the
 	// way a caller that does not hold a Session reaches its owner. Nil
 	// leaves Enqueue and ApplyPending unavailable (ErrNoInbox); like every
-	// store it is durable (OWN-PRT-3).
+	// store it is durable.
 	Inbox inbox.Store
 	// Activation holds Sessions for active work only and releases them when
-	// quiescent (APP-ACT); nil keeps every Session open until Close. It
+	// quiescent; nil keeps every Session open until Close. It
 	// requires Inbox.
 	Activation *Activation
-	// Workspaces enables the workspace layer (APP-WSP): the Session binding
+	// Workspaces enables the workspace layer: the Session binding
 	// module, its target resolver, the workspace backend of the composed
 	// Worker and the prompt's workspace preface. Nil leaves every
 	// workspace-placed tool call without a target.
 	Workspaces *WorkspaceConfig
 }
 
-// WorkspaceConfig composes the workspace layer's product side (APP-WSP-3).
+// WorkspaceConfig composes the workspace layer's product side.
 type WorkspaceConfig struct {
 	// Store holds the Workspace records and RuntimeBindings (required).
 	Store workspace.Store
-	// Snapshots takes the Snapshots (APP-WSP-7): the composition root that
+	// Snapshots takes the Snapshots: the composition root that
 	// runs the sandbox backend composes it and leaves this nil; a process
 	// without the backend (the cloud owner) hands in the tool backend's
 	// client (agent/workspace/http.Client).
 	Snapshots workspace.Snapshotter
 	// SnapshotAfterTurn takes a Snapshot of a Session's bound Workspace
 	// after every quiescent settlement and records it on the
-	// Session (APP-WSP-7), so a fork at a Turn boundary can restore the
+	// Session, so a fork at a Turn boundary can restore the
 	// files as they were. It needs Snapshots.
 	SnapshotAfterTurn bool
 }
@@ -125,7 +125,7 @@ type Application struct {
 	// bindings writes the Session's workspace binding facts.
 	bindings workspace.Commands
 	// resolved is closed and replaced at each inbox resolution of this
-	// process; AwaitCommand waits on it (APP-INB-1).
+	// process; AwaitCommand waits on it.
 	resolvedMu sync.Mutex
 	resolved   chan struct{}
 
@@ -133,11 +133,10 @@ type Application struct {
 	refs map[preset.PresetID]preset.PresetRef
 	// sessions are the Sessions this process has open, by id: the Planner
 	// finds a Session's compaction policy here while its Run is driven
-	// (APP-CKP-1).
 	sessions map[session.SessionID]*Session
 }
 
-// BeforePrepare is driver.Planner (RUN-LOP-10, APP-CKP-1): between two steps
+// BeforePrepare is driver.Planner: between two steps
 // of a Run, while it is Open, the Session's automatic compaction policy runs
 // against the context the next model request will read. Failures reach
 // CompactWarn and never stop the drive.
@@ -153,7 +152,7 @@ func (app *Application) BeforePrepare(ctx context.Context, w writer.Writer, _ de
 }
 
 // Opened returns the Session this process holds open under sid, if any: the
-// command face wakes and closes Sessions through it (APP-INB-3).
+// command face wakes and closes Sessions through it.
 func (app *Application) Opened(sid session.SessionID) (*Session, bool) {
 	app.mu.RLock()
 	defer app.mu.RUnlock()
@@ -212,14 +211,13 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 		act := *c.Activation
 		app.activation = &act
 	}
-	// The subagent tool is answered by a Responder on the Driver (SPN-1,
-	// DRV-4), not executed: it drives children through the Authority, so it
+	// The subagent tool is answered by a Responder on the Driver, not executed: it drives children through the Authority, so it
 	// is bound once the Owner exists. No effect route is involved.
 	if c.Spawn != nil {
 		app.spawn = spawn.NewResponder(*c.Spawn)
 	}
-	// The workspace layer (APP-WSP-3): the binding module joins the
-	// registry, the resolver answers RUN-LOP-9 from the binding projection,
+	// The workspace layer: the binding module joins the
+	// registry, the resolver derives effect targets from the binding projection,
 	// and the prompt gets its workspace preface.
 	var resolver *workspace.Resolver
 	if c.Workspaces != nil {
@@ -248,15 +246,15 @@ func New(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Confi
 	}
 	app.Kernel = kernel
 	// The subagent tool waits for an external response the Responder gives
-	// (SPN-1, DRV-4); the Responder opens children through the Owner, which
+	// the Responder opens children through the Owner, which
 	// it is bound to once the Owner exists, before any Respond can run.
 	var responders map[run.ToolRef]driver.Responder
 	if app.spawn != nil {
 		responders = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
 	}
 	// The Sessions' compaction policy runs between the steps of a Turn
-	// (APP-CKP-1, RUN-LOP-10); provisional observations of effects in
-	// flight reach the transient stream (OBS-1).
+	// provisional observations of effects in
+	// flight reach the transient stream.
 	c.Execution.Planner = app
 	c.Execution.Responders = responders
 	c.Execution.Fail = app.fail
@@ -307,7 +305,7 @@ func (app *Application) rollback() {
 
 // fail reports a failure of the application's own background work (a
 // settlement that errored, a snapshot that failed) to Warn and, as an
-// Event, to the Session's subscribers (OBS-1). The Execution's components
+// Event, to the Session's subscribers. The Execution's components
 // report through their own Fail callback, which NewExecution wires to the
 // same stream.
 func (app *Application) fail(sid session.SessionID, err error) {
@@ -339,7 +337,7 @@ func (app *Application) PresetRef(id preset.PresetID) (preset.PresetRef, error) 
 }
 
 // Events subscribes to one Session's observation stream from this moment
-// on (OBS-1): the Kernel's committed stream merged with the Execution's
+// on: the Kernel's committed stream merged with the Execution's
 // transient progress and failures. Committed events keep their commit
 // order; transient items may interleave and may be lost.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
@@ -427,7 +425,7 @@ func (app *Application) Close(ctx context.Context) error {
 		err = werr
 	}
 	// Ownership is released first, then the execution side, then the
-	// Writers (RUN-EXE-8, SPN-4). Records keep their leases until they
+	// Writers. Records keep their leases until they
 	// expire and the next incarnation adopts them. The effect port and the
 	// deployment components around it close at the outer root, after this.
 	if oerr := app.Owner.Close(ctx); oerr != nil && err == nil {
@@ -444,8 +442,8 @@ func (app *Application) Close(ctx context.Context) error {
 	return err
 }
 
-// Event is one item of a Session's event stream (OBS-1).
+// Event is one item of a Session's event stream.
 type Event = observe.Event
 
-// ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1).
+// ForkRequest forks a Session at one commit of its ledger.
 type ForkRequest = sessionkernel.ForkRequest

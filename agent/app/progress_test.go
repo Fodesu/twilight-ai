@@ -38,7 +38,7 @@ func (m streamingModel) Stream(context.Context, sdk.Request) (sdk.ModelStream, e
 	}}, nil
 }
 
-// RUN-EXE-12, OBS-1: a model's text deltas produced by the executor reach
+// a model's text deltas produced by the executor reach
 // the Session's event stream as transient progress before the committed
 // step lands on the same stream.
 func TestModelDeltasReachTheEventStream(t *testing.T) {

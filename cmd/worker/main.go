@@ -1,4 +1,4 @@
-// Command worker is the executor worker component (CLD-EXE-1).
+// Command worker is the executor worker component.
 package main
 
 import (
