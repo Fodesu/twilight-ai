@@ -54,7 +54,12 @@ type Watcher struct {
 }
 
 // DefaultWatchPoll is the Watcher's read interval when no notice arrives.
-const DefaultWatchPoll = 30 * time.Second
+// Settlement notices are an optimization rather than the authority, and a
+// distributed ExecutionPort may route a subscription to a different
+// process-local notice hub than the one that settled the key. Keep the
+// fallback bounded so a missed notice cannot hold a Turn for a lease-sized
+// interval.
+const DefaultWatchPoll = time.Second
 
 // DefaultWatchReconnect is the Watcher's pause before reopening its stream.
 const DefaultWatchReconnect = time.Second

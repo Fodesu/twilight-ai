@@ -489,12 +489,18 @@ func (w *Worker) settlement(key effect.AssignmentKey, outcome *protocol.OutcomeE
 // notice every Settlements subscriber waits for. It follows the commit; a
 // subscriber that reads before the notice arrives finds the Outcome anyway.
 func (w *Worker) settled(key effect.AssignmentKey) {
+	if _, durable := w.store.(executionstore.SettlementFeed); durable {
+		return
+	}
 	w.settlements.Record(key)
 }
 
-// Settlements is effect.SettlementPort: the settlements this Worker wrote,
-// from its hub.
+// Settlements is effect.SettlementPort. Shared stores provide a durable feed;
+// local stores retain the in-process hub used by single-process deployments.
 func (w *Worker) Settlements(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
+	if feed, durable := w.store.(executionstore.SettlementFeed); durable {
+		return feed.SettlementEvents(ctx, epoch, after, fn)
+	}
 	return w.settlements.Settlements(ctx, epoch, after, fn)
 }
 
