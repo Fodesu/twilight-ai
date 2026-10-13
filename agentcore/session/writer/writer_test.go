@@ -131,7 +131,7 @@ func notes(t *testing.T, w Writer) []string {
 	return state.(noteState).Notes
 }
 
-// EXT-WRT-1/2: serial commits, in-memory idempotency, rebuild on reopen,
+// serial commits, in-memory idempotency, rebuild on reopen,
 // projections visible through View and Projections.
 func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	f := newFixture(t)
@@ -149,7 +149,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 		t.Fatalf("replay = %+v", replay)
 	}
 	// The CommitID names the operation: a second group under it is the
-	// same operation whatever it carries (EXT-WRT-2).
+	// same operation whatever it carries.
 	if again, _ := w.Commit(ctx, noteGroup("c1", "changed")); again.Outcome != CommitAlreadyApplied || again.Commit.Seq != res.Commit.Seq {
 		t.Fatalf("replay with other content = %+v, want already applied", again)
 	}
@@ -215,7 +215,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	}
 }
 
-// EXT-WRT-4: a superseded writer fails closed.
+// a superseded writer fails closed.
 func TestWriterOwnershipLost(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -247,7 +247,7 @@ func TestWriterOwnershipLost(t *testing.T) {
 	}
 }
 
-// EXT-PRJ-2: unknown events in scope fail the fold unless the module marked
+// unknown events in scope fail the fold unless the module marked
 // the type Ignorable; unknown events of other modules are skipped. The
 // registry is the only authority on Ignorable: an in-scope event whose type
 // is not registered at all cannot prove it is ignorable and fails the fold.
@@ -289,9 +289,9 @@ func TestProjectionUnknownEvents(t *testing.T) {
 	}
 }
 
-// EXT-WRT-3 and ART-RET-3: claims are Active before the commit exists; an
+// claims are Active before the commit exists; an
 // orphan claim is released on the next OpenWriter; a live claim survives.
-// EXT-REF-1/2, EXT-WRT-3: a missing resolver or ledger is a configuration
+// a missing resolver or ledger is a configuration
 // error, so it must surface as an error rather than as a CommitInvalid outcome
 // that reads like a verdict on the commit. It must not be rejected earlier
 // either: an event type declaring Bindings only means its payloads may carry
@@ -368,7 +368,7 @@ func TestCommitWithoutAdmission(t *testing.T) {
 	}
 }
 
-// EXT-WRT-1: the Writer is the single serialization point. Concurrent callers
+// the Writer is the single serialization point. Concurrent callers
 // must each see the state left by the previous one, so every commit applies
 // exactly once and the stream stays contiguous.
 func TestWriterSerializesConcurrentCommits(t *testing.T) {
@@ -418,7 +418,7 @@ func TestWriterSerializesConcurrentCommits(t *testing.T) {
 	}
 }
 
-// EXT-REF-1/2: the extractor returns every reference in appearance order,
+// the extractor returns every reference in appearance order,
 // cardinality and scheme/durability admission bound what may commit, and a
 // rejected commit writes nothing.
 func TestBindingAdmission(t *testing.T) {
@@ -558,7 +558,7 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 	}
 }
 
-// EXT-PRJ-3/4: cache entry plus tail equals the full fold; a stale or missing
+// cache entry plus tail equals the full fold; a stale or missing
 // entry falls back to a full fold; Writer and Store readers agree.
 func TestProjectionCache(t *testing.T) {
 	f := newFixture(t)

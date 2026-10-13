@@ -5,10 +5,10 @@ import (
 )
 
 // AgentCommand is the intent submitted through Runtime.Commit for an existing
-// Run. Accepting one command constitutes one transition (RUN-MCH-3). The
+// Run. Accepting one command constitutes one transition. The
 // interface is sealed: only the variants below exist. Commands may carry
 // transient content bodies (frozen request, model result, tool output); the
-// facts they produce keep only digests (RUN-WIR-4).
+// facts they produce keep only digests.
 type AgentCommand interface{ agentCommand() }
 
 // AgentInput is a queue-safe input: a stable ID plus an immutable payload.
@@ -16,7 +16,7 @@ type AgentCommand interface{ agentCommand() }
 // AgentInput is one input as the Run knows it: its identity and the digest of
 // its content. The content itself lives with the module that owns inputs
 // (the chatlog's input_submitted); the Run only records that this input
-// entered this logical run (RUN-WIR-4), so an input has one body in the
+// entered this logical run, so an input has one body in the
 // ledger and editing or forking it never touches a second copy.
 type AgentInput struct {
 	ID     InputID `json:"id"`
@@ -68,7 +68,7 @@ func (StartModelExecution) agentCommand() {}
 // returns to Open and the next Prepare plans from the current state (the
 // frozen request is a transfer copy for the Executor, not a replay target).
 // Sources: the Loop when a dispatched effect ends without a result, or the
-// recovery disposition of a new owner (RUN-CMT-7).
+// recovery disposition of a new owner.
 type RecoverModelExecution struct {
 	StepID StepID `json:"stepId"`
 	// Effect is the model effect being recovered: the one the step's
@@ -172,7 +172,7 @@ func (SubmitToolFailure) agentCommand() {}
 
 // DeclineToolCall fails one Pending call before its tool effect is
 // requested: the pre-start validation found the call cannot be dispatched
-// (RUN-EXE-5). It records ToolCallFailed(Known) with no ToolCallStarted, so
+// It records ToolCallFailed(Known) with no ToolCallStarted, so
 // the call has no effect and no start barrier is crossed. A call is declined
 // at most once, so the command's identity is the call's coordinates
 // (DeriveDeclineCommandID) and needs no content.
@@ -223,7 +223,7 @@ type SubmitToolResponse struct {
 func (SubmitToolResponse) agentCommand() {}
 
 // CancelRun stops a non-terminal Run as a business cancellation. Hosts must
-// commit this before cancelling the Loop's context (RUN-LOP-5).
+// commit this before cancelling the Loop's context.
 type CancelRun struct {
 	Reason RunReason `json:"reason,omitempty"`
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
-// RUN-EXE-12: the hub stamps generation and sequence, replays after a
+// the hub stamps generation and sequence, replays after a
 // sequence, voids a generation with a reset, closes with an end, and bounds
 // what it keeps.
 func TestProgressHub(t *testing.T) {

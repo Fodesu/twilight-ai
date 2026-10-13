@@ -31,7 +31,7 @@ func (withdrawnV1) Decode(w jsonstable.Value) (any, error) {
 	return Event{RunID: body.RunID, Fact: run.ModelStepWithdrawn{StepID: body.Step}}, nil
 }
 
-// EXT-REG-2: a fact type keeps the codec of every payload version it ever
+// a fact type keeps the codec of every payload version it ever
 // wrote. With a superseded version in its history the type encodes at the
 // next version and still decodes the old wire to the current fact.
 func TestFactCodecHistoryDecodesEveryVersion(t *testing.T) {

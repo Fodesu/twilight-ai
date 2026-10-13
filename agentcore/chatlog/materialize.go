@@ -11,8 +11,8 @@ import (
 )
 
 // ContentResolver resolves the frozen bodies structural entries name by
-// digest (RUN-WIR-4). run/sessionstore.Content is the first-party
-// implementation; the projections never call it (CHT-MAT-1).
+// digest. run/sessionstore.Content is the first-party
+// implementation; the projections never call it.
 type ContentResolver interface {
 	ModelResult(context.Context, jsonstable.Digest) (model.ModelResult, error)
 	ToolOutput(context.Context, jsonstable.Digest) (run.CanonicalJSON, error)
@@ -40,7 +40,7 @@ type Materialized struct {
 
 // Text is the rendering of the entry's main content: the assistant text, the
 // tool output or failure, the summary text. Inputs are rendered by the layer
-// that knows their payload shape (DEC-INP-1).
+// that knows their payload shape.
 func (m *Materialized) Text() string {
 	switch m.Entry.Kind {
 	case EntryAssistant:
@@ -59,7 +59,7 @@ func (m *Materialized) Text() string {
 }
 
 // Materializer resolves entries through a ContentResolver, reading each
-// digest at most once per Materializer (CHT-MAT-1).
+// digest at most once per Materializer.
 type Materializer struct {
 	content ContentResolver
 	results map[jsonstable.Digest]*model.ModelResult
@@ -160,7 +160,7 @@ func (m *Materializer) output(ctx context.Context, r *ToolResult) (*run.Canonica
 
 // pairCalls zips the Run-assigned CallIDs with the result's ToolCalls. A
 // result issued without a ToolStepOpened in the entry (no CallIDs) derives
-// them the way the protocol does (RUN-WIR-4 identity table).
+// them the way the protocol does (identity table).
 func pairCalls(a *Assistant, result *model.ModelResult) ([]Call, error) {
 	if len(result.ToolCalls) == 0 {
 		return nil, nil

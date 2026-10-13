@@ -6,7 +6,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 )
 
-// TestDerivedIdentityGolden freezes every derived identity of RUN-WIR-4 for
+// TestDerivedIdentityGolden freezes every derived identity for
 // one fixed input set. A drift with a non-empty want means the derivation
 // preimage changed: intentional protocol changes must update this fixture and
 // agent-run.md; anything else is accidental drift.

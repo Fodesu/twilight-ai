@@ -26,7 +26,7 @@ const (
 // Session is the Run's Scope (its Session, in Twilight) and part of the
 // identity, so a shared executor cannot collide two stores that happen to use
 // the same Run and effect identifiers. Effect is the Run's own name for the
-// effect (RUN-WIR-1) and the only handle the two planes share; which step or
+// effect and the only handle the two planes share; which step or
 // call requested it travels in the Assignment for the backend's use.
 type AssignmentKey struct {
 	Session run.Scope
@@ -58,10 +58,10 @@ type ToolAssignment struct {
 	Policy           run.ResponsePolicy
 	// Replay is the tool's declared replay policy, copied from the frozen
 	// call: the Worker that adopts a lost execution decides from it alone
-	// (RUN-EXE-9). Omitted on the wire when unknown.
+	// Omitted on the wire when unknown.
 	Replay run.ReplayPolicy `json:",omitempty"`
 	// Placement is the tool's declared placement, copied from the frozen
-	// call: the Worker's routes select the backend by it (RUN-LOP-9).
+	// call: the Worker's routes select the backend by it.
 	Placement run.ToolPlacement `json:",omitempty"`
 }
 
@@ -203,7 +203,7 @@ const (
 )
 
 // Retry is the disposition the effect layer derives for a model failure of
-// this code (RUN-EXE-11). A model call has no effect on the world, so a
+// this code. A model call has no effect on the world, so a
 // Known failure never leaves anything that a second call could repeat; the
 // only question is whether the failure may pass, and a rate limit, a
 // provider outage or a lost connection may, every other code is a definite
@@ -247,13 +247,13 @@ type ToolExecutionSucceeded struct{ Result run.ToolExecutionResult }
 
 // ToolExecutionFailed is a Known failure the tool reports: the effect did
 // not complete. Failure.Class says what went wrong; Retry is the tool's
-// answer for this failure alone (RUN-EXE-11). RetryAllowed asserts more
+// answer for this failure alone. RetryAllowed asserts more
 // than "this looks transient": that this Known failure suffices to confirm
 // the attempt produced no external effect that cannot safely be repeated,
 // so the next attempt of the same Assignment may run. A failure that cannot
 // confirm that (a payment call that timed out) is not a ToolExecutionFailed
 // at all but a ToolExecutionUnknown, which enters replay and reconciliation
-// (TRN-DUR-4). A tool that does not judge leaves RetryUnknown, never retried.
+// A tool that does not judge leaves RetryUnknown, never retried.
 type ToolExecutionFailed struct {
 	Failure run.ToolFailure
 	Retry   run.RetryDisposition
@@ -351,11 +351,11 @@ var (
 	ErrOutcomeUnavailable = errors.New("agent: effect: outcome unavailable")
 	// ErrOutcomeCollected means the executor still holds the key as an
 	// accepted, settled execution but no longer serves its Outcome: the
-	// Owner acknowledged the settlement (RUN-EXE-13). Definitive, like
+	// Owner acknowledged the settlement. Definitive, like
 	// ErrOutcomeUnavailable, which it wraps.
 	ErrOutcomeCollected = fmt.Errorf("agent: effect: outcome collected after acknowledgement: %w", ErrOutcomeUnavailable)
 	// ErrExecutionAborted means the key was closed by Abort before any
-	// Assignment was accepted for it (RUN-EXE-16): a Dispatch under it is
+	// Assignment was accepted for it: a Dispatch under it is
 	// a definite rejection and nothing will ever be read for it, so it is
 	// an ErrOutcomeUnavailable as well.
 	ErrExecutionAborted = fmt.Errorf("agent: effect: execution aborted before acceptance: %w", ErrOutcomeUnavailable)
@@ -367,7 +367,7 @@ var (
 	// anything started, for a reason of its own that may pass (its record
 	// store was unavailable). Nothing crossed the effect boundary, so the
 	// same Assignment may be dispatched again; it is neither a definite
-	// rejection of the Assignment nor an unknown outcome (RUN-EXE-3).
+	// rejection of the Assignment nor an unknown outcome.
 	ErrDispatchRetryable = errors.New("agent: effect: dispatch refused before the effect started; retry later")
 )
 
@@ -402,7 +402,7 @@ func (s AttachmentState) Terminal() bool { return s == AttachmentTerminal }
 // Attachment is the result of an attach/inspection request. Missing is a
 // proof that no execution exists for the key now; it does not by itself
 // stop one from being accepted later, so a controller that acts on it
-// first closes the key with Abort and disposes on aborted (RUN-EXE-16).
+// first closes the key with Abort and disposes on aborted.
 // Orphaned is the absence of
 // that proof: a record exists without a live owner, or the executor cannot
 // tell whether an execution survived (a record store that may have lost the
@@ -419,7 +419,7 @@ type Attachment struct {
 }
 
 // Acknowledger is the optional retention hint of an ExecutionPort
-// (RUN-EXE-13): the Owner reports that the Outcome of key is settled as a
+// the Owner reports that the Outcome of key is settled as a
 // Session fact and will not be read again. The executor may then collect
 // the record's payload and Outcome, but it keeps the key as accepted: a
 // late Dispatch of the same key starts nothing. A port without it relies on
@@ -429,7 +429,7 @@ type Acknowledger interface {
 }
 
 // Recoverer is the optional recovery capability of an execution port
-// (RUN-EXE-6). RecoverExecution asks the executor to take the orphaned record
+// RecoverExecution asks the executor to take the orphaned record
 // of key back under a live lease and continue it from its persisted payload
 // and ExecutionRef: attach the previous physical execution, restart it once
 // the backend proves it missing, or settle it as Unknown when the tool's
@@ -452,7 +452,7 @@ type ExecutionPort interface {
 	Attach(context.Context, AssignmentKey) (Attachment, error)
 	// Abort closes key when nothing has been accepted for it, so that no
 	// Dispatch of the key, however late, is accepted afterwards
-	// (RUN-EXE-16). Abort and the acceptance a Dispatch writes contend for
+	// Abort and the acceptance a Dispatch writes contend for
 	// the first commit of the key's ledger, and exactly one of them wins.
 	// The result is the key's attachment after the attempt: aborted when
 	// the tombstone stands (written now or before), otherwise the live
@@ -462,7 +462,7 @@ type ExecutionPort interface {
 	// GetOutcome is a read, not a wait: it answers at once. An unsettled
 	// execution is ErrOutcomeNotReady; a settled one is its Outcome; a key
 	// the port never accepted is ErrExecutionNotFound; a definitive refusal
-	// to ever answer is ErrOutcomeUnavailable (RUN-EXE-13). Any other error
+	// to ever answer is ErrOutcomeUnavailable. Any other error
 	// describes the read operation and says nothing about the execution,
 	// which remains unsettled until a read returns its explicit Outcome.
 	// Learning when to read is SettlementPort's job; a caller without that

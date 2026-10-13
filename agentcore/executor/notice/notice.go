@@ -1,5 +1,5 @@
 // Package notice is the one bounded notice log every settlement source in
-// the executor tier keeps (RUN-EXE-17): a Worker announcing that an
+// the executor tier keeps: a Worker announcing that an
 // AssignmentKey settled, a Backend announcing that a Ref settled. A notice
 // says when to read; the read says what. The log is per incarnation
 // (Epoch), ordered by Sequence, bounded by a window, and a subscriber that
@@ -146,7 +146,7 @@ func (r *Ring[T]) SubscribeAnnounced(ctx context.Context, epoch string, after ui
 }
 
 // Ref is a Backend's notice that the execution behind Ref reached its
-// Outcome, readable through ExecutionBackend.Outcome (RUN-EXE-9). It is the
+// Outcome, readable through ExecutionBackend.Outcome. It is the
 // Backend-tier twin of effect.Settlement, keyed by the Backend's Ref rather
 // than the Worker's AssignmentKey.
 type Ref struct {

@@ -225,7 +225,7 @@ func TestWorkerIdempotentAndOutcome(t *testing.T) {
 // A replay of the same Assignment against an execution that has started
 // leaves it to its lease holder, live or expired: recovery of a started
 // execution is RecoverExecution's, asked for by the Owner that observed it
-// orphaned (RUN-EXE-3).
+// orphaned.
 func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 	for _, state := range []effect.ExecutionStatus{effect.ExecutionDispatching, effect.ExecutionRunning, effect.ExecutionCancelRequested} {
 		t.Run(string(state), func(t *testing.T) {
@@ -261,7 +261,7 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 // A replay of the same Assignment against an acceptance that never started
 // and that no live lease holds continues it: the Dispatch that wrote the
 // acceptance failed before Start, and the replay is that request again
-// (RUN-EXE-3). Under a live lease the replay starts nothing; the holder is
+// Under a live lease the replay starts nothing; the holder is
 // about to.
 func TestWorkerDispatchReplayContinuesUnstartedAcceptance(t *testing.T) {
 	for _, tc := range []struct {
@@ -415,7 +415,7 @@ func TestWorkerCloseStopsGoroutines(t *testing.T) {
 
 // A record whose ExecutionRef names a provider this Worker has no Backend
 // for is left untouched: RecoverExecution and GetStatus report ErrUnknownProvider and
-// no backend is called (RUN-EXE-10).
+// no backend is called.
 func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 	ctx := context.Background()
 	records := storetest.NewMap(nil)
@@ -448,7 +448,7 @@ func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 }
 
 // Dispatch selects the Backend once, prepares the Ref and persists it with the
-// record before Start; Start receives the persisted Ref (RUN-EXE-9/10).
+// record before Start; Start receives the persisted Ref.
 func TestWorkerPersistsExecutionRefBeforeStart(t *testing.T) {
 	ctx := context.Background()
 	records := storetest.NewMap(nil)
@@ -673,7 +673,7 @@ func TestPortBackendAttachRejectsForeignRef(t *testing.T) {
 
 // Attach classifies by the record's lease in the shared store, not by which
 // Worker answers: a live lease held by another incarnation is active, an
-// expired one orphaned (RUN-EXE-3).
+// expired one orphaned.
 func TestWorkerAttachClassifiesByLease(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(2_000_000, 0)
@@ -718,7 +718,7 @@ func (failingCreateStore) Append(context.Context, store.Lease, effect.Assignment
 
 // A Dispatch the Worker cannot record is a retryable refusal; a definite
 // rejection of the Assignment is a plain error; neither is an unknown
-// outcome (RUN-EXE-3). The HTTP binding's status mapping is tested with it.
+// outcome. The HTTP binding's status mapping is tested with it.
 func TestDispatchRefusalClassification(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -750,7 +750,6 @@ func TestDispatchRefusalClassification(t *testing.T) {
 // still answers Attach with terminal, GetOutcome with collected, and a
 // Dispatch of the same key starts nothing. An unacknowledged record keeps
 // its Outcome readable, and an execution in flight cannot be acknowledged
-// (RUN-EXE-13).
 func TestWorkerAcknowledgeCollects(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(3_000_000, 0)
@@ -827,7 +826,7 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 	}
 }
 
-// RUN-EXE-16: Abort and the acceptance a Dispatch writes contend for the
+// Abort and the acceptance a Dispatch writes contend for the
 // first commit of a key's ledger; exactly one stands. A key aborted first
 // rejects every later Dispatch and answers aborted everywhere; a key
 // dispatched first is reported live by Abort and left alone.
@@ -891,7 +890,7 @@ func TestAbortAndDispatchAreMutuallyExclusive(t *testing.T) {
 // GetOutcome is a read: before settlement it answers ErrOutcomeNotReady at
 // once. The Worker's settlement stream carries the notice of every key it
 // settles under its hub's epoch, a subscriber that reconnects with its last
-// sequence gets what it missed, and Close ends the stream (RUN-EXE-17).
+// sequence gets what it missed, and Close ends the stream.
 func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

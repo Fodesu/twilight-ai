@@ -65,7 +65,7 @@ func newAuthority(t *testing.T) (*owner.Owner, *sessionkernel.Kernel) {
 	return a, k
 }
 
-// OWN-HDL-1: one generation of ownership at a time. A second Open of an
+// one generation of ownership at a time. A second Open of an
 // open Session is refused; a Handle whose generation was released does not
 // close the generation that replaced it; reads need no Handle.
 func TestHandleGenerations(t *testing.T) {

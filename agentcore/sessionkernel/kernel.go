@@ -30,7 +30,7 @@ import (
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
-// Artifacts groups the artifact ports (OWN-PRT-3): the binding index the
+// Artifacts groups the artifact ports: the binding index the
 // Writers resolve against and the retention ledger their claims live in.
 // Both are required and durable; the facts of a Session name frozen bodies
 // through them, so they must survive every restart the facts survive. There
@@ -42,18 +42,18 @@ type Artifacts struct {
 
 // Ports are the roles a Kernel is composed from. Every field is an interface
 // or a core value. The Store and the Content store are required and durable
-// (OWN-PRT-3); the other nil fields take the documented defaults.
+// the other nil fields take the documented defaults.
 type Ports struct {
 	// Store is the Session kernel (required).
 	Store session.Stores
 	// Content is the cas ContentStore the frozen bodies live in under
-	// sessionstore.FrozenAuthority (RUN-WIR-4). The run store writes them;
+	// sessionstore.FrozenAuthority. The run store writes them;
 	// the materializer reads them for prompts, replies and transcripts.
 	// Required.
 	Content artifact.ContentStore
 	// Artifacts are the binding store and retention ledger (required).
 	Artifacts Artifacts
-	// Observers are notified of every group the Writers apply (EXT-WRT-7)
+	// Observers are notified of every group the Writers apply
 	// besides the Kernel's own event stream.
 	Observers []writer.CommitObserver
 	// Registry is the module registry every Writer, projection and event
@@ -62,15 +62,15 @@ type Ports struct {
 	// before the Kernel exists builds it with NewRegistry and passes it here.
 	Registry *module.Registry
 	// Modules are application modules registered after the first-party
-	// ones (EXT-APP); ignored when Registry is given.
+	// ones; ignored when Registry is given.
 	Modules []module.ModuleDescriptor
 	// Clock stamps event times; nil selects time.Now.
 	Clock func() time.Time
 	// Cache stores folded projection states; nil asks the Store for a durable
-	// cache and falls back to an in-memory one (APP-MEM-2).
+	// cache and falls back to an in-memory one.
 	Cache session.ProjectionCache
 	// CacheEvery bounds how far a cached projection may fall behind the head;
-	// zero takes module.DefaultCacheEvery (EXT-PRJ-7).
+	// zero takes module.DefaultCacheEvery.
 	CacheEvery ledger.CommitSeq
 	// Ownership configures how Writers open Sessions.
 	Ownership session.OpenOptions
@@ -97,9 +97,9 @@ type Kernel struct {
 	Frozen frozen.Store
 	// Projections reads every projection through the Session's Writer.
 	Projections session.ProjectionReader
-	// Content materializes the frozen bodies projections name (CHT-MAT-1).
+	// Content materializes the frozen bodies projections name.
 	Content chatlog.ContentResolver
-	// Chatlog commits the chatlog's own facts (APP-INP-1, APP-CKP-1).
+	// Chatlog commits the chatlog's own facts.
 	Chatlog *chatlog.Commands
 	// History answers fork-boundary questions.
 	History history.History
@@ -112,10 +112,10 @@ func New(p Ports) (*Kernel, error) { //nolint:gocritic // hugeParam: Ports is a 
 		return nil, errors.New("sessionkernel: a session Store is required")
 	}
 	if p.Content == nil {
-		return nil, errors.New("sessionkernel: a content Store is required (OWN-PRT-3)")
+		return nil, errors.New("sessionkernel: a content Store is required")
 	}
 	if p.Artifacts.Bindings == nil || p.Artifacts.Ledger == nil {
-		return nil, errors.New("sessionkernel: a binding store and a retention ledger are required (OWN-PRT-3)")
+		return nil, errors.New("sessionkernel: a binding store and a retention ledger are required")
 	}
 	store := p.Store
 	registry := p.Registry
@@ -125,14 +125,14 @@ func New(p Ports) (*Kernel, error) { //nolint:gocritic // hugeParam: Ports is a 
 			return nil, err
 		}
 	}
-	// The event stream observes every group the Writers apply (EXT-WRT-7)
+	// The event stream observes every group the Writers apply
 	// and decodes through the Registry, so both exist before the Writers do.
 	bus := observe.NewBus(registry)
 	tailer := observe.NewSessionLedgerTailer(registry, store)
 	observers := append([]writer.CommitObserver{bus, tailer}, p.Observers...)
 	bindings, retention := p.Artifacts.Bindings, p.Artifacts.Ledger
 	// A projection cache lets a reopened Session start folding instead of
-	// refolding the whole log (EXT-PRJ-3). An adapter that can store entries
+	// refolding the whole log. An adapter that can store entries
 	// durably provides its own; otherwise they live as long as the process.
 	cache := p.Cache
 	if cache == nil {
@@ -143,7 +143,7 @@ func New(p Ports) (*Kernel, error) { //nolint:gocritic // hugeParam: Ports is a 
 		}
 	}
 	// Frozen bodies live in the content store and are admitted through the
-	// same binding store the Writers resolve against (RUN-WIR-4).
+	// same binding store the Writers resolve.
 	fz, err := sessionstore.FrozenValues(p.Content, bindings)
 	if err != nil {
 		return nil, err
@@ -160,7 +160,7 @@ func New(p Ports) (*Kernel, error) { //nolint:gocritic // hugeParam: Ports is a 
 		return nil, err
 	}
 	// The read model folds from the Store through the cache: reading a Session
-	// takes no ownership (OWN-HDL-2). The Writer keeps its own transactional
+	// takes no ownership. The Writer keeps its own transactional
 	// projections for the commit critical section.
 	projections := session.NewProjectionReader(store, registry, cache)
 	content := sessionstore.NewContent(fz)
@@ -219,7 +219,7 @@ func (a *Kernel) EnsureSession(ctx context.Context, sid session.SessionID) error
 	return nil
 }
 
-// ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1): the
+// ForkRequest forks a Session at one commit of its ledger: the
 // child inherits every commit of Parent up to and including At and continues
 // from there under its own identity.
 type ForkRequest struct {
@@ -231,7 +231,7 @@ type ForkRequest struct {
 }
 
 // Fork creates the child Session  and claims the artifacts its
-// inherited prefix references (EXT-WRT-8). The child is not opened.
+// inherited prefix references. The child is not opened.
 func (a *Kernel) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
 	if req.Parent == "" || req.Child == "" {
 		return session.SegmentHeader{}, errors.New("sessionkernel: fork requires parent and child session ids")
@@ -241,7 +241,7 @@ func (a *Kernel) Fork(ctx context.Context, req ForkRequest) (session.SegmentHead
 	}
 	// A fork point inside a Turn would hand the child a Turn whose Run is
 	// the parent's execution: semantic history branches only at
-	// quiescent points (OWN-FRK-1).
+	// quiescent points.
 	if active, ok, err := a.History.ActiveAt(ctx, req.Parent, req.At); err != nil {
 		return session.SegmentHeader{}, err
 	} else if ok {
@@ -254,7 +254,7 @@ func (a *Kernel) Fork(ctx context.Context, req ForkRequest) (session.SegmentHead
 }
 
 // ForkBeforeTurn forks Parent at the commit just before turnID started
-// (OWN-FRK-2): the child holds the conversation as it was when that Turn's
+// the child holds the conversation as it was when that Turn's
 // inputs were still submitted and undelivered.
 func (a *Kernel) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	seq, err := a.History.StartCommit(ctx, parent, turnID)
@@ -276,7 +276,7 @@ func (a *Kernel) Collect(ctx context.Context) (session.CollectReport, error) {
 }
 
 // Projection reads any registered projection through the Session's Writer
-// (APP-MEM-1). Reading a Session needs no ownership.
+// Reading a Session needs no ownership.
 func (a *Kernel) Projection(ctx context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {
 	return a.Projections.Load(ctx, sid, id, v)
 }

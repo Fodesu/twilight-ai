@@ -1,7 +1,7 @@
 // Package executor makes provider effects durable: a Worker owns the
 // execution record of every accepted Assignment -- its payload, its
 // ExecutionRef, its lifecycle state and its Outcome -- and hands the effect
-// itself to one Backend chosen once, at Dispatch (RUN-EXE-3, RUN-EXE-10).
+// itself to one Backend chosen once, at Dispatch.
 // Agent Core sees the Worker as an effect.ExecutionPort addressed by AssignmentKey;
 // Backends see only the Ref the record holds for them.
 package executor
@@ -34,13 +34,13 @@ type WorkerOptions struct {
 	// Store remains the fencing authority. Defaults to time.Now.
 	Clock func() time.Time
 	// Retry is the deployment's budget for re-dispatching an effect after a
-	// Known failure that declares itself retryable (RUN-EXE-11): at most
+	// Known failure that declares itself retryable: at most
 	// MaxAttempts executions in total, Backoff multiplied by the attempts so
 	// far between them. The zero value disables retries; whether a given
 	// failure is worth retrying is the failure's own disposition.
 	Retry RetryBudget
 	// Progress is the hub the Worker's backends publish progress into and
-	// the Worker serves through Progress (RUN-EXE-12); nil builds one with
+	// the Worker serves through Progress; nil builds one with
 	// the default window. The composer hands the same hub to its backends.
 	Progress *ProgressHub
 	// Settlements is the hub the Worker records settlements into and serves
@@ -65,9 +65,9 @@ const defaultLeaseDuration = 30 * time.Second
 // live lease and continues it from the persisted payload and Ref, and
 // Dispose settles a record its caller has given up on. Which records to
 // recover, when to ask and when to give up are decisions of whoever observes
-// the record as orphaned — the Owner reconciling its own Run (RUN-CMT-7) or
+// the record as orphaned — the Owner reconciling its own Run or
 // an external controller — and the Worker runs no loop of its own
-// (RUN-EXE-6). Neither operation is part of effect.ExecutionPort, which
+// Neither operation is part of effect.ExecutionPort, which
 // stays the per-assignment data plane.
 type Worker struct {
 	store     executionstore.Store
@@ -158,7 +158,7 @@ func (w *Worker) spawn(fn func()) {
 
 // Close stops every heartbeat and every watcher, and
 // waits for them. Records keep their leases until they expire: another
-// incarnation adopts them through RecoverExecution (RUN-EXE-6). Close
+// incarnation adopts them through RecoverExecution. Close
 // does not cancel backend executions.
 func (w *Worker) Close() {
 	w.stop()
@@ -167,7 +167,7 @@ func (w *Worker) Close() {
 }
 
 // route selects the Backend for an Assignment: the first Route whose Match
-// accepts it (RUN-EXE-10).
+// accepts it.
 func (w *Worker) route(a effect.Assignment) (Route, error) {
 	for _, r := range w.routes {
 		if r.Match == nil || r.Match(a) {
@@ -262,7 +262,7 @@ func (w *Worker) holdsLease(s *executionstore.Execution) bool {
 	return !s.Terminal() && s.Lease.Owner == w.id && s.Lease.Epoch > 0 && s.Lease.UntilUnixMilli > w.now().UnixMilli()
 }
 
-// Dispatch accepts an Assignment (RUN-EXE-3): it selects the Backend,
+// Dispatch accepts an Assignment: it selects the Backend,
 // prepares the Ref, opens the execution's ledger with the acceptance and
 // the binding in one commit, then starts the execution. A replay of the
 // same Assignment is answered from the ledger; recovery of an existing
@@ -290,7 +290,7 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	key := a.Key()
 	// A key whose ledger is already open is answered from the ledger before
 	// any backend is touched: a replay, a conflicting Assignment or a
-	// tombstone prepares nothing (RUN-EXE-3, RUN-EXE-16).
+	// tombstone prepares nothing.
 	if state, _, ok, loadErr := w.store.Load(ctx, key); loadErr != nil {
 		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, loadErr)
 	} else if ok {
@@ -317,7 +317,7 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	case errors.Is(err, executionstore.ErrAlreadyApplied), errors.Is(err, executionstore.ErrConflict):
 		// The ledger was opened between the read above and this write (a
 		// concurrent Dispatch, an Abort): the ledger, not this Worker,
-		// decided (RUN-EXE-14, RUN-EXE-16).
+		// decided.
 		state, _, ok, loadErr := w.store.Load(ctx, key)
 		if loadErr != nil {
 			return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, loadErr)
@@ -328,7 +328,7 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		return w.opened(ctx, &state, digest)
 	default:
 		// The ledger store, not the Assignment, refused: nothing started,
-		// and the same Dispatch may succeed later (RUN-EXE-3).
+		// and the same Dispatch may succeed later.
 		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
 	}
 	if err := w.acquireAndStart(ctx, key); err != nil {
@@ -351,11 +351,11 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 // acknowledges the acceptance and starts nothing new, with one exception: an
 // acceptance that never started and that no live lease holds is continued,
 // because the Dispatch that wrote it failed before Start (or its Worker died
-// before Start) and this replay is the same request (RUN-EXE-3). An
+// before Start) and this replay is the same request. An
 // execution that has started belongs to its lease holder, or to
 // RecoverExecution once the Owner observes it orphaned. The ledger holds one
 // acceptance per key and does not compare content, so telling the two
-// Assignments apart is the Worker's reading (RUN-EXE-14).
+// Assignments apart is the Worker's reading.
 func (w *Worker) opened(ctx context.Context, state *executionstore.Execution, digest run.Digest) error {
 	if state.Aborted() {
 		return effect.ErrExecutionAborted
@@ -378,7 +378,7 @@ func (w *Worker) opened(ctx context.Context, state *executionstore.Execution, di
 	return err
 }
 
-// Abort closes key before any acceptance (RUN-EXE-16): it writes the
+// Abort closes key before any acceptance: it writes the
 // tombstone as the first commit of the key's ledger, where it contends with
 // the acceptance a Dispatch writes; the store's Seq rule lets exactly one of
 // the two stand. The result is the key's attachment afterwards: aborted when
@@ -400,7 +400,7 @@ func (w *Worker) Abort(ctx context.Context, key effect.AssignmentKey) (effect.At
 // held, and continues it from the persisted payload and Ref — attaching the
 // previous backend execution, restarting it once the backend proves it
 // missing, or settling it as Unknown when the tool's replay declaration
-// forbids a restart (RUN-EXE-3, RUN-EXE-9). A settled execution, one already
+// forbids a restart. A settled execution, one already
 // under this Worker's lease and one under another live lease are left as
 // they are. The caller has observed the execution as orphaned; how often to
 // ask again, and when to give up through Dispose, is the caller's.
@@ -426,7 +426,7 @@ func (w *Worker) RecoverExecution(ctx context.Context, key effect.AssignmentKey)
 	return w.acquireAndStart(ctx, key)
 }
 
-// Acknowledge is effect.Acknowledger (RUN-EXE-13): the Owner reports that
+// Acknowledge is effect.Acknowledger: the Owner reports that
 // the Outcome of key is settled as a Session fact. The ledger records
 // outcome_acknowledged and its fold collects the execution: the payload,
 // Outcome and Superseded refs leave the fold, while the key, its digest,
@@ -451,7 +451,7 @@ func (w *Worker) Acknowledge(ctx context.Context, key effect.AssignmentKey) erro
 
 // Dispose settles an unsettled execution as Unknown without re-dispatching
 // it. The caller has given the execution up: it will not be recovered, and
-// the Owner disposes the Run target on its next read (RUN-CMT-7). Unlike
+// the Owner disposes the Run target on its next read. Unlike
 // RecoverExecution, Dispose is unconditional — it also applies to executions
 // whose lease holder is dead or absent — and unlike Cancel it does not
 // require backend reachability: the backend is cancelled best-effort after
@@ -498,7 +498,7 @@ func (w *Worker) Settlements(ctx context.Context, epoch string, after uint64, fn
 	return w.settlements.Settlements(ctx, epoch, after, fn)
 }
 
-// Progress is effect.ProgressPort (RUN-EXE-12): the frames of an execution
+// Progress is effect.ProgressPort: the frames of an execution
 // this Worker's backends published, from the hub. An execution this Worker
 // holds but whose Backend is itself a port (a remote Worker behind
 // PortBackend) is served from that port, so a chain of Workers relays the
@@ -527,7 +527,7 @@ func (w *Worker) Progress(ctx context.Context, key effect.AssignmentKey, after u
 	return w.progress.Progress(ctx, key, after, fn)
 }
 
-// Attach reports the execution's observation state (RUN-EXE-3). The ledger
+// Attach reports the execution's observation state. The ledger
 // is the authority: missing without a ledger, terminal once settled,
 // orphaned when no incarnation holds a live lease on it, active while one
 // does. Which Worker answers does not matter: a live lease held by another
@@ -544,7 +544,7 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 	if !ok {
 		// Dispatch opens the ledger before any Start and the store is
 		// durable, so a key without a ledger never started: missing is a
-		// proof (RUN-EXE-3).
+		// proof.
 		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 	}
 	if state.Aborted() {

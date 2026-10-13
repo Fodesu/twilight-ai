@@ -16,8 +16,7 @@ const payloadVersion uint16 = 1
 
 // CommandEnvelope carries one command with its protocol identity. Commands
 // are not persisted: ID is the CommitID of the commit the command produces,
-// and replay is told from conflict by the store's command index (RUN-WIR-2,
-// EXT-WRT-2). The envelope names no store: which store a command reaches is
+// and replay is told from conflict by the store's command index. The envelope names no store: which store a command reaches is
 // the bound RunStore's.
 type CommandEnvelope struct {
 	Type    string           `json:"type"`

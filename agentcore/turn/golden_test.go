@@ -20,7 +20,7 @@ func freezeTurn(t *testing.T, name, got, want string) {
 	t.Errorf("golden %s drifted — an intentional wire change must update this fixture and agent-turn.md:\n got: %s\nwant: %s", name, got, want)
 }
 
-// TestTurnDerivationGolden freezes the Turn's derived identities (TRN-ID-1/2).
+// TestTurnDerivationGolden freezes the Turn's derived identities.
 func TestTurnDerivationGolden(t *testing.T) {
 	plan := turn.PlanDigest("turn-1", jsonstable.Digest("sha256:aa"), []chatlog.InputID{"in-1", "in-2"})
 	freezeTurn(t, "plan digest", string(plan), "sha256:5194f3d5319f06e2362c816ca4dded69e8b9c30298c067c4508248f33a8d94a4")

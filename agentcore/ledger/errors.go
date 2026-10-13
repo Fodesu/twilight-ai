@@ -11,12 +11,12 @@ const (
 	CodeOwnershipLost ErrorCode = "ownership_lost"
 	// CodeProjectionUnhealthy: a derived projection failed to fold a commit
 	// the Writer applied; its state is frozen at the last good commit until
-	// the Writer reopens and rebuilds it (EXT-PRJ-9).
+	// the Writer reopens and rebuilds it.
 	CodeProjectionUnhealthy ErrorCode = "projection_unhealthy"
 	// CodeUnknownOutcome: an Append failed in a way that leaves what reached
 	// the log unknown (an IO error, or the kernel's ErrHandleFailed). The
 	// Writer's head and projections may no longer match the log, so it fails
-	// closed; the host reopens and replays (EXT-WRT-4).
+	// closed; the host reopens and replays.
 	CodeUnknownOutcome ErrorCode = "unknown_outcome"
 )
 

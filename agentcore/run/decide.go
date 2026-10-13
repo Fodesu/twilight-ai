@@ -23,7 +23,7 @@ func rejectionf(format string, args ...any) error {
 }
 
 // Decide produces the facts a command yields against s, or the rejection
-// (RUN-MCH-1).
+//
 //
 //nolint:gocritic // hugeParam: v1 Decide is value-based.
 func (m StateMachine) Decide(s MachineState, c AgentCommand) ([]Fact, error) {
@@ -161,7 +161,7 @@ func currentModelStep(s *MachineState, step StepID) (*ModelStep, error) {
 // decideStartModelExecution admits the start of the step's next model
 // effect. The effect identity is derived, so a start that names any other
 // effect -- one derived against a different rejection count, or minted by
-// the caller -- is stale rather than a new grant (RUN-WIR-1).
+// the caller -- is stale rather than a new grant.
 func (m StateMachine) decideStartModelExecution(s *MachineState, cmd StartModelExecution) ([]Fact, error) {
 	ms, err := currentModelStep(s, cmd.StepID)
 	if err != nil {
@@ -197,7 +197,7 @@ func (m StateMachine) decideRecoverModelExecution(s *MachineState, cmd RecoverMo
 }
 
 // settlesModelEffect checks that a settlement names the effect the step is
-// executing (RUN-WIR-1): a settlement of an earlier effect of the same step
+// executing: a settlement of an earlier effect of the same step
 // is stale.
 func settlesModelEffect(ms *ModelStep, effect EffectID, op string) error {
 	if effect == "" {
@@ -254,7 +254,7 @@ func (m StateMachine) decideSubmitModelResult(s *MachineState, cmd *SubmitModelR
 }
 
 // checkToolCallBindings validates the caller's bindings one-to-one against
-// the model result and the frozen ToolSpecs (RUN-MCH-2) and returns them with
+// the model result and the frozen ToolSpecs and returns them with
 // Response cleared, ready for openToolStep to derive.
 func (m StateMachine) checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBinding, error) {
 	if len(cmd.Calls) != len(cmd.Result.ToolCalls) {
@@ -319,7 +319,7 @@ func (m StateMachine) checkBindingAgainstResult(b *ToolCallBinding, rc *model.Mo
 
 // openToolStep derives the ToolStep identity from its source, attaches a
 // ResponseRequest to every call whose policy waits, and freezes the
-// scheduling (RUN-LOP-1).
+// scheduling.
 func (m StateMachine) openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, scheduling ToolScheduling) (ToolStepOpened, error) {
 	toolStepID := m.Identity.DeriveToolStepID(source)
 	for i := range bindings {
@@ -503,7 +503,7 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 }
 
 // settlesToolEffect checks that a settlement names the effect the call is
-// executing (RUN-WIR-1): the call's one tool effect, recorded by its
+// executing: the call's one tool effect, recorded by its
 // ToolCallStarted.
 func settlesToolEffect(call *ToolCallState, effect EffectID, op string) error {
 	if effect == "" {
@@ -516,7 +516,7 @@ func settlesToolEffect(call *ToolCallState, effect EffectID, op string) error {
 }
 
 // decideDeclineToolCall fails a Pending call before its tool effect is
-// requested (RUN-EXE-5): no ToolCallStarted, no effect, no start barrier.
+// requested: no ToolCallStarted, no effect, no start barrier.
 func decideDeclineToolCall(s *MachineState, cmd DeclineToolCall) ([]Fact, error) {
 	ts, err := currentToolStep(s, cmd.StepID)
 	if err != nil {
@@ -645,7 +645,7 @@ func decideCancelRun(s *MachineState, cmd CancelRun) ([]Fact, error) {
 		}
 	}
 	// A model call still executing is settled as unknown under its effect
-	// before the Run stops: RunEnded closes no effect by itself (RUN-WIR-1).
+	// before the Run stops: RunEnded closes no effect by itself.
 	var uncertainModel StepID
 	if ms, ok := s.Current.(ModelStep); ok && ms.Status == ModelExecuting {
 		uncertainModel = ms.RefValue.ID
@@ -684,7 +684,7 @@ func cancelledToolCalls(s *MachineState) []Fact {
 }
 
 // decideAcceptInput queues a batch of inputs in any non-terminal state
-// (RUN-MCH-4): PendingInputs is the durable mid-run input queue, consumed by
+// PendingInputs is the durable mid-run input queue, consumed by
 // the next Prepare. A Prepared step with a non-empty queue is withdrawn by
 // Next. The batch is all-or-nothing: an empty list or an empty InputID is a
 // rejection, and an input already pending, or repeated inside the batch, is

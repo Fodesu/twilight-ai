@@ -60,7 +60,7 @@ func (a *attempts) Append(ctx context.Context, epoch ledger.Epoch, k effect.Assi
 	return nil
 }
 
-// RUN-EXE-15: an effect the executor holds nothing for is handed over again
+// an effect the executor holds nothing for is handed over again
 // within the redispatch budget. Each attempt is planned before the Dispatch
 // and marked dispatched after it; an attempt left planned (a crash or a
 // refusal between the two) is made again and costs no budget. A refusal the

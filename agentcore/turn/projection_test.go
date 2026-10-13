@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TRN-PRJ-1: run_ended settles the Turn whose started named the Run. A
+// run_ended settles the Turn whose started named the Run. A
 // completed Run completes the Turn, any other end fails it; a Run no Turn of
 // the Session names is ignored; a second end of the Run is a fold error
 // rather than a silent no-op.

@@ -69,7 +69,7 @@ const (
 	FailureProvider           = "provider_failure"
 )
 
-// Tool execution failure classes (RUN-EXE-11): what went wrong inside a
+// Tool execution failure classes: what went wrong inside a
 // tool's Execute, as the tool reports it in ToolFailure.Class. The class
 // describes the error; whether it is worth retrying is the failure's own
 // RetryDisposition (effect.ToolExecutionFailed.Retry), the two are not
@@ -94,7 +94,7 @@ const (
 
 // ReplayPolicy is a tool's judgment of its own side effects: whether the
 // Worker that adopts a lost execution of the tool may run it again for the
-// same call (RUN-EXE-9, TRN-DUR-4). It is declared by the tool
+// same call. It is declared by the tool
 // implementation, frozen into the ToolSpec and copied onto each call and its
 // Assignment, so every Worker that reads the execution record decides alike.
 // Only ReplayAllowed is re-dispatched; ReplayForbidden and the zero value
@@ -123,7 +123,7 @@ func (p ReplayPolicy) String() string {
 	}
 }
 
-// ToolPlacement is where a tool call must run (RUN-LOP-9): in the process
+// ToolPlacement is where a tool call must run: in the process
 // that executes it, or inside the workspace the Session is bound to. It is
 // declared by the tool implementation, frozen into the ToolSpec and copied
 // onto each call and its Assignment, so the target resolver asks for a
@@ -149,7 +149,7 @@ func (p ToolPlacement) String() string {
 }
 
 // RetryDisposition is a Known failure's own answer to whether the next
-// attempt of the same Assignment may run (RUN-EXE-11). RetryAllowed means
+// attempt of the same Assignment may run. RetryAllowed means
 // this failure suffices to confirm the attempt produced no external effect
 // that cannot safely be repeated; RetryNever means the failure is definite
 // or a second attempt is not safe to assert. It is a property of the
@@ -208,7 +208,7 @@ type ResponseRequest struct {
 }
 
 // ToolSpec is the agent-side sidecar for a provider-neutral ToolDefinition.
-// The definition body lives inside the frozen request (RUN-WIR-4); the spec
+// The definition body lives inside the frozen request; the spec
 // keeps its model-facing Name for binding tool calls, the digest for
 // execution-time verification, and the ResponsePolicy, which is intentionally
 // kept out of sdk to preserve package layering.
@@ -285,7 +285,7 @@ func (s ModelStepStatus) String() string {
 type ModelStep struct {
 	RefValue StepRef `json:"ref"`
 	// RequestDigest identifies the frozen request; its body is kept in the
-	// frozen.Store for the life of the step (RUN-WIR-4).
+	// frozen.Store for the life of the step.
 	RequestDigest Digest          `json:"requestDigest"`
 	Model         ModelRef        `json:"model"`
 	Tools         []ToolSpec      `json:"tools,omitempty"`
@@ -296,7 +296,7 @@ type ModelStep struct {
 	// keeps no effect record beside the step. A rejected result returns the
 	// step to Prepared without clearing it, and the next start requests a new
 	// effect. A new owner recovers an Executing step under a CommandID derived
-	// from it (RUN-CMT-7).
+	// from it.
 	Effect EffectID `json:"effect,omitempty"`
 	// Rejects counts accepted ModelStepRejected facts.
 	Rejects int `json:"rejects,omitempty"`
@@ -340,7 +340,7 @@ func (s ToolCallStatus) Terminal() bool { return s == ToolCompleted || s == Tool
 
 // ToolExecutionResult is the transient output a tool worker submits. The
 // state and the fact keep only its digest; the body is frozen under that
-// digest before the fact is committed (RUN-WIR-4).
+// digest before the fact is committed.
 type ToolExecutionResult struct {
 	Output CanonicalJSON `json:"output"`
 }
@@ -385,11 +385,11 @@ type ToolCallState struct {
 	Result  *ToolCallResult  `json:"result,omitempty"`
 	Failure *ToolCallFailure `json:"failure,omitempty"`
 	// Waiting is the call's Wait while Status is ToolWaiting: the approval or
-	// external response it lacks (RUN-MCH-2). Nil in every other status.
+	// external response it lacks. Nil in every other status.
 	Waiting *ResponseRequest `json:"waiting,omitempty"`
 }
 
-// ValidateToolCallState rejects illegal field combinations (RUN-MCH-2).
+// ValidateToolCallState rejects illegal field combinations.
 //
 //nolint:gocritic // hugeParam: public validator accepts the value stored in facts/state without mutating it.
 func ValidateToolCallState(c ToolCallState) error {
@@ -491,7 +491,7 @@ func (s *ToolStep) callIndex(id CallID) int {
 	return -1
 }
 
-// MachineState is the complete semantic state of one Run (RUN-MCH-1): the
+// MachineState is the complete semantic state of one Run: the
 // fold of its facts along four dimensions. Progress is which Step the Run
 // is in and what it has frozen (Current, ModelSteps, LastToolStep). Inbox is
 // the input accepted and not yet consumed by a prepare (PendingInputs).

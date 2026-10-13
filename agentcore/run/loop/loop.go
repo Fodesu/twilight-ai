@@ -15,7 +15,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
-// Loop is the decision interpreter of one Run (RUN-LOP-2). It holds no
+// Loop is the decision interpreter of one Run. It holds no
 // authoritative state: every step starts from RunStore.Load, derives the next
 // action with plan.Next, records the protocol transition and, for a start,
 // hands the requested effect to the Executor as an Assignment keyed by its
@@ -37,7 +37,7 @@ type Loop struct {
 
 // runSlot serializes one Run: step guards a single Advance or Deliver at a
 // time; driving marks a blocking Run in progress so a second driver is
-// reported instead of interleaved (RUN-CMT-6). refs counts the callers holding
+// reported instead of interleaved. refs counts the callers holding
 // the slot; the entry is dropped with the last release, so the map is bounded
 // by the Runs being driven now rather than by every Run the Loop has seen.
 type runSlot struct {
@@ -46,7 +46,7 @@ type runSlot struct {
 	refs    int
 }
 
-// New validates the settings (RUN-LOP-1) and binds the executor and the
+// New validates the settings and binds the executor and the
 // prompt builder.
 func New(exec Executor, builder prompt.Builder, settings Settings) (*Loop, error) {
 	if exec == nil {
@@ -73,10 +73,10 @@ func (l *Loop) toolScheduling() run.ToolScheduling {
 }
 
 // targetFor resolves the opaque target of the effect ec describes
-// (RUN-LOP-9). A nil resolver or a nil answer leaves the Assignment without a
+// A nil resolver or a nil answer leaves the Assignment without a
 // target; an incomplete answer is an error and the effect does not start.
 // dispatchRetries and dispatchBackoff bound the Loop's answer to
-// effect.ErrDispatchRetryable (RUN-EXE-3): the executor refused before
+// effect.ErrDispatchRetryable: the executor refused before
 // anything started, so the same Assignment is offered again a few times
 // inside this Advance, per Settings.Dispatch, before the refusal is treated
 // like any other Known dispatch failure.
@@ -206,13 +206,13 @@ func (l *Loop) wrapSink(events EventSink) EventSink {
 }
 
 // Advance moves the Run to its next quiescent point without waiting on any
-// effect (RUN-LOP-2): it records protocol transitions (prepare, withdraw,
+// effect: it records protocol transitions (prepare, withdraw,
 // start barriers) and dispatches Assignments, then returns LoopDispatched,
 // LoopWaiting or LoopFinished. The caller reads each returned key through
 // Executor.GetOutcome and passes it to Deliver. A concurrent Advance or a
 // blocking Run of the same Run is reported as ErrRunAlreadyRunning. store is
 // the RunStore bound to the caller's write capability: every commit of the
-// step goes through it (OWN-HDL-2).
+// step goes through it.
 func (l *Loop) Advance(ctx context.Context, st store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, st, runID); err != nil {
 		return LoopResult{}, err
@@ -257,7 +257,7 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 		switch act := action.(type) {
 		case plan.NeedModelRequest:
 			// The hook runs while the Run is Open, before the plan reads
-			// the context (RUN-LOP-10); what it commits moves no Run fact,
+			// the context; what it commits moves no Run fact,
 			// so the snapshot's Position stays valid for the Prepare.
 			if hook := l.Settings.BeforePrepare; hook != nil {
 				if err := hook(ctx, rt, act.Hint); err != nil {
@@ -269,7 +269,7 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 			}
 		case plan.WithdrawPrepared:
 			// Inputs arrived after this step was frozen: discard the unsent
-			// request and replan with them (RUN-LOP-8). A retriable rejection
+			// request and replan with them. A retriable rejection
 			// means another actor moved the Run; the reload decides.
 			res, err := l.commit(ctx, rt, runID, schema.Identity().DeriveWithdrawCommandID(runID, act.StepID), snapshot.Position,
 				run.WithdrawPreparedStep(act))
@@ -317,13 +317,13 @@ func (l *Loop) finish(ctx context.Context, events EventSink, scope run.Scope, ru
 	return LoopResult{Disposition: LoopFinished, Result: result}
 }
 
-// Deliver settles one Outcome (RUN-EXE-4). It finds the model step or tool
+// Deliver settles one Outcome. It finds the model step or tool
 // call Executing under the effect the Outcome's key names and commits the
 // settlement under the effect's derived CommandID; an Outcome whose effect
 // is no longer Executing is dropped and nothing is written. It returns
 // LoopFinished when the settlement terminated the Run, LoopDelivered when the
 // host should Advance next, LoopDropped for a stale Outcome. Ownership loss
-// is returned as is (RUN-LOP-5).
+// is returned as is.
 func (l *Loop) Deliver(ctx context.Context, st store.RunStore, out Outcome, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, st, out.Key.RunID); err != nil {
 		return LoopResult{}, err
@@ -377,7 +377,7 @@ func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, even
 	}
 
 	// Settlement uses a detached control context: a cancelled host request must
-	// not discard an accepted effect's outcome (RUN-LOP-5).
+	// not discard an accepted effect's outcome.
 	finished, err := l.settle(context.WithoutCancel(ctx), rt, events, &ref, snapshot.Position, cmd)
 	if err != nil {
 		return LoopResult{}, err
@@ -390,7 +390,7 @@ func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, even
 		// The settlement landed (the step is withdrawn to Open) but the
 		// condition -- a frozen body the executor cannot read -- would recur
 		// on the next Advance, so the drive stops here and the host decides
-		// whether to try again (RUN-LOP-3).
+		// whether to try again.
 		return LoopResult{Disposition: LoopDelivered}, settleErr
 	}
 	if finished != nil {
@@ -400,12 +400,12 @@ func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, even
 }
 
 // Run drives the Run until it finishes, has no executable action, or the
-// context is cancelled (RUN-LOP-2): Advance, wait for the Outcomes of what it
+// context is cancelled: Advance, wait for the Outcomes of what it
 // dispatched, GetOutcome, Deliver, repeat. It is the blocking form every
 // host uses; hosts that receive Outcomes from elsewhere call Advance and
 // Deliver themselves. The caller context bounds the drive: on cancellation the
 // in-flight assignments of the Run are cancelled and their Outcomes are still
-// settled (RUN-LOP-5) before ctx.Err is returned.
+// settled before ctx.Err is returned.
 func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, rt, runID); err != nil {
 		return LoopResult{}, err
@@ -433,7 +433,7 @@ func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, even
 	}()
 
 	// onOwnershipLost stops every in-flight effect: their Outcomes are not ours
-	// to write any more (RUN-LOP-5). The cancelled effects still report, so the
+	// to write any more. The cancelled effects still report, so the
 	// pending Outcomes are drained -- never settled -- before returning; a tool
 	// that ignores its context blocks here as it always would.
 	onOwnershipLost := func(err error) error {
@@ -551,7 +551,7 @@ func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes cha
 
 // commit builds the envelope via the sanctioned constructor and submits it.
 // A non-sentinel commit failure is replayed once with the same CommandID
-// (RUN-LOP-5): if the first attempt actually committed and only the response
+// if the first attempt actually committed and only the response
 // was lost, the replay returns AlreadyApplied instead of re-executing an
 // expensive step. Ownership loss is never retried.
 func (l *Loop) commit(ctx context.Context, rt store.RunStore, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) (store.CommitResult, error) {

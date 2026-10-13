@@ -15,11 +15,11 @@ var ErrEffectNotExecuting = errors.New("agent: loop: effect is not executing")
 
 // Redispatch rebuilds the Assignment of an Executing effect from the Run's
 // state and hands it to the Executor again. It is the effect process's
-// dispatch step (RUN-EXE-15): the Run recorded the start barrier, so the
+// dispatch step: the Run recorded the start barrier, so the
 // effect is owed to the Executor, and a Dispatch the Loop's own drive did
 // not complete (a crash between the start fact and the call) is completed
 // here. The Executor recognises a replayed Assignment by its key, so a
-// Redispatch of an effect it already holds changes nothing (RUN-EXE-3).
+// Redispatch of an effect it already holds changes nothing.
 func (l *Loop) Redispatch(ctx context.Context, rt store.RunStore, key AssignmentKey) error {
 	if err := l.checkArgs(ctx, rt, key.RunID); err != nil {
 		return err

@@ -40,14 +40,14 @@ const (
 	typeEnded    = sessionstore.Prefix + "run_ended"
 )
 
-// --- Start（TRN-STR-1/2/3/4、TRN-ID-3/4、TRN-EVT-2、TRN-SCP-2） -----------------------------
+// --- Start -----------------------------
 
 func testStart(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	submitted := h.submit("in-1", "in-2")
 	before := h.head()
 
-	// TRN-STR-1: every rejection leaves the ledger untouched.
+	// every rejection leaves the ledger untouched.
 	altered := input("in-1")
 	altered.Digest = "sha256:changed"
 	rejects := []struct {
@@ -70,8 +70,8 @@ func testStart(t *testing.T, factory Factory) {
 		t.Fatal("a rejected Start wrote to the ledger")
 	}
 
-	// TRN-STR-2/3: one atomic group in the specified order under the derived
-	// CommitID; the response reflects the committed state (TRN-STR-4).
+	// one atomic group in the specified order under the derived
+	// CommitID; the response reflects the committed state.
 	resp, err := h.c.Start(h.ctx, h.writer(), h.startRequest("t1", submitted...))
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +85,7 @@ func testStart(t *testing.T, factory Factory) {
 	if !sameTypes(group, turn.TypeStarted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("start group = %v", eventTypes(group))
 	}
-	// The Turn's fact names the one Run that executes it (TRN-SCP-2), and
+	// The Turn's fact names the one Run that executes it, and
 	// each delivery names both.
 	started := decode[turn.StartedPayload](t, h.registry, &group[0])
 	if started.TurnID != "t1" || started.RunID != runID || len(started.InputIDs) != 2 || started.Preset != presetRef {
@@ -116,7 +116,7 @@ func testStart(t *testing.T, factory Factory) {
 		t.Fatalf("run after start = %+v, want Open with both inputs pending", snap.State)
 	}
 
-	// TRN-EVT-2: a replay at a later time is already-applied and writes nothing.
+	// a replay at a later time is already-applied and writes nothing.
 	after := h.head()
 	h.now += 60_000
 	again, err := h.c.Start(h.ctx, h.writer(), h.startRequest("t1", submitted...))
@@ -124,7 +124,7 @@ func testStart(t *testing.T, factory Factory) {
 		t.Fatalf("replay = %+v %v, head moved=%v", again, err, h.head() != after)
 	}
 
-	// TRN-EVT-3 / TRN-SCP-2: the same TurnID with another plan, and a second
+	// the same TurnID with another plan, and a second
 	// Turn while one is active, are conflicts.
 	extra := h.submit("in-3")
 	if _, err := h.c.Start(h.ctx, h.writer(), h.startRequest("t1", extra...)); !errors.Is(err, turn.ErrConflict) {
@@ -142,14 +142,14 @@ func testStart(t *testing.T, factory Factory) {
 	}
 }
 
-// --- Deliver（TRN-DLV-1/2） --------------------------------------------------------------
+// --- Deliver --------------------------------------------------------------
 
 func testDeliver(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	resp := h.start("t1", "in-1")
 	runID := resp.RunID
 
-	// TRN-DLV-2: input_accepted and input_delivered share one commit whose
+	// input_accepted and input_delivered share one commit whose
 	// CommitID is the Run's input CommandID; the Run queues the input.
 	in2 := h.submit("in-2")
 	dresp, err := h.c.Deliver(h.ctx, h.writer(), sessionkernel.DeliverRequest{Ref: h.ref("t1"), Inputs: in2})
@@ -175,7 +175,7 @@ func testDeliver(t *testing.T, factory Factory) {
 		t.Fatalf("deliver replay: err=%v moved=%v", err, h.head() != head)
 	}
 
-	// TRN-DLV-1: an unknown Turn and a Turn that is not active are conflicts;
+	// an unknown Turn and a Turn that is not active are conflicts;
 	// the input stays submitted.
 	in3 := h.submit("in-3")
 	if _, err := h.c.Deliver(h.ctx, h.writer(), sessionkernel.DeliverRequest{Ref: h.ref("nope"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
@@ -192,9 +192,9 @@ func testDeliver(t *testing.T, factory Factory) {
 		t.Fatalf("in-3 after refused deliver = %s, want submitted", v.Status)
 	}
 
-	// TRN-DLV-1: Deliver validates like Start. An unsubmitted input, or a
+	// Deliver validates like Start. An unsubmitted input, or a
 	// payload that differs from the submitted content, is a conflict and the
-	// batch writes nothing -- including its valid members (TRN-DLV-2).
+	// batch writes nothing -- including its valid members.
 	h.start("t2", "in-4")
 	run2 := h.surface().Turns["t2"].RunID
 	in5 := h.submit("in-5")
@@ -225,7 +225,7 @@ func testDeliver(t *testing.T, factory Factory) {
 		t.Fatal("an unsubmitted input entered the chatlog")
 	}
 
-	// TRN-DLV-2: a batch is one group under the batch CommandID -- every
+	// a batch is one group under the batch CommandID -- every
 	// input_accepted and input_delivered together -- and its replay writes nothing.
 	in6 := h.submit("in-6")
 	batch := []run.AgentInput{in5[0], in6[0]}
@@ -250,9 +250,9 @@ func testDeliver(t *testing.T, factory Factory) {
 	}
 }
 
-// --- Retry（TRN-RTY-1/2/3、TRN-ID-4） --------------------------------------------------
+// --- Retry --------------------------------------------------
 
-// --- Stop（TRN-STP-1/2、TRN-EVT-3） --------------------------------------------------
+// --- Stop --------------------------------------------------
 
 func testStop(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
@@ -260,7 +260,7 @@ func testStop(t *testing.T, factory Factory) {
 		t.Fatalf("stop unknown = %v", err)
 	}
 
-	// TRN-STP-1: CancelRun and turn/failed{stopped} land in one commit.
+	// CancelRun and turn/failed{stopped} land in one commit.
 	resp := h.start("t1", "in-1")
 	sresp, err := h.c.Stop(h.ctx, h.writer(), sessionkernel.StopRequest{Ref: h.ref("t1"), Reason: "user"})
 	if err != nil || sresp.Status != turn.TurnStopped || sresp.Disposition != sessionkernel.ResumeFinished || sresp.End == nil {
@@ -281,7 +281,7 @@ func testStop(t *testing.T, factory Factory) {
 	if !sawEnded || failed == nil || failed.Settlement != turn.SettlementStopped || failed.FailureClass != "cancelled" || failed.Reason != "user" || failed.RunID != resp.RunID {
 		t.Fatalf("stop group = %v, failed=%+v", eventTypes(group), failed)
 	}
-	// A settled Turn admits nothing else (TRN-EVT-3).
+	// A settled Turn admits nothing else.
 	for name, call := range map[string]func() error{
 		"stop": func() error { _, err := h.c.Stop(h.ctx, h.writer(), sessionkernel.StopRequest{Ref: h.ref("t1")}); return err },
 		"deliver": func() error {
@@ -295,7 +295,7 @@ func testStop(t *testing.T, factory Factory) {
 	}
 
 	// A Run that ends without completing settles its Turn as failed from
-	// its own run_ended: the Turn and its Run are one (TRN-SCP-2), and the
+	// its own run_ended: the Turn and its Run are one, and the
 	// failure is the Turn's outcome, shown to the user; the next input opens
 	// a new Turn with the whole history, including this one, in view.
 	resp = h.start("t2", "in-2")
@@ -338,7 +338,7 @@ func testStop(t *testing.T, factory Factory) {
 	}
 }
 
-// --- Status（TRN-STA-1、TRN-API-3） ----------------------------------------------------
+// --- Status ----------------------------------------------------
 
 func testStatus(t *testing.T, factory Factory) {
 	cases := []struct {
@@ -375,7 +375,7 @@ func testStatus(t *testing.T, factory Factory) {
 	}
 }
 
-// --- surface 投影（TRN-PRJ-1、TRN-EVT-3、TRN-SCP-3） ------------------------------------
+// --- surface 投影 ------------------------------------
 
 func testProjection(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
@@ -402,10 +402,9 @@ func testProjection(t *testing.T, factory Factory) {
 		t.Fatalf("foreign run entered the surface: %+v", surface)
 	}
 
-	// TRN-EVT-3: a second started, a Run already named by a Turn and a
+	// a second started, a Run already named by a Turn and a
 	// settlement of an unknown Turn are refused by the fold before anything
-	// is written. (A Turn's own settlement right after its Run's end is the
-	// Stop unit's shape and stays legal, TRN-STP-1.)
+	// is written. (A Turn's own settlement right after its Run's end is the Stop unit's shape and stays legal,.)
 	failed := func(turnID turn.TurnID, s turn.Settlement) writer.TypedEvent {
 		return writer.TypedEvent{Type: turn.TypeFailed, RecordedAtUnixMilli: h.now,
 			Value: turn.FailedPayload{TurnID: turnID, RunID: resp.RunID, Settlement: s, FailureClass: "x"}}
@@ -457,7 +456,7 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 }
 
-// --- recovery（TRN-REC-1/2、TRN-SCP-3） -----------------------------------------------
+// --- recovery -----------------------------------------------
 
 func testRecovery(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
@@ -465,7 +464,7 @@ func testRecovery(t *testing.T, factory Factory) {
 
 	// started committed, process gone before driving: the new owner has
 	// nothing to dispose and the Turn is still active from the projections
-	// alone (TRN-SCP-3).
+	// alone.
 	h.takeover()
 	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Abandon: true}); err != nil || n != 0 {
 		t.Fatalf("recover after start = %d %v", n, err)

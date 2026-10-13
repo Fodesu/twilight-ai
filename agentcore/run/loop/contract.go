@@ -14,7 +14,7 @@ import (
 
 // ErrRunAlreadyRunning identifies a second local driver for the same Run.
 // A Loop permits concurrent execution of different Runs and serializes each
-// Run locally so every Executing target has one in-process owner (RUN-CMT-6).
+// Run locally so every Executing target has one in-process owner.
 var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
 
 // EffectContext identifies the effect a target is resolved for: the Run's
@@ -34,7 +34,7 @@ type EffectContext struct {
 	Placement run.ToolPlacement
 }
 
-// TargetResolver supplies an opaque target for one effect (RUN-LOP-9). It
+// TargetResolver supplies an opaque target for one effect. It
 // belongs to the application/resource layer: the Loop asks it once for every
 // effect it is about to start, before the start barrier, and only copies the
 // returned reference into that effect's Assignment. A nil target means the
@@ -45,21 +45,21 @@ type TargetResolver interface {
 }
 
 // Settings are the execution parameters the Loop takes from the AgentPreset
-// (RUN-LOP-1). Scheduling is frozen onto each ToolStep; MalformedRetries
+// Scheduling is frozen onto each ToolStep; MalformedRetries
 // bounds the retries of one model step after malformed results.
 type Settings struct {
 	Scheduling       run.ToolScheduling
 	MalformedRetries uint8
 	TargetResolver   TargetResolver
 	// BeforePrepare runs each time the Run is Open and about to plan a model
-	// request, before the PromptBuilder reads the context (RUN-LOP-10). It
+	// request, before the PromptBuilder reads the context. It
 	// is the application's seam for reshaping that context between steps,
-	// such as an in-turn checkpoint (APP-CKP-1); it commits through the
+	// such as an in-turn checkpoint; it commits through the
 	// Writer the store is bound to. An error stops the drive with no fact
 	// written; nil is no hook.
 	BeforePrepare PrepareHook
 	// Dispatch bounds the re-offers of an Assignment the Executor refused
-	// as retryable (RUN-EXE-3); the zero value selects the defaults.
+	// as retryable; the zero value selects the defaults.
 	Dispatch DispatchPolicy
 	// Watcher is where a blocking Run waits for the Outcomes it dispatched:
 	// one per (owner, executor), shared with the Reconciler, so waiting on
@@ -74,7 +74,7 @@ type Settings struct {
 // PromptBuilder.
 type PrepareHook func(ctx context.Context, store store.RunStore, input prompt.Input) error
 
-// --- EventSink: realtime observation, never authority (RUN-LOP-6) ---
+// --- EventSink: realtime observation, never authority ---
 
 type EventSink interface {
 	Emit(context.Context, Event) error
@@ -99,7 +99,7 @@ const (
 	EventRunFinished         EventKind = "run_finished"
 	// EventProgressReset voids the provisional observations of an effect
 	// received so far: the Worker re-dispatched it and a new Generation of
-	// deltas begins (RUN-EXE-12).
+	// deltas begins.
 	EventProgressReset EventKind = "progress_reset"
 )
 
@@ -168,7 +168,7 @@ const (
 )
 
 // DispatchPolicy is how a Loop repeats a Dispatch the Executor refused with
-// effect.ErrDispatchRetryable (RUN-EXE-3): at most Retries offers inside one
+// effect.ErrDispatchRetryable: at most Retries offers inside one
 // Advance, Backoff multiplied by the attempts so far between them. It is a
 // deployment's setting, not part of the AgentPreset.
 type DispatchPolicy struct {

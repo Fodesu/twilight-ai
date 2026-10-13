@@ -75,7 +75,7 @@ func (m StateMachine) bound() error {
 }
 
 // CreateGroup produces the facts that establish a Run and queue its initial
-// inputs (RUN-NEW-1). It is pure: the owning module places these facts in
+// inputs. It is pure: the owning module places these facts in
 // its creation commit, the RunStore never sees a Create command.
 func (m StateMachine) CreateGroup(run NewRun, inputs []AgentInput) ([]Fact, error) {
 	if err := m.bound(); err != nil {

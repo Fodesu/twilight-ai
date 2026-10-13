@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// This file covers EXT-PRJ-3: a projection's folded state living in the
+// This file covers a projection's folded state living in the
 // session.ProjectionCache, and a reopening Writer resuming from it instead of folding
 // the log again.
 
@@ -352,7 +352,7 @@ func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 	}
 	// Close is no exception to the interval: the entry lags by one commit,
 	// which the next Writer folds, instead of the whole state being written
-	// once more (EXT-PRJ-7).
+	// once more.
 	_, through, _, err = f.cache.Load(ctx, "s", alphaID, 1)
 	if err != nil || through.Next != 3 {
 		t.Fatalf("entry after Close: through=%d err=%v, want 3 (the interval governs Close too)", through.Next, err)
@@ -391,7 +391,7 @@ func TestWriterWithoutCacheFoldsEverything(t *testing.T) {
 	}
 }
 
-// EXT-PRJ-10: an authoritative projection's entry is a checkpoint sealed
+// an authoritative projection's entry is a checkpoint sealed
 // with a digest over its identity, position and state. A well-formed entry
 // whose state was not what the Writer saved (here: a derived projection's
 // entry copied under the authoritative one) is a miss, and the Writer

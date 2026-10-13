@@ -17,7 +17,7 @@ import (
 )
 
 // Fixture is one adapter under test. Ledger must verify sets through a
-// BindingSetBuilder over Bindings (ART-RET-1). NewContent builds a cas
+// BindingSetBuilder over Bindings. NewContent builds a cas
 // ContentStore for one Authority; Advance moves the clock those stores judge
 // expiry by, nil skips the expiry checks.
 type Fixture struct {
@@ -80,7 +80,7 @@ func mustBinding(t *testing.T, ctx context.Context, store artifact.BindingStore,
 	return b
 }
 
-// ART-ID-1, ART-REF-1, ART-REF-2: validation, identity stability and the
+// validation, identity stability and the
 // identity-bound MediaType.
 func testRef(t *testing.T) {
 	expires := int64(5)
@@ -129,7 +129,7 @@ func testRef(t *testing.T) {
 	}
 }
 
-// ART-BND-1: immutable bindings, exact-rebuild idempotency, conflict.
+// immutable bindings, exact-rebuild idempotency, conflict.
 func testBinding(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	ref := sampleRef("k1", artifact.EventBound)
@@ -160,7 +160,7 @@ func testBinding(t *testing.T, f Fixture) {
 	}
 }
 
-// ART-RET-1, ART-RET-2 (builder half): sorted-unique ids, order-independent
+// (builder half): sorted-unique ids, order-independent
 // digest, ephemeral rejection.
 func testSet(t *testing.T, f Fixture) {
 	ctx := context.Background()
@@ -187,7 +187,7 @@ func testSet(t *testing.T, f Fixture) {
 	}
 }
 
-// ART-RET-2: the state table, exact verification of incoming sets.
+// the state table, exact verification of incoming sets.
 func testLedger(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	mustBinding(t, ctx, f.Bindings, "b1", sampleRef("k1", artifact.EventBound))
@@ -240,7 +240,7 @@ func (s ownerSet) OwnerExists(_ context.Context, o artifact.ClaimOwner) (bool, e
 	return s[o.Identity], nil
 }
 
-// ART-RET-3: reconciliation releases orphans and leaves owned claims alone.
+// reconciliation releases orphans and leaves owned claims alone.
 func testReconcile(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	mustBinding(t, ctx, f.Bindings, "b1", sampleRef("k1", artifact.EventBound))
@@ -265,7 +265,7 @@ func testReconcile(t *testing.T, f Fixture) {
 	}
 }
 
-// ART-RET-3: watermark cursor pagination and owner filters.
+// watermark cursor pagination and owner filters.
 func testPaging(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	mustBinding(t, ctx, f.Bindings, "b1", sampleRef("k1", artifact.EventBound))
@@ -389,7 +389,7 @@ func readAll(t *testing.T, r artifact.Resolver, ref artifact.Ref) string {
 	return string(data)
 }
 
-// ART-BND-2, ART-CAP-1, ART-CAP-2: cas keys, idempotent Put, verified reads
+// cas keys, idempotent Put, verified reads
 // and the error classification.
 func testContent(t *testing.T, f Fixture) {
 	ctx := context.Background()
@@ -417,7 +417,7 @@ func testContent(t *testing.T, f Fixture) {
 	if info, err := store.Stat(ctx, ref); err != nil || info.MediaType != "text/plain" || *info.Integrity != *ref.Integrity {
 		t.Fatalf("stat = %+v %v", info, err)
 	}
-	// Classification (ART-CAP-1).
+	// Classification.
 	missing := ref
 	missing.Key = artifact.Key("sha256:" + strings.Repeat("0", 64))
 	missing.Integrity = &artifact.Integrity{Algorithm: "sha256", Value: strings.Repeat("0", 64)}
@@ -472,7 +472,7 @@ func testContent(t *testing.T, f Fixture) {
 	}
 }
 
-// ART-REF-2, ART-BND-2: promotion never lowers durability, clears expiry,
+// promotion never lowers durability, clears expiry,
 // yields a new Ref and a new Binding without touching the old one.
 func testPromote(t *testing.T, f Fixture) {
 	ctx := context.Background()
@@ -522,7 +522,7 @@ func testPromote(t *testing.T, f Fixture) {
 	}
 }
 
-// ART-PRO-1: immutable registry, unique scheme and (scheme, authority),
+// immutable registry, unique scheme and (scheme, authority),
 // verification outcomes.
 func testRegistry(t *testing.T) {
 	cas := artifact.CASScheme()

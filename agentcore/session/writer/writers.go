@@ -20,7 +20,7 @@ type writerSet struct {
 }
 
 // NewWriters returns a Writers that opens each Session once and hands out the
-// same Writer afterwards (EXT-WRT-6).
+// same Writer afterwards.
 func NewWriters(store session.Store, registry *module.Registry, admission Admission, opts session.OpenOptions, cfg WritersConfig) Writers {
 	return &writerSet{store: store, registry: registry, admission: admission, opts: opts, cfg: cfg, open: make(map[session.SessionID]Writer)}
 }
@@ -37,7 +37,7 @@ func (ws *writerSet) Writer(ctx context.Context, sid session.SessionID) (Writer,
 		// the Session back from the process that owns it now, and that is the
 		// host's decision (CloseWriter forgets the failed Writer first). Every
 		// other failure is: a fresh Writer rebuilds from the log and a replay
-		// of the same CommitID is answered by the kernel's index (EXT-WRT-4).
+		// of the same CommitID is answered by the kernel's index.
 		if errors.Is(lost, &ledger.Error{Code: ledger.CodeOwnershipLost}) {
 			return nil, lost
 		}
@@ -108,7 +108,7 @@ func CloseWriters(ctx context.Context, ws Writers) error {
 }
 
 // CloseWriter closes and forgets one Session's Writer of a NewWriters value
-// (EXT-WRT-6). Another Writers implementation has its Writer closed in place.
+// Another Writers implementation has its Writer closed in place.
 func CloseWriter(ctx context.Context, ws Writers, sid session.SessionID) error {
 	if c, ok := ws.(interface {
 		CloseWriter(context.Context, session.SessionID) error

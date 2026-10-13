@@ -14,7 +14,7 @@ type RecoveryDisposition struct {
 // model step or tool call, and the effect it requested (from the started
 // fact). The reconciler (agent/run/reconcile) asks the executor whether it
 // still holds an attempt for that effect; only if not is the recovery command
-// issued (RUN-CMT-7).
+// issued.
 type RecoveryTarget struct {
 	RunID  run.RunID
 	StepID run.StepID
@@ -55,7 +55,7 @@ func RecoveryTargets(state *run.MachineState) []RecoveryTarget {
 // RecoveryCommand is the disposition of one target whose effect is lost: an
 // Executing model step is withdrawn to Open (the next Prepare plans again);
 // an Executing tool call settles as Unknown. The command's identity derives
-// from the effect alone (RUN-WIR-1), so the same disposition issued by any
+// from the effect alone, so the same disposition issued by any
 // owner, or issued twice, replays instead of applying again.
 func RecoveryCommand(id run.Identity, target RecoveryTarget) RecoveryDisposition {
 	if target.Call == nil {
@@ -77,7 +77,7 @@ func RecoveryCommand(id run.Identity, target RecoveryTarget) RecoveryDisposition
 }
 
 // RecoveryCommands lists the takeover dispositions of every Executing target
-// in state (RUN-CMT-7). Pending and Waiting calls are left alone.
+// in state. Pending and Waiting calls are left alone.
 func RecoveryCommands(id run.Identity, state *run.MachineState) []RecoveryDisposition {
 	targets := RecoveryTargets(state)
 	if len(targets) == 0 {

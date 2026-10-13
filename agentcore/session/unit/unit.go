@@ -35,7 +35,7 @@ func (f PartFunc) Prepare(ctx context.Context, view writer.View, now int64) ([]w
 type Work struct {
 	// CommitID names the operation: the writer derives it so that one
 	// identity means one operation, and a second unit under it is the same
-	// operation replayed (EXT-WRT-2).
+	// operation replayed.
 	CommitID ledger.CommitID
 	Parts    []Part
 }

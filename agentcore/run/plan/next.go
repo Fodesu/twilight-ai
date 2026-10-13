@@ -8,7 +8,7 @@ import (
 )
 
 // Action is the at-most-one pending action Next derives from the current
-// state (RUN-MCH-4): what the Loop does next to move the Run. Actions are
+// state: what the Loop does next to move the Run. Actions are
 // never persisted; the Loop re-derives them after every Load. An action is
 // not an effect: a start action requests an effect (run.EffectID) only once
 // its start fact is committed, and the other actions request none.
@@ -49,7 +49,7 @@ type Idle struct{}
 
 func (Idle) action() {}
 
-// Next derives the pending action from the current state (RUN-MCH-4).
+// Next derives the pending action from the current state.
 // Terminal states return ErrRunTerminal; callers check Status first.
 //
 //nolint:gocritic // hugeParam: Next is a pure value-state interpreter and must not mutate MachineState.

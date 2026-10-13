@@ -9,7 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
-// ProjectionDefinition is a pure fold over decoded events (EXT-PRJ-1).
+// ProjectionDefinition is a pure fold over decoded events.
 type ProjectionDefinition struct {
 	ID         ProjectionID
 	Version    ProjectionVersion
@@ -18,7 +18,7 @@ type ProjectionDefinition struct {
 	Apply      func(any, DecodedEvent) (any, error)
 	StateCodec PayloadCodec
 	// Inherits decides, per logical stream, what the fold takes from the
-	// commits a fork inherits (EXT-PRJ-8). nil follows the lineage each
+	// commits a fork inherits. nil follows the lineage each
 	// stream's domain declared: inherited batches of Inherited domains
 	// are folded and those of Own domains are skipped, so a
 	// child never interprets its parent's execution history as its own. A
@@ -30,7 +30,7 @@ type ProjectionDefinition struct {
 	// invariants with: a provisional commit its fold cannot fold is refused
 	// before anything is persisted. Every other projection is a derived read
 	// model: a fold failure marks it unhealthy for the Writer's lifetime and
-	// never blocks the facts (EXT-PRJ-9). Write-time invariants belong to
+	// never blocks the facts. Write-time invariants belong to
 	// the Writer's decision, not to projections; an authoritative fold
 	// failing is a defect, not a business rejection.
 	Authoritative bool
@@ -75,7 +75,7 @@ type ProjectionScope struct {
 }
 
 // ScopeFor resolves a projection definition together with the module scope
-// its fold must honour (EXT-PRJ-2). It is the entry point of the fold
+// its fold must honour. It is the entry point of the fold
 // engine: every fold starts from a Scope.
 func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionScope, error) {
 	def, module, ok := r.LookupProjection(id, v)
@@ -90,7 +90,7 @@ func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionSc
 }
 
 // Fold applies whole commits to state, event by event in CommitSeq order
-// (EXT-PRJ-1/2). commits must be contiguous from the ledger and complete:
+// commits must be contiguous from the ledger and complete:
 // the store never exposes a torn commit. A fold reads every stream: the
 // commits carry their own stream attribution, and a projection whose
 // Consumes spans modules sees their events wherever the commits placed
@@ -101,7 +101,7 @@ func (r *Registry) Fold(s *ProjectionScope, state any, commits []ledger.Commit) 
 }
 
 // FoldFrom folds commits under the inheritance policy of the projection
-// (EXT-PRJ-8): header is the tip segment's header, whose Parent edge marks
+// header is the tip segment's header, whose Parent edge marks
 // the inherited prefix; commits at or below Parent.Seq contribute only the
 // batches the policy admits, by default those of Inherited domains. A
 // header without a Parent (a root, or a caller folding tip commits only)
@@ -144,7 +144,7 @@ func (r *Registry) applyEvent(s *ProjectionScope, state any, pos ledger.Position
 		if _, inScope := s.modules[module]; known && inScope {
 			// The registry is the only authority on Ignorable, and an
 			// unregistered type has no entry to consult: an in-scope event
-			// the registry does not know is an error (EXT-PRJ-2).
+			// the registry does not know is an error.
 			return nil, &ledger.Error{Code: ledger.CodeUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q: unregistered event of module %s/%s at commit %d", s.Def.ID, module.Source, module.ID, seq)}
 		}
 		return state, nil
@@ -184,7 +184,7 @@ func checkpointDigest(id ProjectionID, v ProjectionVersion, through ledger.Head,
 }
 
 // SealCheckpoint wraps an authoritative projection's encoded state with its
-// digest for the cache (EXT-PRJ-10).
+// digest for the cache.
 func SealCheckpoint(id ProjectionID, v ProjectionVersion, through ledger.Head, state jsonstable.Value) (jsonstable.Value, error) {
 	return jsonstable.FromValue(sealedCheckpoint{State: state.Bytes(), Digest: checkpointDigest(id, v, through, state)})
 }
@@ -233,7 +233,7 @@ type CachePolicy func(id ProjectionID, v ProjectionVersion, head, cached ledger.
 // the entry the cache already covers, at Close as at any other time: the
 // entry may lag the head by up to n commits, and a Writer reopening folds
 // at most that many. Writing a large projection's whole state on every
-// Close would cost the state's size per Turn (EXT-PRJ-7); a deployment
+// Close would cost the state's size per Turn; a deployment
 // that wants a clean Close to leave nothing to fold wraps the policy in
 // AtClose. n <= 0 means DefaultCacheEvery.
 func CacheEvery(n ledger.CommitSeq) CachePolicy {

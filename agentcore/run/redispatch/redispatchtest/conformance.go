@@ -30,7 +30,7 @@ func commit(t *testing.T, seq ledger.CommitSeq, id ledger.CommitID, typ ledger.E
 
 // The dispatch ledger answers replays by identity, stale sequences and
 // illegal steps with the kernel's sentinels, and fences a writer whose epoch
-// is behind the highest that has written the key (RUN-EXE-15).
+// is behind the highest that has written the key.
 func testLedger(t *testing.T, store redispatch.Store) {
 	ctx := context.Background()
 	k1 := effect.AssignmentKey{Session: "s1", RunID: "r1", Effect: "sha256:e1"}

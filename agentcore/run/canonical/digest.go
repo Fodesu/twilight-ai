@@ -9,7 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 )
 
-// Envelope types of the bodies facts name by digest only (RUN-WIR-4). The
+// Envelope types of the bodies facts name by digest only. The
 // frozen store (agent/run/frozen) keeps each body as the typed envelope its
 // digest was computed from, so it encodes and decodes under the same names.
 const (
@@ -82,7 +82,7 @@ func (Digests) DigestToolResponsePayload(payload run.CanonicalJSON) (run.Digest,
 }
 
 // DigestModelResult names a frozen model result; ModelStepCompleted carries
-// this digest and the frozen store holds the body (RUN-WIR-4).
+// this digest and the frozen store holds the body.
 func (Digests) DigestModelResult(result model.ModelResult) (run.Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ModelResult value.
 	body, err := jsonstable.EncodeTypedPayload(preimageVersion, ModelResultType, result)
 	if err != nil {

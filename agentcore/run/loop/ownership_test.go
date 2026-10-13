@@ -52,7 +52,7 @@ func (c *commitLog) settlementsFor(callID CallID) int {
 
 // Two tool calls run in parallel. The Session is taken over while both are
 // executing; the first worker to finish has its settlement fenced with
-// ErrOwnershipLost. RUN-LOP-5 then requires the Loop to cancel every other
+// ErrOwnershipLost. The Loop must then cancel every other
 // worker's ctx, commit no further settlement, and return that error without
 // waiting for the blocked worker to be released on its own.
 func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
@@ -154,7 +154,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 
 // The model path has the same terminal rule: a model-step settlement fenced by
 // ErrOwnershipLost is returned as is, without the one-shot replay a
-// non-sentinel commit error would get (RUN-LOP-5).
+// non-sentinel commit error would get.
 func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})

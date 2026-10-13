@@ -218,7 +218,7 @@ func (r *recordingTargetResolver) ResolveTarget(_ context.Context, ec EffectCont
 
 // The resolver is asked once per effect, before the effect starts, with the
 // effect's own coordinates, and its answer lands on that effect's Assignment
-// only (RUN-LOP-9).
+// only.
 func TestTargetResolvedPerEffect(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
@@ -282,7 +282,7 @@ func TestAdvanceCopiesOpaqueTargetIntoAssignment(t *testing.T) {
 
 // Advance records the start barrier and hands the model call to the executor
 // without waiting for it; Deliver settles the Outcome and the next Advance
-// finishes the Run (RUN-EXE-3/4).
+// finishes the Run.
 func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
@@ -317,7 +317,7 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 		t.Fatalf("deliver = %+v %v", delivered, err)
 	}
 	// The settlement is a fact: the executor is told it may collect the
-	// effect's record (RUN-EXE-13).
+	// effect's record.
 	exec.mu.Lock()
 	acked := append([]AssignmentKey(nil), exec.acknowledged...)
 	exec.mu.Unlock()
@@ -426,7 +426,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 
 // Takeover with a reachable executor: the new owner's RecoverInterrupted asks
 // the executor, which still holds an attempt for the effect, so the step stays
-// Executing under its original effect and that Outcome settles it (RUN-CMT-7).
+// Executing under its original effect and that Outcome settles it.
 func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
@@ -519,7 +519,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 		t.Fatalf("RecoverInterrupted = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
 	}
 	// The unreachable attempt is withdrawn: the Run is Open, the step is not
-	// counted, and the next Advance plans again (TRN-DUR-1).
+	// counted, and the next Advance plans again.
 	state := loadState(t, stack.runtime, stack.writer(t), "run-1").State
 	if _, open := state.Current.(Open); !open || state.ModelSteps != 0 {
 		t.Fatalf("state after disposition = %+v, want Open with no counted step", state)
@@ -598,7 +598,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 }
 
 // A model outcome that reports cancellation withdraws the step to Open for
-// replanning rather than failing the Run (RUN-LOP-3).
+// replanning rather than failing the Run.
 func TestDeliverCancelledModelRecovers(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
@@ -625,7 +625,7 @@ func TestDeliverCancelledModelRecovers(t *testing.T) {
 // A frozen body a remote executor reports missing withdraws the step (the
 // settlement lands, the Run is Open) and the condition comes back as an error,
 // so the drive stops instead of prompt building again against the same missing
-// store. A later Advance -- the host's decision -- plans afresh (RUN-LOP-3).
+// store. A later Advance -- the host's decision -- plans afresh.
 func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
@@ -728,7 +728,7 @@ func mustModel(t testing.TB, a Assignment) ModelAssignment {
 
 // Validate refuses a tool Assignment whose Replay policy or Placement
 // differs from the tool's own declaration, the same definition-mismatch
-// answer as a response policy that differs (RUN-EXE-9, RUN-LOP-9); Restart
+// answer as a response policy that differs; Restart
 // itself only derives the Ref.
 func TestLocalExecutorValidateChecksToolDeclarations(t *testing.T) {
 	cases := []struct {

@@ -18,10 +18,10 @@ type ProjectionReader interface {
 	Load(ctx context.Context, sid SessionID, id module.ProjectionID, v module.ProjectionVersion) (state any, through ledger.Head, err error)
 }
 
-// ProjectionCache is the optional derived cache of EXT-PRJ-3. Entries may be
+// ProjectionCache is the optional derived cache. Entries may be
 // lost or stale at any time; readers verify Through against the stream.
 // An Authoritative projection's entry is a checkpoint the Writer plans the
-// next commit against (EXT-PRJ-10): its state bytes travel with the digest
+// next commit: its state bytes travel with the digest
 // the Writer computed when it saved them, in the same Value (see
 // module.SealCheckpoint), and a reader that finds the digest missing or
 // wrong treats the entry as absent. A derived projection's entry carries the
@@ -67,7 +67,7 @@ func (c *MemoryProjectionCache) Load(_ context.Context, sid SessionID, id module
 }
 
 // Save keeps the entry monotonic: a write that reaches the cache after a
-// later one (Save runs outside the Writer's critical section, EXT-PRJ-7)
+// later one (Save runs outside the Writer's critical section)
 // never moves the entry back.
 func (c *MemoryProjectionCache) Save(_ context.Context, sid SessionID, id module.ProjectionID, v module.ProjectionVersion, state jsonstable.Value, through ledger.Head) error {
 	c.mu.Lock()
@@ -110,7 +110,7 @@ func SaveProjection(ctx context.Context, cache ProjectionCache, registry *module
 }
 
 // LoadProjectionEntry reads a cache entry for def, unsealing and verifying
-// an authoritative one (EXT-PRJ-10); an entry that does not verify is a
+// an authoritative one; an entry that does not verify is a
 // miss.
 func LoadProjectionEntry(ctx context.Context, cache ProjectionCache, def *module.ProjectionDefinition, sid SessionID) (jsonstable.Value, ledger.Head, bool, error) {
 	encoded, through, ok, err := cache.Load(ctx, sid, def.ID, def.Version)

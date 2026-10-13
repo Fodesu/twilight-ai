@@ -9,7 +9,7 @@ import (
 
 // Progresses fans a Session's transient observations out to its
 // subscribers: the progress the executor reported of an effect while it ran
-// (RUN-EXE-12) and the failures of background work, both reported for the
+// and the failures of background work, both reported for the
 // same audience as the committed stream but never entering it. None of it
 // is a fact: an item has a zero Position, may be lost, and is replaced by
 // the committed result that follows.

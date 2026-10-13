@@ -20,7 +20,7 @@ import (
 // Map is executionstore.Store over Go maps. The zero value is ready; Now is
 // the lease clock, nil selecting time.Now. Every method holds one mutex for
 // its whole read-fold-judge-write, which is the transaction the contract
-// requires (RUN-EXE-6).
+// requires.
 type Map struct {
 	Now func() time.Time
 

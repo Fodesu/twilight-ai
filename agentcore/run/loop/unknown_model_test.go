@@ -9,7 +9,7 @@ import (
 
 // A model outcome without an answer withdraws the step to Open, the same
 // disposition as a cancelled effect and as the recovery path's missing
-// execution; only a provider failure ends the Run (RUN-CMT-7, RUN-EXE-6).
+// execution; only a provider failure ends the Run.
 func TestModelCompletionWithdrawsOnUnknown(t *testing.T) {
 	step := &run.ModelStep{RefValue: run.StepRef{RunID: "r", ID: "s1"}, Status: run.ModelExecuting, Effect: "e1"}
 	cases := []struct {

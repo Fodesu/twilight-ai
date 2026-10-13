@@ -1,7 +1,7 @@
 // Package artifact is the Artifact Core:
 // Ref, Binding and the two-state RetentionLedger. The ledger
 // persists itself; claims are activated before the owner fact is appended and
-// orphans are released by the pre-collection reconciliation (ART-RET-3).
+// orphans are released by the pre-collection reconciliation.
 package artifact
 
 import (
@@ -64,7 +64,7 @@ type Integrity struct {
 	Value     string `json:"value"`
 }
 
-// Ref locates and verifies immutable content (ART-REF-1).
+// Ref locates and verifies immutable content.
 type Ref struct {
 	Scheme             Scheme     `json:"scheme"`
 	Authority          Authority  `json:"authority"`
@@ -76,7 +76,7 @@ type Ref struct {
 	ExpiresAtUnixMilli *int64     `json:"expiresAtUnixMilli,omitempty"`
 }
 
-// Validate applies ART-ID-1 and ART-REF-2.
+// Validate checks locator components, durability, integrity and expiry.
 //
 //nolint:gocritic // Ref is intentionally passed by value as an immutable wire value.
 func (r Ref) Validate() error {
@@ -109,7 +109,7 @@ func (r Ref) Identity() (string, error) {
 	return string(raw), nil
 }
 
-// Binding maps a stable BindingID to an immutable Ref (ART-BND-1).
+// Binding maps a stable BindingID to an immutable Ref.
 type Binding struct {
 	ID     BindingID     `json:"id"`
 	Ref    Ref           `json:"ref"`
@@ -179,7 +179,7 @@ const (
 	ClaimReleased ClaimState = "released"
 )
 
-// BindingSet is a canonical, resolved retention set (ART-RET-1).
+// BindingSet is a canonical, resolved retention set.
 type BindingSet struct {
 	BindingIDs   []BindingID  `json:"bindingIds"`
 	RefSetDigest RefSetDigest `json:"refSetDigest"`
@@ -243,7 +243,7 @@ func SortedUniqueBindingIDs(ids []BindingID) []BindingID {
 	return out[:n]
 }
 
-// ClaimOwnerQuery selects claims by owner (ART-RET-3). Identities nil selects
+// ClaimOwnerQuery selects claims by owner. Identities nil selects
 // every owner of the Kind under the Authority; an explicit list selects those
 // owners only, and an empty identity in it matches nothing. Limit is the page
 // size, 0 meaning DefaultClaimPageSize.
@@ -272,14 +272,14 @@ type ClaimPage struct {
 // DefaultClaimPageSize is the ClaimsByOwner page size when the query gives none.
 const DefaultClaimPageSize = 256
 
-// RetentionLedger keeps Active/Released claims (ART-RET-2). It persists
+// RetentionLedger keeps Active/Released claims. It persists
 // itself; Activate returns only once the claim is durable.
 type RetentionLedger interface {
 	Activate(context.Context, ClaimID, ClaimOwner, BindingSet) (RetentionClaim, error)
 	LookupClaim(context.Context, ClaimID) (RetentionClaim, bool, error)
 	ReleaseActive(context.Context, ClaimID) error
 	// ClaimsByOwner enumerates the matching claims of every state in stable
-	// ClaimID order under a watermark cursor (ART-RET-3).
+	// ClaimID order under a watermark cursor.
 	ClaimsByOwner(context.Context, ClaimOwnerQuery, ClaimCursor) (ClaimPage, error)
 }
 
@@ -311,7 +311,7 @@ type OwnerVerifier interface {
 }
 
 // Reconcile releases Active claims in scope whose owner no longer exists
-// (ART-RET-3). The caller guarantees no owner write in scope is in flight.
+// The caller guarantees no owner write in scope is in flight.
 func Reconcile(ctx context.Context, ledger RetentionLedger, scope ClaimOwnerScope, verifier OwnerVerifier) (int, error) {
 	claims, err := ActiveClaims(ctx, ledger, scope)
 	if err != nil {

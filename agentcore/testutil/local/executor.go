@@ -48,7 +48,7 @@ type Attachment = effect.Attachment
 type Executor = effect.ExecutionPort
 
 // Acknowledger is effect.Acknowledger: the optional retention hint an
-// Executor may implement (RUN-EXE-13).
+// Executor may implement.
 type Acknowledger = effect.Acknowledger
 
 const (
@@ -116,7 +116,7 @@ type LocalExecutor struct {
 }
 
 // DefaultRetainedOutcomes bounds the terminal records a LocalExecutor keeps
-// for idempotent reads (RUN-EXE-3); records still executing are never dropped.
+// for idempotent reads; records still executing are never dropped.
 const DefaultRetainedOutcomes = 1024
 
 type inflight struct {
@@ -129,7 +129,7 @@ type inflight struct {
 }
 
 // NewLocalExecutor builds the in-process executor. sink receives progress
-// frames (model deltas, tool progress; RUN-EXE-12), normally the Worker's
+// frames (model deltas, tool progress), normally the Worker's
 // ProgressHub; nil discards them. streaming selects StreamingModelInvoker
 // when the invoker offers it.
 func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, sink effect.ProgressSink, streaming bool) (*LocalExecutor, error) {
@@ -167,7 +167,7 @@ func (e *LocalExecutor) Prepare(_ context.Context, a Assignment) (string, error)
 // Ref with a generation suffix, so a re-dispatched step gets its own entry
 // and the previous one stays readable until retention drops it. Whether a
 // tool may be re-dispatched is the Worker's decision from the Assignment's
-// Replay policy (RUN-EXE-9); Restart only derives the Ref.
+// Replay policy; Restart only derives the Ref.
 func (e *LocalExecutor) Restart(_ context.Context, previous string, a Assignment) (string, error) {
 	base := RefOf(a.Key())
 	gen := 1
@@ -198,9 +198,8 @@ func (e *LocalExecutor) evictLocked() {
 	}
 }
 
-// Validate is the pre-start check (RUN-EXE-5): tools per RUN-LOP-4, models
-// by resolving the ModelRef in the catalog so a missing model fails before
-// any start fact is written (RUN-LOP-3).
+// Validate checks the tool definition and policy or resolves the ModelRef
+// in the catalog so invalid assignments fail before any start fact is written.
 func (e *LocalExecutor) Validate(_ context.Context, a Assignment) (*run.ToolFailure, error) {
 	switch body := a.Body.(type) {
 	case ModelAssignment:
@@ -286,7 +285,7 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		if invoker == nil {
 			return fmt.Errorf("%w: model catalog returned a nil invoker", ErrExecutorRejected)
 		}
-		// Dispatch MUST carry the inline request payload (RUN-EXE-7): the
+		// Dispatch MUST carry the inline request payload: the
 		// digest-only reconstruction of AssignmentFromTarget never enters
 		// Dispatch, so a missing body is a definite rejection here.
 		if body.Request == nil {
@@ -456,7 +455,7 @@ func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenReques
 }
 
 // modelFailure classifies a model invocation error into the wire-stable
-// failure codes (RUN-EXE-11): the executor's own conditions first, then the
+// failure codes: the executor's own conditions first, then the
 // provider's HTTP status or the transport through effect.ClassifyModelError.
 func modelFailure(err error) OutcomeResult {
 	switch {

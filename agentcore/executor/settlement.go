@@ -11,7 +11,7 @@ import (
 // late subscribers.
 const DefaultSettlementWindow = notice.DefaultWindow
 
-// SettlementHub is the Worker's settlement notice log (RUN-EXE-17): the
+// SettlementHub is the Worker's settlement notice log: the
 // notice.Ring of effect.Settlement, the SettlementPort the Worker and the
 // HTTP Server expose. One hub per Worker incarnation; every settlement the
 // Worker records, whoever dispatched it, goes through it.
@@ -46,7 +46,7 @@ func (h *SettlementHub) Close() {
 
 // Settlements implements effect.SettlementPort: an announcement of the
 // hub's epoch and head first (a Settlement with a zero Key), then every
-// settled key (RUN-EXE-17).
+// settled key.
 func (h *SettlementHub) Settlements(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
 	return h.ring.SubscribeAnnounced(ctx, epoch, after, func(e string, head uint64) effect.Settlement {
 		return effect.Settlement{Epoch: e, Sequence: head}

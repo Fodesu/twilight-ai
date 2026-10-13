@@ -145,7 +145,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 	}
 }
 
-// EXT-WRT-4(b): an Append whose outcome is unknown fails the Writer closed. A
+// an Append whose outcome is unknown fails the Writer closed. A
 // reopened Writer replays the same commit and the kernel's index answers:
 // AlreadyApplied when the commit reached the log, Applied when it did not. In
 // both cases the log stays a valid chain with contiguous Seqs.

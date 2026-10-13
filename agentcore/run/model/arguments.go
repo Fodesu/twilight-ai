@@ -19,7 +19,7 @@ type ToolArguments struct {
 // Valid reports whether the arguments are a JSON document a tool can decode.
 func (a ToolArguments) Valid() bool { return a.Text == "" }
 
-// Canonical is the binding form of the arguments (RUN-MCH-2): the document
+// Canonical is the binding form of the arguments: the document
 // itself, the empty object for the zero value, or the invalid text as a JSON
 // string so the binding digest still covers what the model wrote and
 // validation fails as invalid_arguments.

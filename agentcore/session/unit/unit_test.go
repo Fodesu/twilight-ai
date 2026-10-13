@@ -97,7 +97,7 @@ func TestCommitMergesRefusesAndReplays(t *testing.T) {
 }
 
 // A CommitID the log holds is already applied without preparing a Part,
-// whatever the later unit would have written (EXT-WRT-2): the identity is
+// whatever the later unit would have written: the identity is
 // the operation.
 func TestCommitReplaysByCommitID(t *testing.T) {
 	ctx := context.Background()

@@ -12,7 +12,7 @@ import (
 // backendNotices is the Worker's subscriber to its Backends' settled Refs
 // (notice.Source): one stream per Backend for every execution the Worker
 // observes on it, the way effect.Watcher keeps one stream per executor for
-// the Owner (RUN-EXE-17). A waiter registers a Ref and is woken when the
+// the Owner. A waiter registers a Ref and is woken when the
 // Backend announces it; a stream that drops or changes epoch wakes every
 // waiter so each re-reads, which is what the notice protocol asks of a
 // subscriber that lost track.

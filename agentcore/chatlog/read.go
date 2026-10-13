@@ -37,7 +37,7 @@ func ReadContext(ctx context.Context, r session.ProjectionReader, sid session.Se
 
 // LastAssistantText is the text of the Turn's last assistant entry: the
 // Surface names the frozen ModelResult by digest and content resolves it
-// (CHT-MAT-1). It is empty when the Turn has no assistant entry.
+// It is empty when the Turn has no assistant entry.
 func LastAssistantText(ctx context.Context, r session.ProjectionReader, content ContentResolver, sid session.SessionID, turnID TurnID) (string, error) {
 	surface, err := ReadSurface(ctx, r, sid)
 	if err != nil {
@@ -68,7 +68,7 @@ func (s *Surface) LastAssistantText(ctx context.Context, content ContentResolver
 }
 
 // NewInputID mints a collision-free InputID; the chatlog requires
-// session-global uniqueness across restarts (CHT-EVT-1).
+// session-global uniqueness across restarts.
 func NewInputID() run.InputID { return run.InputID("in-" + randomSuffix(8)) }
 
 func randomSuffix(n int) string {

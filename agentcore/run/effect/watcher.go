@@ -30,10 +30,10 @@ type Watcher struct {
 	// ends or fails. Zero selects DefaultWatchReconnect.
 	Reconnect time.Duration
 	// Probe is how long a registered key may wait without an Outcome before
-	// the Watcher attaches it (RUN-EXE-3): an orphaned execution, whose
+	// the Watcher attaches it: an orphaned execution, whose
 	// Worker died holding it, is handed to Port's RecoverExecution when
 	// Port implements Recoverer, so a live drive survives a worker
-	// replacement without an owner takeover (CLD-DEV-2). Each key is probed
+	// replacement without an owner takeover. Each key is probed
 	// at most once per Probe. Zero selects DefaultWatchProbe; negative
 	// disables probing.
 	Probe time.Duration
@@ -193,7 +193,7 @@ func (w *Watcher) run() {
 
 // probeStale attaches every key that has waited at least probe since it
 // was registered or last probed, and asks for the recovery of an orphaned
-// one (RUN-EXE-3, RUN-EXE-6). Attach failures and refusals are left to the
+// one. Attach failures and refusals are left to the
 // next probe: the Worker's record is the authority, the probe only asks.
 func (w *Watcher) probeStale(probe time.Duration) {
 	now := time.Now()

@@ -7,7 +7,7 @@ import (
 )
 
 // Deep-copy helpers: Runtime return values must be read-only snapshots
-// (RUN-CMT-6) — a caller mutating a returned slice or map must never reach
+// — a caller mutating a returned slice or map must never reach
 // authoritative storage or committed event bytes.
 // The agent Runtime is an Owner boundary. All persisted request/result
 // shapes are agent-owned JSON-stable values, so cloning is mechanical: copy

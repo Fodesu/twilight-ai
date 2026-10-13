@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// BenchmarkWriterOpen measures EXT-WRT-1/PRJ-5 against the same log twice: with
+// BenchmarkWriterOpen compares cached and uncached reopening of the same log: with
 // no cache the Writer folds every group, with a warm cache entry it folds only
 // what the entry does not cover. full-fold is the before, from-cache the after.
 func BenchmarkWriterOpen(b *testing.B) {

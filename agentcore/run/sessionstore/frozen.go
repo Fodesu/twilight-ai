@@ -18,7 +18,7 @@ import (
 
 // FrozenAuthority is the cas Authority of frozen run bodies: the run layer's
 // frozen.Store is one Authority of the artifact ContentStore, not a
-// second content-addressed store (RUN-WIR-4).
+// second content-addressed store.
 const FrozenAuthority artifact.Authority = frozen.Authority
 
 // FrozenMediaType is the media type frozen bodies are stored under; the cas
@@ -31,7 +31,7 @@ const FrozenMediaType = "application/vnd.twilight.frozen+json"
 // no index maps digests to refs: Get rebuilds the Ref from the digest alone.
 // Put stores the body and registers its Binding in one call, so a fact that
 // names the digest is admissible as soon as Put returns and no caller has to
-// coordinate two stores before a commit (RUN-WIR-4, EXT-WRT-3). Bodies are
+// coordinate two stores before a commit. Bodies are
 // EventBound content whose retention root is the fact that names them; the
 // adapter offers no Delete.
 type frozenValues struct {
@@ -70,7 +70,7 @@ func (f *frozenValues) Put(ctx context.Context, digest run.Digest, val []byte) e
 		return err
 	}
 	// An identical Binding is already registered on a replay; only a
-	// differing Ref under the same BindingID conflicts (ART-BND-1).
+	// differing Ref under the same BindingID conflicts.
 	_, err = f.bindings.CreateBinding(ctx, binding)
 	return err
 }
@@ -105,7 +105,6 @@ func (f *frozenValues) Get(ctx context.Context, digest run.Digest) (body []byte,
 // FrozenRef is the cas Ref of the body named by digest: Key and Integrity are
 // both the digest, MediaType and Durability are the adapter's constants. The
 // Run protocol knows only the digest; this derivation is the adapter's
-// (RUN-WIR-4).
 func FrozenRef(digest run.Digest) (artifact.Ref, error) {
 	algorithm, val, ok := strings.Cut(string(digest), ":")
 	if !ok || algorithm != artifact.IntegritySHA256 || val == "" {
@@ -134,7 +133,6 @@ func FrozenBinding(digest run.Digest) (artifact.Binding, error) {
 
 // frozenRefs is the BindingExtractor of the fact types that name a frozen
 // body: the one BindingID the Writer admits and claims for the commit
-// (EXT-REF-2, EXT-WRT-3).
 func frozenRefs(val any) ([]artifact.BindingID, error) {
 	ev, ok := val.(Event)
 	if !ok {
@@ -161,7 +159,7 @@ func frozenRefs(val any) ([]artifact.BindingID, error) {
 
 // --- materialization ---------------------------------------------------------------
 
-// Content resolves the bodies facts name by digest (RUN-WIR-4) for the layer
+// Content resolves the bodies facts name by digest for the layer
 // that renders a structural projection into a usable representation. It is
 // the materialization port: projections stay pure folds over facts and never
 // touch it.

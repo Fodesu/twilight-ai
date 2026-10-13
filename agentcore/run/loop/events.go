@@ -36,7 +36,7 @@ func (l *Loop) emitCommitted(ctx context.Context, events EventSink, scope run.Sc
 }
 
 // forwardProgress subscribes to key's frames on a ProgressPort and emits
-// each as a provisional Event on the drive's sink (RUN-LOP-6): this is how
+// each as a provisional Event on the drive's sink: this is how
 // deltas produced wherever the effect runs reach the host's observation
 // stream. It ends with the stream, the context, or a port that has no
 // progress for the key.

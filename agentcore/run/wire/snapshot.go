@@ -29,7 +29,7 @@ type Snapshot struct{}
 // machineStateWire is the persisted snapshot shape of MachineState. It
 // flattens the interface-typed Current into a discriminator
 // plus at most one step body so the snapshot round-trips through JSON. Its
-// canonical bytes are the InitialStateDigest preimage (RUN-NEW-1), so field
+// canonical bytes are the InitialStateDigest preimage, so field
 // names and omission rules are frozen with the schema.
 type machineStateWire struct {
 	RunID         run.RunID        `json:"runId"`

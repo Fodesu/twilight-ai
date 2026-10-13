@@ -43,7 +43,7 @@ func fileFrozen(t *testing.T, root string) frozen.Store {
 	return fz
 }
 
-// The frozen.Store adapter over the cas ContentStore (RUN-WIR-4): the
+// The frozen.Store adapter over the cas ContentStore: the
 // digest is the SHA-256 of the stored bytes, so Put and Get need no index; a
 // body under a name it does not digest to is refused; and a second instance
 // over the same root reads what the first wrote -- the path a restarted

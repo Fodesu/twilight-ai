@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// , EXT-WRT-8: a Writer over a fork folds its projections from
+// a Writer over a fork folds its projections from
 // the inherited prefix, answers a replay of an inherited CommitID as already
 // applied and continues the ledger from the anchor; Fork itself holds no
 // claim, the prefix's content stays under the parent segment's commit
@@ -102,7 +102,7 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	}
 }
 
-// , EXT-WRT-9: Delete reclaims along the path and releases the
+// Delete reclaims along the path and releases the
 // claims of what it dropped or removed. A fork keeps the inherited prefix,
 // so those claims stay Active with their segment. A repeated Delete is a
 // no-op. Collect after a completed Delete finds nothing left to reclaim.

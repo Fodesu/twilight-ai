@@ -7,7 +7,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 )
 
-// Evolve is the fold semantics (RUN-MCH-3). It first
+// Evolve is the fold semantics. It first
 // checks that the fact is a legal transition from s (fold and recovery must
 // defend themselves without access to commands), then applies it.
 //
@@ -69,7 +69,7 @@ func applyRunCreated(fact *RunCreated) MachineState {
 	return MachineState{RunID: fact.RunID, Status: RunActive, Current: Open{}}
 }
 
-func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	s.Current = ModelStep{
 		RefValue:      StepRef{RunID: s.RunID, ID: fact.StepID},
 		RequestDigest: fact.RequestDigest,
@@ -86,7 +86,7 @@ func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineStat
 // never sent) and Recovered (Executing, attempt lost) both return the Run to
 // Open without counting a model step. PendingInputs are untouched, so the
 // next Prepare consumes them.
-func applyModelStepWithdrawn(s MachineState) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyModelStepWithdrawn(s MachineState) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	s.Current = Open{}
 	s.ModelSteps--
 	return s
@@ -94,7 +94,7 @@ func applyModelStepWithdrawn(s MachineState) MachineState { //nolint:gocritic //
 
 // applyModelStatus moves the current ModelStep to status, adding usage and
 // counting a reject when the fact was a rejection.
-func applyModelStatus(s MachineState, status ModelStepStatus, usage model.Usage, rejected bool) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyModelStatus(s MachineState, status ModelStepStatus, usage model.Usage, rejected bool) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	ms := s.Current.(ModelStep) //nolint:errcheck // guard established Current is this ModelStep
 	ms.Status = status
 	if rejected {
@@ -106,7 +106,7 @@ func applyModelStatus(s MachineState, status ModelStepStatus, usage model.Usage,
 }
 
 // applyModelEffect records the effect the current ModelStep requested.
-func applyModelEffect(s MachineState, effect EffectID) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyModelEffect(s MachineState, effect EffectID) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	ms := s.Current.(ModelStep) //nolint:errcheck // caller established Current is a ModelStep
 	ms.Effect = effect
 	s.Current = ms
@@ -116,18 +116,18 @@ func applyModelEffect(s MachineState, effect EffectID) MachineState { //nolint:g
 // applyModelStepFailed settles the step's effect and leaves the Run Open for
 // the RunEnded that follows in the same group. The step ran, so ModelSteps
 // keeps counting it.
-func applyModelStepFailed(s MachineState) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyModelStepFailed(s MachineState) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	s.Current = Open{}
 	return s
 }
 
-func applyModelStepCompleted(s MachineState, fact *ModelStepCompleted) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyModelStepCompleted(s MachineState, fact *ModelStepCompleted) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	s.Usage = s.Usage.Add(fact.Usage)
 	s.Current = Open{}
 	return s
 }
 
-func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	calls := make([]ToolCallState, len(fact.Calls))
 	for i, b := range fact.Calls {
 		calls[i] = ToolCallState{
@@ -157,7 +157,7 @@ func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState { //
 
 // applyCall mutates one call of the current ToolStep and closes the step when
 // every call has reached Completed or Failed.
-func applyCall(s MachineState, callID CallID, mutate func(*ToolCallState)) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyCall(s MachineState, callID CallID, mutate func(*ToolCallState)) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	ts := s.Current.(ToolStep) //nolint:errcheck // guard established Current is this ToolStep
 	calls := append([]ToolCallState(nil), ts.Calls...)
 	mutate(&calls[ts.callIndex(callID)])
@@ -171,12 +171,12 @@ func applyCall(s MachineState, callID CallID, mutate func(*ToolCallState)) Machi
 	return s
 }
 
-func applyInputAccepted(s MachineState, fact *InputAccepted) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyInputAccepted(s MachineState, fact *InputAccepted) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	s.PendingInputs = append(append([]AgentInput(nil), s.PendingInputs...), fact.Input)
 	return s
 }
 
-func applyRunEnded(s MachineState, fact *RunEnded) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyRunEnded(s MachineState, fact *RunEnded) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state
 	status, reason, failure := endProjection(fact.End)
 	s.Status = status
 	s.Current = nil
@@ -268,7 +268,7 @@ func (m StateMachine) guardFact(s *MachineState, f Fact) error {
 }
 
 // requireNoExecutingEffect: a Run ends only after every effect it requested
-// was settled by a fact naming it (RUN-WIR-1). RunEnded closes no effect, so
+// was settled by a fact naming it. RunEnded closes no effect, so
 // an Executing model step or tool call at that point would be an effect no
 // settlement ever names.
 func requireNoExecutingEffect(s *MachineState) error {
@@ -305,7 +305,7 @@ func requireModelStep(s *MachineState, stepID StepID, status ModelStepStatus) er
 
 // requireModelEffect is requireModelStep for an Executing step plus the
 // check that a settlement names the effect the step is executing: a
-// settlement fact carries the EffectID its start fact recorded (RUN-WIR-1).
+// settlement fact carries the EffectID its start fact recorded.
 func requireModelEffect(s *MachineState, stepID StepID, effect EffectID) error {
 	if err := requireModelStep(s, stepID, ModelExecuting); err != nil {
 		return err

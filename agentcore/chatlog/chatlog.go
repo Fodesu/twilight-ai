@@ -33,10 +33,10 @@ type (
 	CompactionID string
 )
 
-// EventTypes (CHT-EVT-1): the conversation's own facts. Inputs are written by
+// EventTypes: the conversation's own facts. Inputs are written by
 // the host and the Coordinator, compactions by the host's compaction
-// (CHT-EVT-3), tool_result_superseded by the Application after an
-// out-of-band verification (CHT-ENT-2).
+// tool_result_superseded by the Application after an
+// out-of-band verification.
 const (
 	TypeInputSubmitted        ledger.EventType = "twilight/chatlog/input_submitted"
 	TypeInputDelivered        ledger.EventType = "twilight/chatlog/input_delivered"
@@ -48,7 +48,7 @@ const (
 	TypeCompactionInvalidated ledger.EventType = "twilight/chatlog/compaction_invalidated"
 )
 
-// Digest domains of the projected entries (CHT-COD-3). They are not event
+// Digest domains of the projected entries. They are not event
 // types: an assistant or tool_result entry is folded from Run facts.
 const (
 	assistantDomain  = "twilight/chatlog/assistant"
@@ -194,7 +194,7 @@ type Input struct {
 }
 
 // Assistant is the structural projection of one ModelStepCompleted
-// (CHT-ENT-1): the identities of the step and its Turn, the digest that names
+// the identities of the step and its Turn, the digest that names
 // the frozen ModelResult, and the CallIDs of the calls the result issued, in
 // the result's ToolCalls order (from ToolStepOpened). The text, reasoning and
 // tool call arguments live in the frozen body; Materialize resolves them.
@@ -216,7 +216,7 @@ type Assistant struct {
 }
 
 // ToolResult is the structural projection of one call's terminal outcome
-// (CHT-ENT-2): success names the frozen output or response by digest;
+// success names the frozen output or response by digest;
 // error and unknown carry the Run-recorded failure.
 type ToolResult struct {
 	ID           ToolResultID      `json:"id"`
@@ -249,7 +249,7 @@ type Summary struct {
 }
 
 // AssistantIDFor is the entry identity of a model step's result: the StepID
-// itself, which is unique across Runs (TRN-MAP-2).
+// itself, which is unique across Runs.
 func AssistantIDFor(step run.StepID) AssistantID { return AssistantID(step) }
 
 // ToolResultIDFor is the entry identity of a call's terminal result: the
@@ -257,10 +257,10 @@ func AssistantIDFor(step run.StepID) AssistantID { return AssistantID(step) }
 func ToolResultIDFor(call run.CallID) ToolResultID { return ToolResultID(call) }
 
 // SupersedingToolResultID is the identity of the result an out-of-band
-// verification substitutes for id (CHT-ENT-2).
+// verification substitutes for id.
 func SupersedingToolResultID(id ToolResultID) ToolResultID { return id + "/superseded" }
 
-// Digests (CHT-COD-3): the domain is the EventType or the entry domain; `v`
+// Digests: the domain is the EventType or the entry domain; `v`
 // is not covered.
 
 func DigestInput(id InputID, content jsonstable.Value) (jsonstable.Digest, error) {
@@ -302,7 +302,7 @@ func DigestSummary(s *Summary) (jsonstable.Digest, error) {
 	}{s.ID, s.Parts})
 }
 
-// EntryDigestPair names one active Context entry (CHT-EVT-3).
+// EntryDigestPair names one active Context entry.
 type EntryDigestPair struct {
 	Kind   EntryKind         `json:"kind"`
 	ID     string            `json:"id"`
@@ -353,7 +353,7 @@ type InputSubmittedPayload struct {
 }
 
 // InputDeliveredPayload records an input entering a Turn's Run: the Turn
-// and the one Run that executes it (TRN-SCP-2). The chatlog learns which
+// and the one Run that executes it. The chatlog learns which
 // Turn a Run serves from this delivery, so the entries it folds from that
 // Run's facts carry the Turn.
 type InputDeliveredPayload struct {
@@ -371,7 +371,7 @@ type InputRejectedPayload struct {
 }
 
 // ToolResultSupersededPayload substitutes a verified outcome for a call's
-// projected result (CHT-ENT-2): an unknown result the Application confirmed
+// projected result: an unknown result the Application confirmed
 // out of band becomes success (its output frozen under OutputDigest, written
 // through the run frozen.Store) or error. The Run fact is untouched; the
 // substitution is a conversation decision.
@@ -385,7 +385,7 @@ type SummaryPayload struct {
 	Summary Summary `json:"summary"`
 }
 
-// CompactionCreatedPayload compacts the context (CHT-EVT-3): entries up to
+// CompactionCreatedPayload compacts the context: entries up to
 // CoveredThrough — the ledger Position of the last covered entry's event —
 // are replaced by the summary plus the Retained subset.
 type CompactionCreatedPayload struct {
@@ -468,7 +468,7 @@ func checkSummary(p *SummaryPayload) error {
 }
 
 // PartsExtractor returns the BindingIDs of ReferenceParts in appearance
-// order (CHT-COD-2).
+// order.
 var PartsExtractor module.BindingExtractor = module.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
 	p, ok := val.(SummaryPayload)
 	if !ok {
@@ -514,7 +514,7 @@ var supersededBinding = module.BindingReferenceDefinition{
 const StreamDomain = "chatlog"
 
 // Version is the payload version the chatlog writes every event with
-// (EXT-REG-2); older versions keep their codecs beside it.
+// older versions keep their codecs beside it.
 const Version module.PayloadVersion = 1
 
 var streamDefinition = module.StreamDefinition{Domain: StreamDomain, Inheritance: module.Inherited}
@@ -529,7 +529,7 @@ func def[T any](typ ledger.EventType, check func(*T) error, bindings ...module.B
 }
 
 // consumedRunFacts are the Run facts the chatlog projections fold
-// (CHT-SCP-1): run_created for the Run's Turn, the model and tool outcomes
+// run_created for the Run's Turn, the model and tool outcomes
 // for the entries, tool_step_opened for the CallIDs a result issued, and
 // run_ended to forget the Run's Turn.
 var consumedRunFacts = []string{"model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed", "run_ended"}
@@ -542,7 +542,7 @@ func runRequirement() module.ModuleRequirement {
 	return module.ModuleRequirement{Source: module.SourceTwilight, Module: sessionstore.ModuleID, Events: events}
 }
 
-// Module is the chatlog ModuleDescriptor (CHT-SCP-1: Requires run facts).
+// Module is the chatlog ModuleDescriptor (Requires run facts).
 var Module = module.ModuleDescriptor{
 	Source:   module.SourceTwilight,
 	ID:       ModuleID,

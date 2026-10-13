@@ -9,14 +9,14 @@ import (
 	"io"
 )
 
-// SchemeCAS is the standard content-addressed scheme (ART-CAP-2): Key is the
+// SchemeCAS is the standard content-addressed scheme: Key is the
 // content digest in the form <algorithm>:<hex> and equals Integrity.
 const SchemeCAS Scheme = "cas"
 
 // IntegritySHA256 is the one integrity algorithm the reference store speaks.
 const IntegritySHA256 = "sha256"
 
-// Info is what a Resolver knows about a Ref's content (ART-BND-2).
+// Info is what a Resolver knows about a Ref's content.
 type Info struct {
 	MediaType  string
 	SizeBytes  *uint64
@@ -32,7 +32,7 @@ type PutRequest struct {
 }
 
 // PromoteRequest asks for a Ref of the same content at TargetScheme and
-// TargetAuthority with at least the durability of the source (ART-REF-2).
+// TargetAuthority with at least the durability of the source.
 type PromoteRequest struct {
 	TargetScheme    Scheme
 	TargetAuthority Authority
@@ -40,8 +40,8 @@ type PromoteRequest struct {
 }
 
 // Resolver reads content behind a Ref and verifies it against the Ref's
-// declared size and integrity (ART-BND-2). Failures are classified by
-// ErrorCode (ART-CAP-1): ErrNotFound, ErrExpired, ErrUnauthorized (a key of
+// declared size and integrity. Failures are classified by
+// ErrorCode: ErrNotFound, ErrExpired, ErrUnauthorized (a key of
 // another Authority), ErrCorrupt (stored bytes disagree with the Ref) and
 // ErrUnsupported (a scheme this resolver does not speak).
 type Resolver interface {
@@ -50,14 +50,13 @@ type Resolver interface {
 }
 
 // Store writes content and returns its Ref only once the write is durable.
-// A repeated Put of identical bytes is idempotent (ART-BND-2).
+// A repeated Put of identical bytes is idempotent.
 type Store interface {
 	Put(context.Context, PutRequest) (Ref, error)
 }
 
 // Promoter produces a new Ref for existing content at the requested target
 // and durability; it never lowers durability and never rewrites a Binding
-// (ART-BND-2, ART-REF-2).
 type Promoter interface {
 	Promote(context.Context, Ref, PromoteRequest) (Ref, error)
 }
@@ -70,7 +69,7 @@ type ContentStore interface {
 }
 
 // DefaultMaxContentBytes bounds a Put when a store's options give no cap
-// (ART-CAP-1, size amplification).
+// (size amplification).
 const DefaultMaxContentBytes int64 = 64 << 20
 
 // CASKey is the cas Key and Integrity value of data.

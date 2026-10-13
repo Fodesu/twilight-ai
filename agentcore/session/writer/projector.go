@@ -16,9 +16,9 @@ type projectionKey struct {
 
 // projector is the projection stage of the commit pipeline: it holds the
 // transactional state of every registered projection folded to the Writer's
-// head (EXT-WRT-1), pre-folds each provisional commit so an invalid group is
+// head, pre-folds each provisional commit so an invalid group is
 // refused before anything is persisted, and refreshes the projection cache
-// per the deployment's policy (EXT-PRJ-3, EXT-PRJ-7). It knows nothing of
+// per the deployment's policy. It knows nothing of
 // ownership, admission or observers.
 type projector struct {
 	registry *module.Registry
@@ -26,10 +26,10 @@ type projector struct {
 	states   map[projectionKey]any
 	scopes   map[projectionKey]*module.ProjectionScope
 	// unhealthy records derived projections that failed to fold an applied
-	// commit (EXT-PRJ-9): their state stays at the last good commit, reads
+	// commit: their state stays at the last good commit, reads
 	// report the failure and the cache is not refreshed for them.
 	unhealthy map[projectionKey]error
-	// cache, policy and cached carry EXT-PRJ-3: cached records the head each
+	// cache and policy control persistence; cached records the head each
 	// projection's cache entry already reflects, which is what a policy
 	// measures the next refresh against.
 	cache  session.ProjectionCache
@@ -50,14 +50,13 @@ func newProjector(registry *module.Registry, sid session.SessionID, cache sessio
 }
 
 // commitAt reads the commit at one stitched position of the Session, for
-// judging a cache entry's boundary (EXT-PRJ-3); ok=false when there is none.
+// judging a cache entry's boundary; ok=false when there is none.
 type commitAt func(ledger.CommitSeq) (ledger.Commit, bool)
 
 // prepare chooses each registered projection's starting state: its cache
 // entry when the entry ends on a commit boundary the tip segment wrote
-// itself and still decodes, the initial state otherwise (EXT-PRJ-3). It
+// itself and still decodes, the initial state otherwise. It
 // returns the earliest stitched CommitSeq any projection must fold from
-// (EXT-PRJ-5).
 func (p *projector) prepare(ctx context.Context, header session.SegmentHeader, at commitAt) (ledger.CommitSeq, error) {
 	from := ^ledger.CommitSeq(0)
 	for _, def := range p.registry.Projections() {
@@ -85,7 +84,7 @@ func (p *projector) prepare(ctx context.Context, header session.SegmentHeader, a
 }
 
 // resume folds the commits read from from into every projection, each from
-// its own start (EXT-PRJ-3, EXT-PRJ-9).
+// its own start.
 func (p *projector) resume(page *session.CommitPage, from ledger.CommitSeq) error {
 	for k, scope := range p.scopes {
 		start := p.starts[k]
@@ -102,7 +101,7 @@ func (p *projector) resume(page *session.CommitPage, from ledger.CommitSeq) erro
 				return err
 			}
 			// A derived projection that cannot fold the log does not keep
-			// the Session from opening (EXT-PRJ-9): it stops at its last
+			// the Session from opening: it stops at its last
 			// good commit and stays unhealthy until a registry that folds
 			// it reopens the Session.
 			folded, err = p.lastGood(scope, p.states[k], page.Commits[off:], page.Header)
@@ -131,7 +130,6 @@ func (p *projector) lastGood(scope *module.ProjectionScope, state any, commits [
 // wrote itself and still decodes, otherwise nothing. Anything unusable --
 // absent, corrupt, ahead of the log, recorded at a digest the log does not
 // have, or ending on an inherited commit -- falls back to a full fold
-// (EXT-PRJ-3).
 func (p *projector) startState(ctx context.Context, scope *module.ProjectionScope, header session.SegmentHeader, at commitAt) (any, ledger.Head, bool) {
 	if p.cache == nil {
 		return nil, ledger.Head{}, false
@@ -169,7 +167,7 @@ type folded struct {
 // fold pre-folds one provisional commit into every projection without
 // installing anything. An authoritative projection that refuses the commit
 // refuses it for the Writer; a derived one keeps its last good state and is
-// marked unhealthy once the commit lands (EXT-PRJ-9). A projection already
+// marked unhealthy once the commit lands. A projection already
 // unhealthy is not folded further.
 func (p *projector) fold(provisional ledger.Commit) (folded, error) {
 	out := folded{next: make(map[projectionKey]any, len(p.states))}
@@ -231,7 +229,7 @@ type cacheWrite struct {
 
 // planRefresh selects the entries the cache policy wants refreshed and
 // records them as covering head. The caller holds the Writer's lock; the
-// writes happen outside it (saveRefresh, EXT-PRJ-7).
+// writes happen outside it (saveRefresh).
 func (p *projector) planRefresh(head ledger.Head, closing bool) []cacheWrite {
 	if p.cache == nil {
 		return nil
@@ -251,14 +249,14 @@ func (p *projector) planRefresh(head ledger.Head, closing bool) []cacheWrite {
 }
 
 // saveRefresh performs planned writes. Best effort, never fatal: a failed
-// Save means a later Writer folds more (EXT-PRJ-3).
+// Save means a later Writer folds more.
 func (p *projector) saveRefresh(ctx context.Context, writes []cacheWrite) {
 	for _, cw := range writes {
 		_ = session.SaveProjection(ctx, p.cache, p.registry, p.sid, cw.key.id, cw.key.version, cw.state, cw.head)
 	}
 }
 
-// memoryReader reads the Writer's transactional projections (EXT-PRJ-4).
+// memoryReader reads the Writer's transactional projections.
 type memoryReader struct{ w *sessionWriter }
 
 func (r memoryReader) Load(_ context.Context, sid session.SessionID, id module.ProjectionID, v module.ProjectionVersion) (any, ledger.Head, error) {

@@ -93,8 +93,7 @@ func executingModel(eff run.EffectID) *store.Snapshot {
 }
 
 // Each executor observation maps to exactly one verdict; only missing and
-// aborted produce a recovery command (missing is closed to aborted first,
-// RUN-EXE-16), and only an unknown state is an error.
+// aborted produce a recovery command (missing is closed to aborted first), and only an unknown state is an error.
 func TestPlanVerdicts(t *testing.T) {
 	for _, tc := range []struct {
 		state    effect.AttachmentState
@@ -128,7 +127,7 @@ func TestPlanVerdicts(t *testing.T) {
 	// No executor to ask proves nothing: an error, not a disposal. Only an
 	// explicit Abandon disposes without asking, and only for a scope with no
 	// executor at all: beside a port it is a configuration error, so the
-	// Abort of RUN-EXE-16 cannot be skipped while an executor exists.
+	// Abort cannot be skipped while an executor exists.
 	if _, err := (&Reconciler{}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, ErrNoExecutionPort) {
 		t.Fatalf("plan without executor = %v, want ErrNoExecutionPort", err)
 	}
@@ -157,7 +156,7 @@ func TestPlanVerdicts(t *testing.T) {
 }
 
 // AssignmentFromTarget carries the digest-level description of the target
-// and never an inline request body (RUN-EXE-7).
+// and never an inline request body.
 func TestAssignmentFromTarget(t *testing.T) {
 	targets := plan.RecoveryTargets(&executingModel("c1").State)
 	if len(targets) != 1 {
@@ -334,7 +333,7 @@ func (p *recoveringPort) RecoverExecution(_ context.Context, key effect.Assignme
 
 // An orphaned target is deferred, and a port that can recover is asked to
 // take the record back once, at Plan time; a port that cannot is only
-// observed. Keep and Dispose never ask (RUN-CMT-7, RUN-EXE-6).
+// observed. Keep and Dispose never ask.
 func TestPlanAsksRecovererForOrphans(t *testing.T) {
 	for _, tc := range []struct {
 		state         effect.AttachmentState
@@ -417,7 +416,7 @@ func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
 	}
 }
 
-// RUN-EXE-16: a missing effect is closed on the executor before the Run
+// a missing effect is closed on the executor before the Run
 // disposes it, so a Dispatch that arrives later starts nothing; when an
 // acceptance reached the executor first, Abort reports it and the target is
 // kept or deferred instead of disposed.

@@ -1,5 +1,5 @@
 // Package store is the Executor's authority over one execution: the commit
-// ledger of an effect's attempts (RUN-EXE-3, RUN-EXE-9) and the lease that
+// ledger of an effect's attempts and the lease that
 // fences its writers. It speaks the shared commit vocabulary
 // (agentcore/ledger), so what is true of any commit ledger is true here:
 // the ledger is the only fact authority, ExecutionState is its fold, a
@@ -22,7 +22,7 @@ import (
 
 var (
 	// ErrAssignmentConflict: the ledger was accepted for a different
-	// Assignment of the same key (RUN-EXE-3).
+	// Assignment of the same key.
 	ErrAssignmentConflict = errors.New("executor/store: assignment conflict")
 	// ErrLeaseLost: the lease the commit was made under is no longer the
 	// key's lease — another holder has a later Epoch, or it expired.
@@ -35,16 +35,16 @@ var (
 
 const (
 	// EventExecutionAccepted: the Assignment was accepted into this ledger,
-	// before anything started (RUN-EXE-3). The first event of a ledger that
+	// before anything started. The first event of a ledger that
 	// was opened by a Dispatch.
 	EventExecutionAccepted ledger.EventType = "execution_accepted"
 	// EventExecutionAborted: the key was closed before any acceptance
-	// (RUN-EXE-16). The first and only event of a ledger opened by Abort:
+	// The first and only event of a ledger opened by Abort:
 	// it and execution_accepted contend for Seq 0, so a ledger holds one or
 	// the other, never both.
 	EventExecutionAborted ledger.EventType = "execution_aborted"
 	// EventExecutionBound: the attempt's physical binding, Provider and Ref,
-	// was chosen (RUN-EXE-9, RUN-EXE-10).
+	// was chosen.
 	EventExecutionBound ledger.EventType = "execution_bound"
 	// EventExecutionClaimed: a Worker took the key under a new Epoch. Lease
 	// renewals are not events; the lease row is the fence's authority.
@@ -57,16 +57,16 @@ const (
 	// EventCancelRequested: cancellation was asked of the backend.
 	EventCancelRequested ledger.EventType = "cancel_requested"
 	// EventExecutionRestarted: the attempt moved to a new Ref, the previous
-	// one joining the audit trail (RUN-EXE-9, RUN-EXE-11).
+	// one joining the audit trail.
 	EventExecutionRestarted ledger.EventType = "execution_restarted"
 	// EventExecutionSettled: the terminal state and the Outcome.
 	EventExecutionSettled ledger.EventType = "execution_settled"
 	// EventOutcomeAcknowledged: the Owner reported the Outcome settled as a
-	// Session fact; the Executor no longer serves it (RUN-EXE-13).
+	// Session fact; the Executor no longer serves it.
 	EventOutcomeAcknowledged ledger.EventType = "outcome_acknowledged"
 )
 
-// Lease is a fenced hold on one execution (RUN-EXE-6). The store is its
+// Lease is a fenced hold on one execution. The store is its
 // authority: Acquire creates it under a new Epoch, Renew extends it, and
 // Append under it is refused once the key has a later Epoch.
 type Lease struct {
@@ -80,7 +80,7 @@ type Lease struct {
 func (l Lease) IsZero() bool { return l.Owner == "" && l.Epoch == 0 }
 
 // ExecutionRef is the physical binding of the current attempt made for one
-// effect (RUN-EXE-9): the provider (backend) the execution was handed to and
+// effect: the provider (backend) the execution was handed to and
 // that provider's opaque handle. It never leaves the execution domain:
 // executions are addressed by AssignmentKey, and the Run records the
 // EffectID alone.
@@ -152,7 +152,7 @@ func AcceptCommitID(key effect.AssignmentKey) ledger.CommitID {
 	return DeriveCommitID(key, "accept", "")
 }
 
-// AbortCommitID names the one tombstone of a key (RUN-EXE-16). It differs
+// AbortCommitID names the one tombstone of a key. It differs
 // from AcceptCommitID, so the two commands are told apart by Seq, not by
 // replay: whichever reaches Seq 0 first stands and the other is ErrConflict.
 func AbortCommitID(key effect.AssignmentKey) ledger.CommitID { return DeriveCommitID(key, "abort", "") }
@@ -172,12 +172,12 @@ type ExecutionState struct {
 	Assignment   effect.Assignment `json:"assignment"`
 	ExecutionRef ExecutionRef      `json:"executionRef"`
 	// Superseded lists the ExecutionRefs of the earlier attempts made for
-	// this effect, oldest first (RUN-EXE-9).
+	// this effect, oldest first.
 	Superseded []ExecutionRef            `json:"superseded,omitempty"`
 	State      effect.ExecutionStatus    `json:"state"`
 	Outcome    *protocol.OutcomeEnvelope `json:"outcome,omitempty"`
 	// Acknowledged records that the Owner settled the Outcome into its
-	// Session (RUN-EXE-13): the Outcome is no longer served and the record
+	// Session: the Outcome is no longer served and the record
 	// may be reclaimed by retention.
 	Acknowledged bool `json:"acknowledged,omitempty"`
 }
@@ -198,7 +198,7 @@ type Execution struct {
 	Lease Lease
 }
 
-// LegalTransition is the execution state machine (RUN-EXE-3).
+// LegalTransition is the execution state machine.
 func LegalTransition(from, to effect.ExecutionStatus) bool {
 	if to == effect.ExecutionCancelRequested {
 		return from == effect.ExecutionAccepted || from == effect.ExecutionDispatching || from == effect.ExecutionRunning
@@ -210,7 +210,7 @@ func LegalTransition(from, to effect.ExecutionStatus) bool {
 		return to == effect.ExecutionRunning
 	case effect.ExecutionRunning:
 		// A restart after the backend proved the execution missing, or after
-		// a retryable failure (RUN-EXE-9, RUN-EXE-11).
+		// a retryable failure.
 		return to == effect.ExecutionDispatching
 	default:
 		return false
@@ -220,7 +220,7 @@ func LegalTransition(from, to effect.ExecutionStatus) bool {
 // Fenced reports whether an event may only be committed under the key's
 // lease. Acceptance and the abort tombstone precede any lease; settlement
 // by Dispose and the Owner's acknowledgement come from outside the lease
-// (RUN-EXE-6, RUN-EXE-13, RUN-EXE-16). Everything else is the lease
+// Everything else is the lease
 // holder's.
 func Fenced(typ ledger.EventType) bool {
 	switch typ {
@@ -346,11 +346,11 @@ func apply(s ExecutionState, e *ledger.Event) (ExecutionState, error) { //nolint
 
 // Store is the ledger and lease authority of executions, keyed by
 // AssignmentKey. Every write is one transaction; the store is the fence for
-// any number of Workers over the same file (RUN-EXE-6).
+// any number of Workers over the same file.
 type Store interface {
 	// Load folds the key's ledger and reads its lease row in one
 	// transaction; ok is false for a key with no ledger, which is a proven
-	// absence (RUN-EXE-3).
+	// absence.
 	Load(context.Context, effect.AssignmentKey) (Execution, ledger.Head, bool, error)
 	// Read returns the key's commits from Seq from, in order, and the Head.
 	Read(context.Context, effect.AssignmentKey, ledger.CommitSeq) ([]ledger.Commit, ledger.Head, error)
@@ -377,6 +377,6 @@ type Store interface {
 	LeaseOf(context.Context, effect.AssignmentKey) (Lease, bool, error)
 	// ListOwned returns the keys whose lease row names owner: what a
 	// restarted incarnation resumes. No other listing is part of the data
-	// plane (RUN-EXE-6).
+	// plane.
 	ListOwned(context.Context, string) ([]effect.AssignmentKey, error)
 }

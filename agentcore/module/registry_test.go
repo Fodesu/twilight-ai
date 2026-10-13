@@ -90,7 +90,7 @@ func srcModule(source SourceID, id ModuleID) ModuleDescriptor {
 	}}}
 }
 
-// EXT-REG-1: module identity is (Source, ID); sources are validated segments.
+// module identity is (Source, ID); sources are validated segments.
 func TestBuildRegistryValidatesSource(t *testing.T) {
 	rejects := map[string][]ModuleDescriptor{
 		"empty source":           {srcModule("", "a")},
@@ -145,7 +145,7 @@ func TestRegistrySchemaVersion(t *testing.T) {
 	}
 }
 
-// EXT-SCH-2: every codec entry names a real Schema and a real codec. Encode
+// every codec entry names a real Schema and a real codec. Encode
 // selects def.Codecs[segment schema], so an unusable entry must be refused
 // when the registry is built rather than discovered on first write.
 func TestBuildRegistryRequiresCodec(t *testing.T) {
@@ -214,7 +214,7 @@ func (legacyCodec) Validate(v any) error {
 	return nil
 }
 
-// , EXT-REG-2, EXT-COD-1/2: one type has codecs for two versions.
+// one type has codecs for two versions.
 // Encode writes the type's write Version and records it as `v` (the highest
 // codec by default, or the one the module declares); a row of either version
 // decodes through its own codec, while a version no codec claims stays
@@ -275,7 +275,7 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	}
 }
 
-// EXT-PRJ-9: Authoritative is a capability of trusted core modules. An
+// Authoritative is a capability of trusted core modules. An
 // extension cannot declare it, nor claim the first-party source to get it.
 func TestExtensionsCannotBeAuthoritative(t *testing.T) {
 	core := ModuleDescriptor{Source: SourceTwilight, ID: "core", Projections: []ProjectionDefinition{{

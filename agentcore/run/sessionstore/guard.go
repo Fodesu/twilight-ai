@@ -8,7 +8,7 @@ import (
 
 // RequireNoActiveRun is the Run module's quiescence precondition for a
 // Session-level operation evaluated inside the Writer's critical section:
-// an error while any Run of the Session is active. Terminal Runs leave the machine projection (RUN-CMT-2), so an
+// an error while any Run of the Session is active. Terminal Runs leave the machine projection, so an
 // empty Active set is the whole answer: no Run is executing, awaiting an
 // effect or holding an unresolved outcome.
 func RequireNoActiveRun(view writer.View) error {
