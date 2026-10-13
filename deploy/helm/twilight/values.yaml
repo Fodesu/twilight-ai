@@ -17,6 +17,10 @@ podMonitor:
   interval: 30s
   scrapeTimeout: 10s
 
+# Optional catalog override; credentials are still named Secret files, not values.
+# Empty keeps the bundled catalog. Useful for a validation mock or model gateway.
+models: []
+
 secrets:
   # Create this Secret outside Helm. It contains postgres-password,
   # postgres-dsn and OPENAI_API_KEY.
@@ -74,6 +78,9 @@ services:
         memory: 256Mi
   modelBackend:
     replicas: 1
+    # Optional separate credential Secret mounted only in model-backend.
+    # It must contain REAL_MODEL_API_KEY; the shared DB Secret is unchanged.
+    providerSecret: ""
     resources:
       requests:
         cpu: 25m

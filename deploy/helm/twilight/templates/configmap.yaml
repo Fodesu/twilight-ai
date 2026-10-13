@@ -22,4 +22,8 @@ metadata:
     {{- include "twilight.labels" (dict "name" "models" "Release" .Release) | nindent 4 }}
 data:
   models.json: |
+{{- if .Values.models }}
+{{ dict "models" .Values.models | toPrettyJson | indent 4 }}
+{{- else }}
 {{ .Files.Get "config/models.json" | indent 4 }}
+{{- end }}

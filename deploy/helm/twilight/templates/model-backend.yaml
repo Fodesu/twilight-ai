@@ -30,7 +30,8 @@ spec:
       labels:
         {{- include "twilight.selectorLabels" (dict "name" "model-backend") | nindent 8 }}
         app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      {{- include "twilight.metricsAnnotations" (dict "Values" .Values "port" 8082) | nindent 6 }}
+      {{- $catalogChecksum := printf "%s%s" (.Files.Get "config/models.json") (toJson .Values.models) | sha256sum }}
+      {{- include "twilight.metricsAnnotations" (dict "Values" .Values "port" 8082 "extraAnnotations" (dict "checksum/models" $catalogChecksum)) | nindent 6 }}
     spec:
       securityContext:
         fsGroup: 10001
@@ -87,5 +88,17 @@ spec:
           configMap:
             name: twilight-models
         - name: secrets
+          {{- if .Values.services.modelBackend.providerSecret }}
+          projected:
+            sources:
+              - secret:
+                  name: {{ include "twilight.secretName" . }}
+              - secret:
+                  name: {{ .Values.services.modelBackend.providerSecret | quote }}
+                  items:
+                    - key: REAL_MODEL_API_KEY
+                      path: REAL_MODEL_API_KEY
+          {{- else }}
           secret:
             secretName: {{ include "twilight.secretName" . }}
+          {{- end }}
