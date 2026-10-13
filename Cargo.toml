@@ -1,0 +1,4 @@
+[workspace]
+members = ["cmd/twilight-chat", "cmd/twilight-chat/crates/chat-protocol", "cmd/twilight-chat/crates/chat-client"]
+default-members = ["cmd/twilight-chat"]
+resolver = "2"
