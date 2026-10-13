@@ -56,6 +56,12 @@ type ExecutionLease struct {
 	LeaseUntil int64
 }
 
+type ExecutionSettlementFeed struct {
+	Sequence      int64
+	ExecutionKey  string
+	AssignmentKey string
+}
+
 type Inbox struct {
 	Session    string
 	Seq        int64

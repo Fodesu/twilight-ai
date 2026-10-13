@@ -18,7 +18,14 @@ import (
 // database serialize per key.
 type ExecutionStore struct{ d *DB }
 
+const (
+	durableSettlementEpoch = "postgres-execution-settlement-feed"
+	settlementFeedChannel  = "twilight_execution_settlements"
+	maxInt64Uint           = uint64(1<<63 - 1)
+)
+
 var _ executionstore.Store = (*ExecutionStore)(nil)
+var _ executionstore.SettlementFeed = (*ExecutionStore)(nil)
 
 // Executions is the Worker's execution record store over this database.
 func (d *DB) Executions() *ExecutionStore { return &ExecutionStore{d: d} }
@@ -171,8 +178,92 @@ func (s *ExecutionStore) Append(ctx context.Context, lease executionstore.Lease,
 		if _, err := executionstore.Fold(state, &c); err != nil {
 			return err
 		}
-		return appendExecutionCommit(ctx, q, k, key, head, &c)
+		if executionSettled(&c) {
+			// BIGSERIAL cursors must be allocated and committed in the same
+			// order. Without this lock, a later transaction could commit a
+			// higher cursor before an earlier transaction with a lower cursor.
+			if err := q.AdvisoryLock(ctx, "execution:settlement-feed"); err != nil {
+				return err
+			}
+		}
+		if err := appendExecutionCommit(ctx, q, k, key, head, &c); err != nil {
+			return err
+		}
+		if executionSettled(&c) {
+			assignmentKey, err := json.Marshal(key)
+			if err != nil {
+				return err
+			}
+			if err := q.InsertExecutionSettlement(ctx, db.InsertExecutionSettlementParams{ExecutionKey: k, AssignmentKey: string(assignmentKey)}); err != nil {
+				return err
+			}
+			return q.NotifyExecutionSettlement(ctx)
+		}
+		return nil
 	})
+}
+
+func executionSettled(c *ledger.Commit) bool {
+	for _, batch := range c.Batches {
+		for _, event := range batch.Events {
+			if event.Type == executionstore.EventExecutionSettled {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SettlementEvents serves the shared, replayable settlement feed. LISTEN is
+// only the wake-up path; every wake-up is followed by a database read, so a
+// missed notification cannot lose a settlement.
+func (s *ExecutionStore) SettlementEvents(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
+	if after > maxInt64Uint {
+		return fmt.Errorf("postgres: settlement cursor overflows int64: %d", after)
+	}
+	conn, err := s.d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "LISTEN "+settlementFeedChannel); err != nil {
+		return err
+	}
+	head, err := s.d.q.ExecutionSettlementHead(ctx)
+	if err != nil {
+		return err
+	}
+	cursor := int64(after)
+	if epoch != durableSettlementEpoch {
+		cursor = head
+	}
+	if !fn(effect.Settlement{Epoch: durableSettlementEpoch, Sequence: uint64(head)}) { //nolint:gosec // head is non-negative
+		return nil
+	}
+	for {
+		rows, err := s.d.q.ExecutionSettlementsAfter(ctx, db.ExecutionSettlementsAfterParams{Sequence: cursor, Limit: 256})
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			var key effect.AssignmentKey
+			if err := json.Unmarshal([]byte(row.AssignmentKey), &key); err != nil {
+				return fmt.Errorf("postgres: decode settlement assignment: %w", err)
+			}
+			if !fn(effect.Settlement{Key: key, Epoch: durableSettlementEpoch, Sequence: uint64(row.Sequence)}) { //nolint:gosec // sequence is non-negative
+				return nil
+			}
+			cursor = row.Sequence
+		}
+		if len(rows) > 0 {
+			// Drain replay pages before waiting: historical rows need not have
+			// a notification queued on this newly opened LISTEN connection.
+			continue
+		}
+		if _, err := conn.Conn().WaitForNotification(ctx); err != nil {
+			return err
+		}
+	}
 }
 
 func (s *ExecutionStore) Acquire(ctx context.Context, key effect.AssignmentKey, owner string, ttl time.Duration) (executionstore.Lease, bool, error) {

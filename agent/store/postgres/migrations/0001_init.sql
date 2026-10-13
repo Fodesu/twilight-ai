@@ -22,6 +22,12 @@ CREATE TABLE execution_leases (
 );
 CREATE INDEX execution_leases_by_owner ON execution_leases (owner, key);
 
+CREATE TABLE execution_settlement_feed (
+	sequence       BIGSERIAL PRIMARY KEY,
+	execution_key  TEXT NOT NULL UNIQUE REFERENCES executions(key),
+	assignment_key TEXT NOT NULL
+);
+
 CREATE TABLE processes (
 	key            TEXT PRIMARY KEY,
 	assignment_key TEXT NOT NULL,

@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -13,10 +14,13 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/checkpoint"
 	"github.com/felinics/twilight/agentcore/checkpoint/checkpointtest"
+	"github.com/felinics/twilight/agentcore/executor/protocol"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/inbox/inboxtest"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
 	"github.com/felinics/twilight/agentcore/run/redispatch/redispatchtest"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
@@ -48,6 +52,92 @@ func TestExecutionStoreConformance(t *testing.T) {
 		}
 		return storetest.Fixture{Store: open(t), Reopen: open, Advance: c.Advance}
 	})
+}
+
+func TestExecutionSettlementFeedCrossHandle(t *testing.T) {
+	dsn := postgrestest.Schema(t)
+	dbA := postgrestest.OpenDSN(t, dsn)
+	dbB := postgrestest.OpenDSN(t, dsn)
+	storeA, storeB := dbA.Executions(), dbB.Executions()
+	feed := storeB
+
+	assignment := effect.Assignment{Session: "session", RunID: "run", StepID: "step", Effect: "effect",
+		Body: effect.ModelAssignment{Model: "chat"}}
+	key := assignment.Key()
+	accepted, err := ledger.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: assignment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storeA.Append(context.Background(), executionstore.Lease{}, key, ledger.Commit{CommitID: executionstore.AcceptCommitID(key), Batches: []ledger.EventBatch{{Events: []ledger.Event{{Type: accepted.Type, Payload: accepted.Payload}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	lease, acquired, err := storeA.Acquire(context.Background(), key, "worker-a", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire = %+v, %v", lease, err)
+	}
+
+	_, head, exists, err := storeA.Load(context.Background(), key)
+	if err != nil || !exists {
+		t.Fatalf("load = %v, %v", exists, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := make(chan struct{})
+	events := make(chan effect.Settlement, 2)
+	go func() {
+		_ = feed.SettlementEvents(ctx, "", 0, func(event effect.Settlement) bool {
+			if event.Key == (effect.AssignmentKey{}) {
+				close(started)
+			} else {
+				events <- event
+			}
+			return true
+		})
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("settlement subscription did not initialize")
+	}
+
+	outcome := protocol.EncodeOutcome(effect.Outcome{Key: key, Result: effect.Unknown{Message: "test"}})
+	settled, err := ledger.NewEvent(executionstore.EventExecutionSettled, 0, executionstore.Settled{State: effect.ExecutionUnknown, Outcome: outcome})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storeA.Append(context.Background(), lease, key, ledger.Commit{Seq: head.Next, CommitID: executionstore.SettleCommitID(key), Batches: []ledger.EventBatch{{Events: []ledger.Event{{Type: settled.Type, Payload: settled.Payload}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	var event effect.Settlement
+	select {
+	case event = <-events:
+		if event.Key != key || event.Sequence == 0 {
+			t.Fatalf("settlement event = %+v", event)
+		}
+	case <-ctx.Done():
+		t.Fatal("second database handle did not receive durable settlement")
+	}
+
+	replayCtx, replayCancel := context.WithTimeout(context.Background(), time.Second)
+	defer replayCancel()
+	replayed := make(chan effect.Settlement, 1)
+	go func() {
+		_ = feed.SettlementEvents(replayCtx, event.Epoch, 0, func(next effect.Settlement) bool {
+			if next.Key != (effect.AssignmentKey{}) {
+				replayed <- next
+				return false
+			}
+			return true
+		})
+	}()
+	select {
+	case replay := <-replayed:
+		if replay.Key != key || replay.Sequence != event.Sequence {
+			t.Fatalf("replayed settlement = %+v, first event = %+v", replay, event)
+		}
+	case <-replayCtx.Done():
+		t.Fatal("durable settlement was not replayed")
+	}
 }
 
 func TestRedispatchStoreConformance(t *testing.T) {

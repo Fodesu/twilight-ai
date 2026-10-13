@@ -98,6 +98,55 @@ func (q *Queries) ExecutionLease(ctx context.Context, key string) (ExecutionLeas
 	return i, err
 }
 
+const executionSettlementHead = `-- name: ExecutionSettlementHead :one
+SELECT COALESCE(MAX(sequence), 0)::bigint AS head FROM execution_settlement_feed
+`
+
+func (q *Queries) ExecutionSettlementHead(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, executionSettlementHead)
+	var head int64
+	err := row.Scan(&head)
+	return head, err
+}
+
+const executionSettlementsAfter = `-- name: ExecutionSettlementsAfter :many
+SELECT sequence, assignment_key
+FROM execution_settlement_feed
+WHERE sequence > $1
+ORDER BY sequence
+LIMIT $2
+`
+
+type ExecutionSettlementsAfterParams struct {
+	Sequence int64
+	Limit    int32
+}
+
+type ExecutionSettlementsAfterRow struct {
+	Sequence      int64
+	AssignmentKey string
+}
+
+func (q *Queries) ExecutionSettlementsAfter(ctx context.Context, arg ExecutionSettlementsAfterParams) ([]ExecutionSettlementsAfterRow, error) {
+	rows, err := q.db.Query(ctx, executionSettlementsAfter, arg.Sequence, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExecutionSettlementsAfterRow{}
+	for rows.Next() {
+		var i ExecutionSettlementsAfterRow
+		if err := rows.Scan(&i.Sequence, &i.AssignmentKey); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const executionsOwnedBy = `-- name: ExecutionsOwnedBy :many
 SELECT e.assignment_key FROM execution_leases l JOIN executions e ON e.key = l.key WHERE l.owner = $1 ORDER BY l.key
 `
@@ -175,6 +224,30 @@ func (q *Queries) InsertExecutionLease(ctx context.Context, arg InsertExecutionL
 		arg.Epoch,
 		arg.LeaseUntil,
 	)
+	return err
+}
+
+const insertExecutionSettlement = `-- name: InsertExecutionSettlement :exec
+INSERT INTO execution_settlement_feed (execution_key, assignment_key)
+VALUES ($1, $2) ON CONFLICT (execution_key) DO NOTHING
+`
+
+type InsertExecutionSettlementParams struct {
+	ExecutionKey  string
+	AssignmentKey string
+}
+
+func (q *Queries) InsertExecutionSettlement(ctx context.Context, arg InsertExecutionSettlementParams) error {
+	_, err := q.db.Exec(ctx, insertExecutionSettlement, arg.ExecutionKey, arg.AssignmentKey)
+	return err
+}
+
+const notifyExecutionSettlement = `-- name: NotifyExecutionSettlement :exec
+SELECT pg_notify('twilight_execution_settlements', '')
+`
+
+func (q *Queries) NotifyExecutionSettlement(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, notifyExecutionSettlement)
 	return err
 }
 
