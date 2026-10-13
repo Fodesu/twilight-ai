@@ -1,0 +1,65 @@
+# Intentionally restricted to the isolated local validation environment.
+validationNamespace: twilight-validation
+nodeSelector:
+  kubernetes.io/hostname: k3d-twilight-server-0
+storageClassName: local-path
+components:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    port: 9090
+    uid: 65534
+    dataPath: /prometheus
+    storage: 2Gi
+    readyPath: /-/ready
+    configFile: prometheus.yml
+    configPath: /etc/prometheus
+    args:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=72h
+      - --storage.tsdb.retention.size=1500MB
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: "1", memory: 512Mi}
+  grafana:
+    image: grafana/grafana:12.1.0
+    port: 3000
+    uid: 472
+    dataPath: /var/lib/grafana
+    storage: 1Gi
+    readyPath: /api/health
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: 500m, memory: 384Mi}
+  loki:
+    image: grafana/loki:3.5.5
+    port: 3100
+    uid: 10001
+    dataPath: /var/loki
+    storage: 3Gi
+    readyPath: /ready
+    configFile: loki.yaml
+    configPath: /etc/loki
+    args:
+      - -config.file=/etc/loki/loki.yaml
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: "1", memory: 512Mi}
+  alloy:
+    image: grafana/alloy:v1.10.1
+    port: 12345
+    uid: 10001
+    dataPath: /var/lib/alloy
+    storage: 1Gi
+    readyPath: /-/ready
+    configFile: config.alloy
+    configPath: /etc/alloy
+    args:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --disable-reporting
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {cpu: 500m, memory: 256Mi}

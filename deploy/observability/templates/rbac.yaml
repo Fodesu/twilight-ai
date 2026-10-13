@@ -1,0 +1,43 @@
+{{- if ne .Release.Namespace "twilight-observability" }}
+{{- fail "This chart must be installed in namespace twilight-observability" }}
+{{- end }}
+{{- if ne .Values.validationNamespace "twilight-validation" }}
+{{- fail "This chart may only discover namespace twilight-validation" }}
+{{- end }}
+{{- range $name := list "prometheus" "alloy" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: twilight-observability-{{ $name }}
+  namespace: {{ $.Values.validationNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+{{- if eq $name "alloy" }}
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: twilight-observability-{{ $name }}
+  namespace: {{ $.Values.validationNamespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $.Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: twilight-observability-{{ $name }}
+{{- end }}

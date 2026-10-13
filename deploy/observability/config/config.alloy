@@ -1,0 +1,55 @@
+logging {
+  level = "info"
+  format = "logfmt"
+}
+
+discovery.kubernetes "validation_pods" {
+  role = "pod"
+  namespaces {
+    names = ["{{ .Values.validationNamespace }}"]
+  }
+  selectors {
+    role = "pod"
+    label = "app.kubernetes.io/part-of=twilight"
+  }
+}
+
+discovery.relabel "validation_logs" {
+  targets = discovery.kubernetes.validation_pods.targets
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    target_label = "namespace"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_name"]
+    target_label = "pod"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    target_label = "container"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+    target_label = "role"
+  }
+}
+
+// Read Pod logs over the Kubernetes API; no host mounts or privileged access.
+// Keep the original JSON body, including dynamic IDs, out of stream labels.
+loki.source.kubernetes "validation" {
+  targets = discovery.relabel.validation_logs.output
+  forward_to = [loki.process.static_labels_only.receiver]
+}
+
+loki.process "static_labels_only" {
+  forward_to = [loki.write.local.receiver]
+  stage.label_keep {
+    values = ["namespace", "pod", "container", "role"]
+  }
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

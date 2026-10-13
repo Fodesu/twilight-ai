@@ -1,0 +1,6 @@
+apiVersion: v2
+name: twilight-observability
+description: Namespace-scoped local validation observability, without operators or Ingress
+version: 0.1.0
+type: application
+appVersion: "1"

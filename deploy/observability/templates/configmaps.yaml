@@ -1,0 +1,61 @@
+{{- range $name := list "prometheus" "loki" "alloy" }}
+{{- $component := index $.Values.components $name }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-config
+  namespace: {{ $.Release.Namespace }}
+data:
+  {{ $component.configFile }}: |
+    {{- tpl ($.Files.Get (printf "config/%s" $component.configFile)) $ | nindent 4 }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: {{ .Release.Namespace }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: twilight-prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+        jsonData:
+          httpMethod: POST
+          timeInterval: 15s
+      - name: Loki
+        uid: twilight-loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+        editable: false
+        jsonData:
+          maxLines: 1000
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: Twilight Validation
+        orgId: 1
+        folder: Twilight
+        type: file
+        disableDeletion: true
+        editable: false
+        updateIntervalSeconds: 30
+        options:
+          path: /etc/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: twilight-validation-dashboard
+  namespace: {{ .Release.Namespace }}
+data:
+  twilight-validation.json: |
+    {{- .Files.Get "dashboards/twilight-validation.json" | nindent 4 }}

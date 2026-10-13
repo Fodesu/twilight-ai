@@ -1,0 +1,4 @@
+.git/
+*.py
+*.sh
+VERIFICATION.md

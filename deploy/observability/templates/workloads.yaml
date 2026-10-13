@@ -1,0 +1,145 @@
+{{- range $name, $component := .Values.components }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-data
+  namespace: {{ $.Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ $.Values.storageClassName | quote }}
+  resources:
+    requests:
+      storage: {{ $component.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+  ports:
+    - name: http
+      port: {{ $component.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/part-of: twilight-observability
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmaps.yaml") $ | sha256sum }}
+    spec:
+      nodeSelector:
+        {{- toYaml $.Values.nodeSelector | nindent 8 }}
+      {{- if or (eq $name "prometheus") (eq $name "alloy") }}
+      serviceAccountName: {{ $name }}
+      {{- else }}
+      automountServiceAccountToken: false
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $component.uid }}
+        runAsGroup: {{ $component.uid }}
+        fsGroup: {{ $component.uid }}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ $name }}
+          image: {{ $component.image | quote }}
+          imagePullPolicy: IfNotPresent
+          {{- with $component.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if eq $name "grafana" }}
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef: {name: grafana-admin, key: username}
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: grafana-admin, key: password}
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "true"}
+            - {name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Viewer}
+            - {name: GF_USERS_ALLOW_SIGN_UP, value: "false"}
+            - {name: GF_ANALYTICS_REPORTING_ENABLED, value: "false"}
+            - {name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false"}
+            - {name: GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES, value: "false"}
+            - {name: GF_PLUGINS_PREINSTALL_DISABLED, value: "true"}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $component.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          startupProbe:
+            httpGet: {path: {{ $component.readyPath | quote }}, port: http}
+            failureThreshold: 60
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: {path: {{ $component.readyPath | quote }}, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: {{ $component.readyPath | quote }}, port: http}
+            periodSeconds: 15
+            failureThreshold: 5
+          resources:
+            {{- toYaml $component.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ $component.dataPath }}
+            {{- if eq $name "grafana" }}
+            - name: config
+              mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              subPath: datasources.yaml
+              readOnly: true
+            - name: config
+              mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml
+              subPath: dashboards.yaml
+              readOnly: true
+            - name: dashboard
+              mountPath: /etc/grafana/dashboards
+              readOnly: true
+            {{- else }}
+            - name: config
+              mountPath: {{ $component.configPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $name }}-data
+        - name: config
+          configMap:
+            name: {{ $name }}-config
+        {{- if eq $name "grafana" }}
+        - name: dashboard
+          configMap:
+            name: twilight-validation-dashboard
+        {{- end }}
+{{- end }}
