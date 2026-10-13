@@ -91,9 +91,14 @@ func Run(ctx context.Context, addr string, component Component, opts Options) er
 			return serveErr
 		}
 	}
+	listening.Store(false)
 	drain, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
 	shutdownErr := server.Shutdown(drain)
+	if shutdownErr != nil {
+		// Shutdown does not close long-lived streams when the grace expires.
+		_ = server.Close()
+	}
 	closeErr := component.Close(drain)
 	if shutdownErr != nil {
 		return shutdownErr
