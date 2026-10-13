@@ -344,6 +344,13 @@ func apply(s ExecutionState, e *ledger.Event) (ExecutionState, error) { //nolint
 	return s, nil
 }
 
+// SettlementFeed is the durable notification capability of a shared execution
+// store. Unlike the optional in-process notice hub, its cursor is shared by
+// every Worker replica and survives a Worker restart.
+type SettlementFeed interface {
+	SettlementEvents(context.Context, string, uint64, func(effect.Settlement) bool) error
+}
+
 // Store is the ledger and lease authority of executions, keyed by
 // AssignmentKey. Every write is one transaction; the store is the fence for
 // any number of Workers over the same file.
