@@ -1,0 +1,18 @@
+# First-round pod-failure validation, not a node-HA configuration.
+# Existing k3d placement has only one node per role, so replicas share that node.
+services:
+  owner:
+    replicas: 2
+  worker:
+    replicas: 2
+  # These backends hold process-local state; keep exactly one replica.
+  modelBackend:
+    replicas: 1
+  toolBackend:
+    replicas: 1
+
+# No monitoring stack or CRDs are introduced by this overlay.
+metrics:
+  scrapeAnnotations: false
+podMonitor:
+  enabled: false

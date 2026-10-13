@@ -1,0 +1,21 @@
+# Isolated validation runtime; no real provider credentials or API usage.
+image:
+  repository: twilight
+  tag: validation-observability-v3
+  pullPolicy: Never
+
+models:
+  - ref: chat
+    kind: openai
+    model: validation-mock
+    baseURL: http://mock-model:8090/v1
+    apiKeySecret: OPENAI_API_KEY
+
+agentSandbox:
+  warmPool: twilight-validation-sandbox-pool
+
+# Prometheus is configured for Pod discovery; no Operator CRD is required.
+metrics:
+  scrapeAnnotations: true
+podMonitor:
+  enabled: false
