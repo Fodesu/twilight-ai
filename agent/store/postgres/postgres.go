@@ -108,9 +108,6 @@ func (d *DB) tx(ctx context.Context, key string, fn func(q *db.Queries) error) e
 // one advisory lock, recording each version; every replica may run it at
 // start and exactly one applies each step.
 func (d *DB) Migrate(ctx context.Context) error {
-	if _, err := d.pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS twilight_schema (version BIGINT PRIMARY KEY, applied_at BIGINT NOT NULL)`); err != nil {
-		return fmt.Errorf("postgres: schema table: %w", err)
-	}
 	steps, err := migrationSteps(migrationFiles)
 	if err != nil {
 		return err
@@ -119,6 +116,12 @@ func (d *DB) Migrate(ctx context.Context) error {
 		q := d.q.WithTx(t)
 		if err := q.AdvisoryLock(ctx, "twilight_schema"); err != nil {
 			return err
+		}
+		// IF NOT EXISTS does not serialize creation of the backing pg_type
+		// row. Bootstrap the version table under the same lock as migrations,
+		// so components starting together against a fresh database cannot race.
+		if _, err := t.Exec(ctx, `CREATE TABLE IF NOT EXISTS twilight_schema (version BIGINT PRIMARY KEY, applied_at BIGINT NOT NULL)`); err != nil {
+			return fmt.Errorf("postgres: schema table: %w", err)
 		}
 		current, err := q.SchemaVersion(ctx)
 		if err != nil {
