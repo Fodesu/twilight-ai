@@ -3,7 +3,7 @@ package loop
 import (
 	"context"
 	"errors"
-	"github.com/felinics/twilight/agentcore/testutil/local"
+	"github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/prompt"

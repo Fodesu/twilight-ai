@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
+	"github.com/felinics/twilight/agent/sdkconv"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/plan"

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/testutil/local"
+	"github.com/felinics/twilight/agent/executor/local"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/store"

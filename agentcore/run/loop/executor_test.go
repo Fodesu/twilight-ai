@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/testutil/local"
-	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
+	"github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agent/sdkconv"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
