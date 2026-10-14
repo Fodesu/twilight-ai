@@ -477,8 +477,9 @@ func (s *durableSubscriber) catchUp() error {
 			if commit.Seq >= s.boundary {
 				break
 			}
-			for _, event := range decodeCommit(s.tail.owner.registry, s.tail.sid, commit) {
-				if err := s.send(event); err != nil {
+			events := decodeCommit(s.tail.owner.registry, s.tail.sid, commit)
+			for j := range events {
+				if err := s.send(events[j]); err != nil {
 					return err
 				}
 			}
