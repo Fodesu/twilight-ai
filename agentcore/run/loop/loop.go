@@ -61,6 +61,9 @@ func New(exec Executor, builder prompt.Builder, settings Settings) (*Loop, error
 	if settings.Scheduling.MaxParallel < 0 {
 		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
+	if settings.MaxCandidateRebuilds < 0 {
+		return nil, errors.New("agent: loop: negative MaxCandidateRebuilds")
+	}
 	return &Loop{Executor: exec, Builder: builder, Settings: settings, slots: make(map[run.RunID]*runSlot)}, nil
 }
 
@@ -234,6 +237,13 @@ func (l *Loop) Advance(ctx context.Context, st store.RunStore, runID run.RunID, 
 // Executor.GetOutcome. This keeps the Executor boundary usable across process
 // boundaries.
 func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
+	maxRebuilds := l.Settings.MaxCandidateRebuilds
+	if maxRebuilds == 0 {
+		maxRebuilds = 4
+	}
+	rebuilds := 0
+	candidateContended := false
+	var lastPosition run.RunPosition
 	for {
 		if err := ctx.Err(); err != nil {
 			return LoopResult{}, err
@@ -247,6 +257,16 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 		}
 		if snapshot.State.Status.Terminal() {
 			return l.finish(ctx, events, rt.Scope(), runID, snapshot.State.Result), nil
+		}
+		// Only authoritative Run progress resets the contention bound, not
+		// another Build or a context-only change made by a hook.
+		if snapshot.Position != lastPosition {
+			rebuilds = 0
+			candidateContended = false
+			lastPosition = snapshot.Position
+		}
+		if candidateContended {
+			return LoopResult{}, ErrCandidateContended
 		}
 
 		action, err := plan.Next(snapshot.State)
@@ -264,8 +284,21 @@ func (l *Loop) advance(ctx context.Context, rt store.RunStore, runID run.RunID, 
 					return LoopResult{}, err
 				}
 			}
-			if err := l.planAndPrepare(ctx, rt, events, &snapshot, act.Hint); err != nil {
+			decision, err := l.planAndPrepare(ctx, rt, events, &snapshot, act.Hint)
+			if err != nil {
 				return LoopResult{}, err
+			}
+			switch decision {
+			case CandidateRebuild:
+				if rebuilds >= maxRebuilds {
+					candidateContended = true
+				} else {
+					rebuilds++
+				}
+				// Reload before enforcing the bound: the hook may itself
+				// have advanced Run authority. Replan the hint and CAS too.
+			case CandidateMaintenance:
+				return LoopResult{Disposition: LoopWaiting, Reason: ContextMaintenance}, nil
 			}
 		case plan.WithdrawPrepared:
 			// Inputs arrived after this step was frozen: discard the unsent

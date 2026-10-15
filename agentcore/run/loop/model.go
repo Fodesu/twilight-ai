@@ -14,11 +14,11 @@ import (
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
-func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, hint prompt.Input) error {
+func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events EventSink, snapshot *store.Snapshot, hint prompt.Input) (CandidateDecision, error) {
 	hint.Scope = rt.Scope()
 	p, err := l.Builder.Build(ctx, hint)
 	if err != nil {
-		return err
+		return CandidateReady, err
 	}
 	frozenRequest := p.Request
 	modelRef := p.Model
@@ -26,14 +26,28 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events Eve
 		modelRef = run.ModelRef(frozenRequest.Model)
 	}
 	if modelRef == "" {
-		return fmt.Errorf("agent: loop: empty model")
+		return CandidateReady, fmt.Errorf("agent: loop: empty model")
 	}
 	if run.ModelRef(frozenRequest.Model) != modelRef {
-		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, modelRef)
+		return CandidateReady, fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, modelRef)
+	}
+	p.Model = modelRef
+	if hook := l.Settings.CheckCandidate; hook != nil {
+		decision, err := hook(ctx, rt, hint, &p)
+		if err != nil {
+			return CandidateReady, err
+		}
+		switch decision {
+		case CandidateReady:
+		case CandidateRebuild, CandidateMaintenance:
+			return decision, nil
+		default:
+			return CandidateReady, fmt.Errorf("agent: loop: unknown candidate decision %d", decision)
+		}
 	}
 	requestDigest, err := schema.Canonical().DigestRequest(frozenRequest)
 	if err != nil {
-		return err
+		return CandidateReady, err
 	}
 	cmdID := schema.Identity().DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
 	stepID := schema.Identity().DeriveModelStepID(snapshot.State.RunID, cmdID)
@@ -51,22 +65,22 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt store.RunStore, events Eve
 		// fact of the run; observers must see it like every other accepted
 		// transition.
 		l.emitCommitted(ctx, events, rt.Scope(), snapshot.State.RunID, res.Facts)
-		return nil
+		return CandidateReady, nil
 	}
 	if !retriable(err) {
-		return err
+		return CandidateReady, err
 	}
 	// A retriable rejection with no authority progress means the rejection
 	// was about THIS plan's content (InputIDs, digests), not concurrency:
 	// retrying the same prompt builder at the same revision would spin forever.
 	after, loadErr := rt.Load(ctx, snapshot.State.RunID)
 	if loadErr != nil {
-		return loadErr
+		return CandidateReady, loadErr
 	}
 	if after.Position == snapshot.Position {
-		return fmt.Errorf("agent: loop: prepare rejected without authority progress: %w", err)
+		return CandidateReady, fmt.Errorf("agent: loop: prepare rejected without authority progress: %w", err)
 	}
-	return nil // another actor advanced the run; reload decides the next action
+	return CandidateReady, nil // another actor advanced the run; reload decides the next action
 }
 
 // --- StartModelCall ---

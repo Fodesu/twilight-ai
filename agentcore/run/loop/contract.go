@@ -17,6 +17,10 @@ import (
 // Run locally so every Executing target has one in-process owner.
 var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
 
+// ErrCandidateContended reports repeated candidate rebuilds without Run
+// authority progress within one Advance.
+var ErrCandidateContended = errors.New("agent: loop: candidate contended")
+
 // EffectContext identifies the effect a target is resolved for: the Run's
 // Scope and identity, the Step, the call of a tool effect, the EffectID the
 // effect is about to be started under, the kind of the effect and, for a tool
@@ -56,8 +60,18 @@ type Settings struct {
 	// is the application's seam for reshaping that context between steps,
 	// such as an in-turn checkpoint; it commits through the
 	// Writer the store is bound to. An error stops the drive with no fact
-	// written; nil is no hook.
+	// written; nil is no hook. Compaction budget checks should use
+	// CheckCandidate instead, so they see the complete built request.
 	BeforePrepare PrepareHook
+	// CheckCandidate runs after every Build and before PrepareModelRequest.
+	// Nil accepts the candidate. Maintenance must be performed by the host
+	// after the Loop returns, not synchronously inside this hook.
+	CheckCandidate CandidateHook
+	// MaxCandidateRebuilds bounds consecutive rebuilds without Run authority
+	// progress in one Advance. After this many rebuilds, another Rebuild
+	// decision returns ErrCandidateContended. Zero selects 4; negative values
+	// are invalid.
+	MaxCandidateRebuilds int
 	// Dispatch bounds the re-offers of an Assignment the Executor refused
 	// as retryable; the zero value selects the defaults.
 	Dispatch DispatchPolicy
@@ -73,6 +87,23 @@ type Settings struct {
 // RunStore and input the PromptInput the plan is about to hand the
 // PromptBuilder.
 type PrepareHook func(ctx context.Context, store store.RunStore, input prompt.Input) error
+
+// CandidateHook checks the complete candidate, including system messages and
+// tool definitions. The candidate is borrowed for the call and should be treated
+// as read-only. An error discards it without preparing or dispatching it.
+type CandidateHook func(ctx context.Context, st store.RunStore, input prompt.Input, candidate *prompt.Prompt) (CandidateDecision, error)
+
+// CandidateDecision controls whether a built request may be prepared.
+type CandidateDecision uint8
+
+const (
+	CandidateReady CandidateDecision = iota
+	// CandidateRebuild discards the candidate and reloads the Run and hint.
+	CandidateRebuild
+	// CandidateMaintenance yields to host-owned context maintenance without
+	// writing a normal Run ModelStep.
+	CandidateMaintenance
+)
 
 // --- EventSink: realtime observation, never authority ---
 
@@ -128,8 +159,9 @@ type Event struct {
 type LoopDisposition uint8
 
 const (
-	// LoopWaiting: no executable action; the Run waits for a response, a
-	// recovery, or an Outcome of an effect this Loop did not dispatch.
+	// LoopWaiting: no executable action; the Run waits for a response,
+	// recovery, context maintenance, or an Outcome of an effect this Loop
+	// did not dispatch.
 	LoopWaiting LoopDisposition = iota
 	// LoopFinished: the Run is terminal; Result is set.
 	LoopFinished
@@ -148,7 +180,7 @@ const (
 
 type LoopResult struct {
 	Disposition LoopDisposition
-	// Reason is execution_recovery when ExecutionRecovery is true; otherwise empty.
+	// Reason identifies execution recovery or host-owned context maintenance.
 	Reason WaitReason
 	// ExecutionRecovery is true when NeedsRecovery(state) is true after this
 	// Loop has no further executable action: a ModelStep is Executing, or a
@@ -164,7 +196,8 @@ type LoopResult struct {
 type WaitReason string
 
 const (
-	ExecutionRecovery WaitReason = "execution_recovery"
+	ExecutionRecovery  WaitReason = "execution_recovery"
+	ContextMaintenance WaitReason = "context_maintenance"
 )
 
 // DispatchPolicy is how a Loop repeats a Dispatch the Executor refused with

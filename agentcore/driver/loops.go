@@ -36,6 +36,12 @@ type Planner interface {
 	BeforePrepare(ctx context.Context, w writer.Writer, input prompt.Input) error
 }
 
+// CandidateChecker checks a complete candidate before it becomes a Run fact.
+// Maintenance returns control to the Session driver; it is not a Run step.
+type CandidateChecker interface {
+	CheckCandidate(context.Context, writer.Writer, prompt.Input, *prompt.Prompt) (loop.CandidateDecision, error)
+}
+
 // Loops builds the Loop of each AgentPreset once and hands the same Loop to
 // every drive, redispatch and reattachment of a Run under that preset, so
 // all of them meet the same already-driving guard. The Loop settings are
@@ -59,6 +65,8 @@ type Loops struct {
 	// the application's between-steps context policy, given the Writer the
 	// drive commits through.
 	Planner Planner
+	// Candidates evaluates requests after Build, before PrepareModelRequest.
+	Candidates CandidateChecker
 
 	mu    sync.Mutex
 	loops map[preset.PresetRef]*loop.Loop
@@ -91,6 +99,9 @@ func (l *Loops) For(ref preset.PresetRef) (*loop.Loop, error) {
 	}
 	if l.Planner != nil {
 		settings.BeforePrepare = l.beforePrepare
+	}
+	if l.Candidates != nil {
+		settings.CheckCandidate = l.checkCandidate
 	}
 	lp, err := loop.New(l.Executor, builder, settings)
 	if err != nil {
@@ -133,6 +144,14 @@ func ownerOf(ctx context.Context, w writer.Writer, runID run.RunID) (turn.TurnID
 		return "", fmt.Errorf("driver: run %s: no owning turn", runID)
 	}
 	return turnID, nil
+}
+
+func (l *Loops) checkCandidate(ctx context.Context, st store.RunStore, input prompt.Input, candidate *prompt.Prompt) (loop.CandidateDecision, error) {
+	owned, ok := st.(interface{ Writer() writer.Writer })
+	if !ok {
+		return loop.CandidateReady, fmt.Errorf("driver: run store %T exposes no writer for candidate checks", st)
+	}
+	return l.Candidates.CheckCandidate(ctx, owned.Writer(), input, candidate)
 }
 
 // beforePrepare hands the Loop's hook to the Planner with the Writer the
