@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/compaction"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -21,6 +22,8 @@ type Driver struct {
 	Runs     *sessionstore.SessionRunStore
 	Loops    *Loops
 	Recovery *Recovery
+	// Compactions drives context maintenance outside ordinary Run steps.
+	Compactions *Compactions
 	// Responders answer the ExternalResponse waits a drive leaves; nil
 	// answers none.
 	Responders *Responders
@@ -58,6 +61,12 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 	}
 	for {
 		res, err := l.Run(ctx, d.Runs.Bind(w), view.RunID, d.Sink)
+		if d.Compactions != nil && (errors.Is(err, compaction.ErrPending) || (err == nil && res.Reason == loop.ContextMaintenance)) {
+			if err := d.Compactions.Recover(ctx, w); err != nil {
+				return false, err
+			}
+			continue
+		}
 		if err != nil {
 			if errors.Is(err, loop.ErrRunAlreadyRunning) {
 				return true, nil

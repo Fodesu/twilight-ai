@@ -19,6 +19,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/compaction"
 	"github.com/felinics/twilight/agentcore/history"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
@@ -155,7 +156,7 @@ func New(p Ports) (*Kernel, error) { //nolint:gocritic // hugeParam: Ports is a 
 	admission := writer.Admission{Bindings: bindings, Ledger: retention}
 	writers := writer.NewWriters(store, registry, admission, p.Ownership,
 		writer.WritersConfig{Cache: cache, CachePolicy: sessionstore.WriterCachePolicy(p.CacheEvery), Observers: observers})
-	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: fz, Cache: cache, Now: now})
+	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: fz, Cache: cache, Now: now, PrepareGuard: compaction.RequireIdle})
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +180,7 @@ func New(p Ports) (*Kernel, error) { //nolint:gocritic // hugeParam: Ports is a 
 // authoritative projections.
 func NewRegistry(extensions []module.ModuleDescriptor) (*module.Registry, error) {
 	return module.BuildRegistryWithExtensions(
-		[]module.ModuleDescriptor{chatlog.Module, sessionstore.Module, turn.Module}, extensions)
+		[]module.ModuleDescriptor{chatlog.Module, sessionstore.Module, turn.Module, compaction.Module}, extensions)
 }
 
 // Close ends the Writers and every durable tail loop. The lease-free readers

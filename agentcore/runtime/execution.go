@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/redispatch"
@@ -30,6 +31,10 @@ type ExecutionSources struct {
 	Projections session.ProjectionReader
 	// Content materializes the frozen bodies projections name.
 	Content chatlog.ContentResolver
+	// Frozen stores new summary requests before their intents are accepted.
+	// Required with ContextPolicy or explicit Compactions.Start; recovery
+	// reads already accepted requests through Runs even when this is nil.
+	Frozen frozen.Store
 }
 
 // ExecutionConfig composes one Execution: the effect port it drives, the
@@ -63,6 +68,13 @@ type ExecutionConfig struct {
 	// the Writer of the Session being driven: the application's in-turn
 	// context policy.
 	Planner driver.Planner
+	// ContextPolicy evaluates complete candidates before PrepareModelRequest.
+	// Nil disables automatic compaction, not recovery of accepted operations.
+	ContextPolicy driver.ContextPolicy
+	// MaxCompactionAttempts bounds failed/stale summaries per candidate
+	// preparation; zero selects driver.DefaultCompactionAttempts. A successful
+	// compaction is allowed once before the rebuilt request must fit policy.
+	MaxCompactionAttempts int
 	// Responders answer ExternalResponse waits by the ToolRef whose calls
 	// they answer; nil answers none.
 	Responders map[run.ToolRef]driver.Responder
@@ -95,6 +107,8 @@ type Execution struct {
 	// this Execution waits on; a host component that waits for an effect of
 	// its own (compaction's summary) shares it instead of subscribing again.
 	Watcher *effect.Watcher
+	// Compactions accepts and recovers Session context-maintenance operations.
+	Compactions *driver.Compactions
 	// Driver drives an active Turn; Recovery runs the takeover disposition
 	// when a Session opens and ends its listeners when it closes. Both sit
 	// on the Loops and the Watcher NewExecution built.
@@ -115,6 +129,12 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 	}
 	if cfg.PromptBuilders == nil {
 		return nil, errors.New("runtime: a prompt builder catalog is required (ExecutionConfig.PromptBuilders); the runtime ships no default")
+	}
+	if cfg.MaxCompactionAttempts < 0 {
+		return nil, errors.New("runtime: negative compaction attempt limit")
+	}
+	if cfg.ContextPolicy != nil && src.Frozen == nil {
+		return nil, errors.New("runtime: context policy requires ExecutionSources.Frozen")
 	}
 	switch cfg.MissingEffects {
 	case reconcile.DisposeMissing:
@@ -147,17 +167,20 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 		fail(sid, err)
 		x.Progress.Failed(sid, err)
 	}
+	x.Compactions = &driver.Compactions{Executor: cfg.Executor, Watcher: x.Watcher, Requests: src.Runs,
+		Frozen: src.Frozen, Content: src.Content, Policy: cfg.ContextPolicy, MaxAttempts: cfg.MaxCompactionAttempts, Fail: report}
 	// A nil resolver gives every effect no target.
 	loops := &driver.Loops{Executor: cfg.Executor, Presets: presets, PromptBuilders: cfg.PromptBuilders, Targets: cfg.TargetResolver,
-		Sources: prompt.Sources{Projections: src.Projections, Content: src.Content}, Watcher: x.Watcher, Planner: cfg.Planner}
-	x.Recovery = &driver.Recovery{Runs: src.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: report,
+		Sources: prompt.Sources{Projections: src.Projections, Content: src.Content}, Watcher: x.Watcher, Planner: cfg.Planner, Candidates: x.Compactions}
+	x.Recovery = &driver.Recovery{Runs: src.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: report, Compactions: x.Compactions,
 		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, MaxRedispatches: cfg.MaxRedispatches,
 		RedispatchRetry: cfg.RedispatchRetry, OrphanProbe: cfg.OrphanProbe, Sink: progressSink{x.Progress}}
 	var responders *driver.Responders
 	if len(cfg.Responders) > 0 {
 		responders = &driver.Responders{Runs: src.Runs, Tools: cfg.Responders, Fail: report}
 	}
-	x.Driver = &driver.Driver{Runs: src.Runs, Loops: loops, Recovery: x.Recovery, Responders: responders, Sink: progressSink{x.Progress}}
+	x.Driver = &driver.Driver{Runs: src.Runs, Loops: loops, Recovery: x.Recovery, Compactions: x.Compactions, Responders: responders, Sink: progressSink{x.Progress}}
+	x.Recovery.Driver = x.Driver
 	return x, nil
 }
 

@@ -42,6 +42,10 @@ type Config struct {
 	// required, and it must register each body's Binding for the Writers'
 	// admission: FrozenValues over a ContentStore and a BindingStore does.
 	Frozen frozen.Store
+	// PrepareGuard enforces Session consistency before a new ModelStep is
+	// prepared, inside the same Writer critical section as its Run command.
+	// Nil adds no Session-level constraint to the standalone Run adapter.
+	PrepareGuard func(writer.View) error
 	// Snapshot decides when the machine projection is cached; nil selects
 	// DefaultSnapshotPolicy.
 	Snapshot SnapshotPolicy
@@ -216,6 +220,11 @@ func (s *SessionRunStore) Command(ctx context.Context, req store.CommitRequest) 
 func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]writer.TypedBatch, error) {
 	env := &c.req.Command
 	runID := env.RunID
+	if _, preparing := env.Command.(run.PrepareModelRequest); preparing && c.s.cfg.PrepareGuard != nil {
+		if err := c.s.cfg.PrepareGuard(view); err != nil {
+			return nil, err
+		}
+	}
 	proj, err := loadMachine(view)
 	if err != nil {
 		return nil, err
