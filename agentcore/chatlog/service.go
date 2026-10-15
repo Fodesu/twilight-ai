@@ -96,68 +96,33 @@ func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID
 	}
 }
 
-// Compaction commits a summary and its compaction in one group.
-// The base is read inside the commit's critical section, so the digest pins
-// exactly the context being replaced. guard (when non-nil) runs in the same
-// critical section first; callers pass the active-Turn rule there.
-// retain names entries of the current context (compaction.RetainLast builds
-// a pair-closed suffix, which CheckRetainClosure verifies).
-func (s *Commands) Compact(ctx context.Context, w writer.Writer, summaryText string, retain []EntryDigestPair, guard Guard) (CompactionID, error) {
+// Compact commits a summary against the plan captured before its generation.
+// The guard and CompactContext prepare on the same transactional View. Reusing
+// the same plan and summary replays the operation without revalidating its base.
+func (s *Commands) Compact(ctx context.Context, w writer.Writer, summaryText string, plan CompactionPlan, guard Guard) (CompactionID, error) {
 	if strings.TrimSpace(summaryText) == "" {
 		return "", errors.New("chatlog: compaction requires a summary text")
 	}
-	var compactionID CompactionID
-	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
+	if w == nil {
+		return "", errors.New("chatlog: compaction requires a writer")
+	}
+	compactionID, summaryID, err := compactionIDs(w.SessionID(), plan, summaryText)
+	if err != nil {
+		return "", err
+	}
+	summary := Summary{ID: summaryID, Parts: Parts{TextPart{Text: summaryText}}}
+	if summary.Digest, err = DigestSummary(&summary); err != nil {
+		return "", err
+	}
+	guardPart := unit.PartFunc(func(_ context.Context, v writer.View, _ int64) ([]writer.TypedBatch, error) {
 		if guard != nil {
-			if err := guard(v); err != nil {
-				return nil, err
-			}
+			return nil, guard(v)
 		}
-		cstate, err := v.Projection(ContextProjectionID, ContextProjection.Version)
-		if err != nil {
-			return nil, err
-		}
-		cctx, ok := cstate.(Context)
-		if !ok {
-			return nil, fmt.Errorf("chatlog: context projection is %T", cstate)
-		}
-		entries := cctx.Entries
-		if len(entries) == 0 {
-			return nil, errors.New("chatlog: compaction over an empty context")
-		}
-		if err := CheckRetainClosure(entries, retain); err != nil {
-			return nil, err
-		}
-		pairs := make([]EntryDigestPair, len(entries))
-		for i := range entries {
-			pairs[i] = entries[i].Pair()
-		}
-		baseDigest, err := DigestBaseContext(pairs)
-		if err != nil {
-			return nil, err
-		}
-		var summaryID SummaryID
-		if compactionID, summaryID, err = compactionIDs(w.SessionID(), baseDigest, summaryText); err != nil {
-			return nil, err
-		}
-		summary := Summary{ID: summaryID, Parts: Parts{TextPart{Text: summaryText}}}
-		if summary.Digest, err = DigestSummary(&summary); err != nil {
-			return nil, err
-		}
-		payload := CompactionCreatedPayload{
-			CompactionID: compactionID, CoveredThrough: entries[len(entries)-1].Position,
-			BaseContextDigest: baseDigest, SummaryID: summaryID, SummaryDigest: summary.Digest,
-			Retained: retain,
-		}
-		if payload.Digest, err = DigestCompaction(&payload); err != nil {
-			return nil, err
-		}
-		now := s.Now().UnixMilli()
-		return &writer.SemanticGroup{CommitID: ledger.CommitID("compaction/" + string(compactionID)),
-			Batches: []writer.TypedBatch{{Domain: Stream, Events: []writer.TypedEvent{
-				{Type: TypeSummary, RecordedAtUnixMilli: now, Value: SummaryPayload{Summary: summary}},
-				{Type: TypeCompactionCreated, RecordedAtUnixMilli: now, Value: payload},
-			}}}}, nil
+		return nil, nil
+	})
+	res, err := unit.Commit(ctx, w, s.Now().UnixMilli(), unit.Work{
+		CommitID: ledger.CommitID("compaction/" + string(compactionID)),
+		Parts:    []unit.Part{guardPart, CompactContext(compactionID, summary, plan)},
 	})
 	if err != nil {
 		return "", err
@@ -170,21 +135,19 @@ func (s *Commands) Compact(ctx context.Context, w writer.Writer, summaryText str
 	}
 }
 
-// compactionIDs derives the compaction and summary identifiers from what the
-// compaction replaces: the Session, the base context digest and the summary
-// text. A Compaction retried over the same base therefore carries the same
-// CommitID and is answered as already applied instead of writing a second
-// compaction.
+// compactionIDs derives both identifiers from the Session, the complete plan
+// (including retained entries), and summary text. An identical retry carries
+// the same CommitID; a different retention policy is a different operation.
 // compactionDerivationVersion versions this preimage; it is chatlog's own,
 // not a kernel version: the kernel has none.
-const compactionDerivationVersion uint16 = 1
+const compactionDerivationVersion uint16 = 2
 
-func compactionIDs(sid session.SessionID, base jsonstable.Digest, summaryText string) (CompactionID, SummaryID, error) {
+func compactionIDs(sid session.SessionID, plan CompactionPlan, summaryText string) (CompactionID, SummaryID, error) {
 	raw, err := jsonstable.EncodeTypedPayload(compactionDerivationVersion, "twilight/chatlog/compaction", struct {
 		SessionID session.SessionID `json:"sessionId"`
-		Base      jsonstable.Digest `json:"base"`
+		Plan      CompactionPlan    `json:"plan"`
 		Summary   string            `json:"summary"`
-	}{sid, base, summaryText})
+	}{sid, plan, summaryText})
 	if err != nil {
 		return "", "", err
 	}

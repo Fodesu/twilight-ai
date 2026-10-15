@@ -5,15 +5,15 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/session"
 )
 
-// compaction identifiers are a function of the Session, the base
-// context digest and the summary text, so a Compaction retried over the same
-// base replays the same CommitID.
+// Compaction identifiers cover the complete plan, not only its base digest.
 func TestCompactionIDsAreDerived(t *testing.T) {
 	base := jsonstable.DigestBytes([]byte("base"))
-	ckpt, sum, err := compactionIDs("s", base, "summary")
+	plan := CompactionPlan{BaseContextDigest: base, CoveredThrough: ledger.Position{Commit: 4}}
+	ckpt, sum, err := compactionIDs("s", plan, "summary")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,18 +24,21 @@ func TestCompactionIDsAreDerived(t *testing.T) {
 	cases := []struct {
 		name    string
 		sid     session.SessionID
-		base    jsonstable.Digest
+		plan    CompactionPlan
 		summary string
 		same    bool
 	}{
-		{"same inputs", "s", base, "summary", true},
-		{"other session", "s2", base, "summary", false},
-		{"other base", "s", jsonstable.DigestBytes([]byte("other")), "summary", false},
-		{"other summary", "s", base, "summary 2", false},
+		{"same inputs", "s", plan, "summary", true},
+		{"other session", "s2", plan, "summary", false},
+		{"other base", "s", CompactionPlan{BaseContextDigest: jsonstable.DigestBytes([]byte("other")), CoveredThrough: plan.CoveredThrough}, "summary", false},
+		{"other boundary", "s", CompactionPlan{BaseContextDigest: base, CoveredThrough: ledger.Position{Commit: 5}}, "summary", false},
+		{"other retained", "s", CompactionPlan{BaseContextDigest: base, CoveredThrough: plan.CoveredThrough, Retained: []EntryDigestPair{{Kind: EntryInput, ID: "i", Digest: "sha256:i"}}}, "summary", false},
+		{"empty retained", "s", CompactionPlan{BaseContextDigest: base, CoveredThrough: plan.CoveredThrough, Retained: []EntryDigestPair{}}, "summary", true},
+		{"other summary", "s", plan, "summary 2", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, err := compactionIDs(tc.sid, tc.base, tc.summary)
+			got, _, err := compactionIDs(tc.sid, tc.plan, tc.summary)
 			if err != nil {
 				t.Fatal(err)
 			}
