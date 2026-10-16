@@ -37,7 +37,7 @@ func BenchmarkWriterOpen(b *testing.B) {
 	}
 }
 
-// benchmarkOpen times OpenWriter alone. Takeover lets the loop reopen without a
+// benchmarkOpen times acquisition and Bind. Takeover lets the loop reopen without a
 // Close, whose cache flush would otherwise land inside the measurement.
 func benchmarkOpen(b *testing.B, f *cacheFixture, cfg WritersConfig) {
 	b.Helper()
@@ -45,7 +45,7 @@ func benchmarkOpen(b *testing.B, f *cacheFixture, cfg WritersConfig) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := openWriter(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{Takeover: true}, cfg); err != nil {
+		if _, err := acquireTestWriterConfig(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{Takeover: true}, cfg); err != nil {
 			b.Fatal(err)
 		}
 	}

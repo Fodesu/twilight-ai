@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
 )
 
 type blockingPollHistory struct {
@@ -134,9 +135,7 @@ func TestTailerLocalCommitWakesPoll(t *testing.T) {
 	history := &notifyingHistory{History: store, poll: make(chan session.CommitReadRequest, 8)}
 	tailer := observe.NewSessionLedgerTailer(reg, history)
 	defer tailer.Close()
-	w, err := writer.NewWriters(store, reg, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{
-		Observers: []writer.CommitObserver{tailer},
-	}).Writer(ctx, sid)
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: reg, Config: writer.WritersConfig{Observers: []writer.CommitObserver{tailer}}}, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,9 +171,7 @@ func TestTailerSubscribersCatchUpFromDifferentPositions(t *testing.T) {
 	}
 	tailer := observe.NewSessionLedgerTailer(reg, store)
 	defer tailer.Close()
-	w, err := writer.NewWriters(store, reg, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{
-		Observers: []writer.CommitObserver{tailer},
-	}).Writer(ctx, sid)
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: reg, Config: writer.WritersConfig{Observers: []writer.CommitObserver{tailer}}}, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,9 +236,7 @@ func TestTailerCatchupAndSharedLiveHaveNoAttachmentGap(t *testing.T) {
 	history := &catchupWindowHistory{base: store, started: make(chan struct{}, 1), release: make(chan struct{})}
 	tailer := observe.NewSessionLedgerTailer(reg, history)
 	defer tailer.Close()
-	w, err := writer.NewWriters(store, reg, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{
-		Observers: []writer.CommitObserver{tailer},
-	}).Writer(ctx, sid)
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: reg, Config: writer.WritersConfig{Observers: []writer.CommitObserver{tailer}}}, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +288,7 @@ func TestSlowDurableSubscriberIsClosed(t *testing.T) {
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
-	w, err := writer.NewWriters(store, reg, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{}).Writer(ctx, sid)
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: reg}, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,9 +330,7 @@ func TestTailerOverflowWithinCommitResumesFromFullPosition(t *testing.T) {
 	}
 	tailer := observe.NewSessionLedgerTailer(reg, store)
 	defer tailer.Close()
-	w, err := writer.NewWriters(store, reg, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{
-		Observers: []writer.CommitObserver{tailer},
-	}).Writer(ctx, sid)
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: reg, Config: writer.WritersConfig{Observers: []writer.CommitObserver{tailer}}}, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +471,7 @@ func TestTailerCloseWaitsForCatchupSubscriber(t *testing.T) {
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
-	w, err := writer.NewWriters(store, reg, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{}).Writer(ctx, sid)
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: reg}, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

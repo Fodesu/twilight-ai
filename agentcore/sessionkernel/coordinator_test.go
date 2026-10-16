@@ -13,6 +13,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"testing"
@@ -33,13 +34,13 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	bindings, retention := artifacttest.Stores(t)
-	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: retention}, session.OpenOptions{}, writer.WritersConfig{})
+	factory := &writer.Factory{Store: store, Registry: registry, Admission: writer.Admission{Bindings: bindings, Ledger: retention}}
 	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: sessionstoretest.Frozen(t, bindings)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := &sessionkernel.Coordinator{Projections: session.NewProjectionReader(store, registry, nil), Runs: runs}
-	w, err := writers.Writer(ctx, sid)
+	w, err := writertest.Open(t, ctx, factory, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,10 +48,6 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	submit := func(id chatlog.InputID) run.AgentInput {
 		t.Helper()
 		content := run.MustParseCanonicalJSON(`{"text":"hi"}`)
-		w, err := writers.Writer(ctx, sid)
-		if err != nil {
-			t.Fatal(err)
-		}
 		if _, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 			return &writer.SemanticGroup{CommitID: ledger.CommitID("submit/" + string(id)),
 				Batches: []writer.TypedBatch{{Domain: chatlog.Stream, Events: []writer.TypedEvent{{

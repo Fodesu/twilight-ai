@@ -38,6 +38,10 @@ func Run(t *testing.T, factory Factory) {
 	t.Helper()
 	t.Run("ledger", func(t *testing.T) { testLedger(t, factory(t)) })
 	t.Run("seed_aborted", func(t *testing.T) { testSeedAborted(t, factory(t)) })
+	t.Run("directory", func(t *testing.T) { testDirectory(t, factory(t)) })
+	for _, mode := range []string{"never_claimed", "live_foreign", "expired"} {
+		t.Run("controller_cancel/"+mode, func(t *testing.T) { testControllerCancel(t, factory(t), mode) })
+	}
 }
 
 func assignment(id run.EffectID) effect.Assignment {
@@ -202,6 +206,66 @@ func testLedger(t *testing.T, f Fixture) { //nolint:gocyclo // one scenario, che
 	}
 	if owned, err := a.ListOwned(ctx, "worker-b"); err != nil || len(owned) != 1 || owned[0] != key {
 		t.Fatalf("ListOwned(worker-b) = %+v %v, want the leased key", owned, err)
+	}
+}
+
+// A controller command is state-machine constrained but unfenced. It does
+// not create/renew a lease and cannot grant authority to execute: even a
+// subsequent legitimate claimant may only reconcile cancellation.
+func testControllerCancel(t *testing.T, f Fixture, mode string) {
+	ctx := context.Background()
+	asg := assignment("cancel")
+	key := asg.Key()
+	accept(t, f.Store, asg)
+	var held executionstore.Lease
+	if mode != "never_claimed" {
+		var err error
+		held, _, err = f.Store.Acquire(ctx, key, "worker", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mode == "expired" {
+		f.Advance(2 * time.Minute)
+	}
+	before, _, _, _ := f.Store.Load(ctx, key)
+	_, head, _, _ := f.Store.Load(ctx, key)
+	if err := step(f.Store, executionstore.Lease{Key: key}, head.Next, executionstore.EventCancelRequested, nil); err != nil {
+		t.Fatalf("unfenced controller cancellation = %v", err)
+	}
+	state, head, _, err := f.Store.Load(ctx, key)
+	if err != nil || state.State != effect.ExecutionCancelRequested || state.Lease != before.Lease {
+		t.Fatalf("cancel changed execution authority: %+v, %v", state, err)
+	}
+	if err := step(f.Store, executionstore.Lease{Key: key}, head.Next, executionstore.EventExecutionStarted, nil); !errors.Is(err, executionstore.ErrLeaseLost) {
+		t.Fatalf("controller Start = %v, want lease lost", err)
+	}
+	if mode != "live_foreign" {
+		held, _, err = f.Store.Acquire(ctx, key, "observer", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, head, _, _ = f.Store.Load(ctx, key)
+	for _, typ := range []ledger.EventType{executionstore.EventExecutionStarted, executionstore.EventExecutionRunning, executionstore.EventExecutionRestarted, executionstore.EventExecutionBound} {
+		var payload any
+		if typ == executionstore.EventExecutionRestarted {
+			payload = executionstore.Restarted{Ref: "new"}
+		}
+		if typ == executionstore.EventExecutionBound {
+			payload = executionstore.Bound{Ref: executionstore.ExecutionRef{Provider: "p", Ref: "new"}}
+		}
+		if err := step(f.Store, held, head.Next, typ, payload); !errors.Is(err, executionstore.ErrStateConflict) {
+			t.Fatalf("%s after cancellation = %v, want state conflict", typ, err)
+		}
+	}
+	out := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, Cancelled: true}
+	if err := step(f.Store, executionstore.Lease{Key: key}, head.Next, executionstore.EventExecutionSettled, executionstore.Settled{State: effect.ExecutionCancelled, Outcome: out}); err != nil {
+		t.Fatal(err)
+	}
+	_, head, _, _ = f.Store.Load(ctx, key)
+	if err := step(f.Store, executionstore.Lease{Key: key}, head.Next, executionstore.EventCancelRequested, nil); !errors.Is(err, executionstore.ErrStateConflict) {
+		t.Fatalf("cancel after terminal = %v, want state conflict", err)
 	}
 }
 

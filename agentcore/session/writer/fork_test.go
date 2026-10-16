@@ -56,7 +56,7 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 		t.Fatalf("claims after fork = %+v %v, want the parent's c2 claim only", claims, err)
 	}
 
-	child, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "child", session.OpenOptions{})
+	child, err := acquireTestWriter(ctx, f.store, f.registry, f.admission(), "child", session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,10 +149,10 @@ func TestClaimsFollowSegmentsThroughCollect(t *testing.T) {
 	if got := active(); len(got) != 1 || got[0] != "c1" {
 		t.Fatalf("claims after deleting the parent = %v, want c1 only", got)
 	}
-	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := acquireTestWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("open deleted = %v", err)
 	}
-	child, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "child", session.OpenOptions{})
+	child, err := acquireTestWriter(ctx, f.store, f.registry, f.admission(), "child", session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

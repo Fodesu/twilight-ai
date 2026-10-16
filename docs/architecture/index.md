@@ -35,7 +35,6 @@ The core model is expressed through a small set of abstractions:
 - **Effect** — an explicit description of work that must be performed outside the semantic state machine.
 - **Execution** — the lifecycle and physical execution of an effect.
 - **Outcome** — the observed result of an execution returned to the semantic layer.
-- **Inbox** — the boundary through which external inputs and agent interactions enter the system.
 
 Together, these abstractions separate the agent's semantic progression from the mechanisms used to perform external work.
 

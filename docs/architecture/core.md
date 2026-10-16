@@ -1,21 +1,20 @@
 # Agent Core
 
 Agent Core defines Twilight's durable execution model. It owns session history,
-run state, effect lifecycle, persistence, ownership, and recovery. Hosts and
-providers supply model access, tool execution, transports, and external
-resources.
+run state, effect lifecycle, persistence, fencing, and recovery semantics.
 
 ## Semantic flow
 
-A client submits an Input to a Session. The chatlog commits the input, and a
-Turn associates it with a preset and a Run.
+An Input is committed to a Session's chatlog. A Turn associates the input
+with a preset and a Run.
 
 The Run loop reads the current Run state, derives the next command, and commits
 its protocol transition. When the transition requires external work, the
 execution boundary handles that work and returns an Outcome. The loop commits
 the outcome and continues the Run.
 
-Session projections expose the resulting state to application code.
+Session projections expose the resulting state without requiring a write
+capability.
 
 ## CQRS and event sourcing
 
@@ -39,11 +38,13 @@ cache improves read performance while the ledger remains the source of truth.
 
 ### CQRS
 
-The write path uses a Writer. It owns the session lease, validates commands,
-appends commits atomically, and applies the corresponding projection updates.
+The write path uses a Writer bound to an already acquired Session handle.
+It validates commands, appends commits atomically under the handle's epoch,
+and applies projection updates. It neither acquires nor renews ownership;
+closing a Writer flushes local state without releasing the handle.
 
 The read path uses projections and query surfaces. Reads can inspect session,
-turn, run, and workspace state without acquiring session ownership.
+turn, run, and chatlog state without acquiring a write capability.
 
 CQRS is a logical separation in Agent Core. The write and read paths may share
 an implementation while retaining independent responsibilities.
@@ -58,8 +59,9 @@ The ledger enforces:
 
 - commit ordering;
 - idempotent commit identities;
-- legal state transitions;
 - writer-epoch fencing.
+
+Domain state machines validate legal transitions before the facts are appended.
 
 A process reconstructs session state by reopening the store and folding the
 recorded facts. Projection caches accelerate this operation and do not replace
@@ -73,11 +75,13 @@ history unless their protocol commits them as facts.
 ### Session
 
 A Session is the durable boundary of one interaction. Its history contains the
-inputs, turns, runs, workspace bindings, and other module-owned facts associated
-with that interaction.
+inputs, turns, runs, compaction operations, and other module-owned facts
+associated with that interaction.
 
-Opening a Session creates an ownership lease. Reads use projections and do not
-require ownership. A Writer commits changes under its ownership epoch.
+`writer.Factory.Bind` builds a Writer over an acquired Session handle.
+Reads use projections and do not require ownership. A Writer commits under
+its handle's epoch. Session identity, Run state, and recorded effects remain
+durable independently of any open handle.
 
 ### Input
 
@@ -159,7 +163,7 @@ source of authority. Each operation loads the Run, derives the next plan,
 commits protocol transitions, and reloads state when another actor has advanced
 it.
 
-The loop exposes three execution modes:
+The finite protocol operations are:
 
 - `Advance` interprets the Run until it dispatches one or more assignments or
   reaches a waiting or finished state. It prepares and commits protocol
@@ -167,24 +171,24 @@ The loop exposes three execution modes:
 - `Deliver` accepts one available Outcome, verifies that the named effect is
   still executing, commits the settlement, and reports the next action. A
   stale outcome is dropped.
-- `Run` is the blocking host convenience. It calls `Advance`, watches every
-  dispatched key, waits for outcomes, calls `Deliver`, and repeats.
 
-The blocking form still uses asynchronous effect execution. A tool step can
-dispatch several assignments and keep them in a pending set. Tool scheduling
-supports parallel execution, sequential execution, and a maximum parallel
-count. The watcher receives settlement notices or reads outcomes when they
-become available. Progress is forwarded independently of outcome delivery.
+`Run` is a synchronous composition of these same operations: Advance, wait for
+Outcomes, Deliver, and repeat. It does not define another execution protocol.
+A tool step can have several pending effects, subject to its execution policy.
 
 The Loop serializes operations for one Run and permits different Runs to
 advance concurrently. Its EventSink carries committed facts and provisional
 model or tool observations. The ledger remains authoritative for committed
 state.
 
-Cancellation cancels in-flight assignments, drains their reported outcomes,
-and settles them under a detached control context before the loop returns.
-Ownership loss cancels the current drive and leaves the durable execution
-records for the next owner to recover.
+Context cancellation interrupts the operation; it is not a Run cancellation.
+Domain cancellation is recorded as Run facts. Reconciliation uses those
+persisted dispositions to cancel the corresponding executions. Interrupted
+settlement leaves the Outcome available for delivery under the same identity.
+
+Acknowledgement requires both an effect-naming durable disposition and a
+terminal Execution. A terminal Run or dropped delivery alone is not proof
+that an Outcome can be collected.
 
 ## Execution boundary
 
@@ -218,10 +222,16 @@ execution is active, terminal, absent, or uncertain.
 replayed when the assignment's replay policy permits it. An uncertain or
 orphaned execution remains under recovery control.
 
-## Ownership and recovery
+## Fencing and recovery
 
-A Session Writer commits under an ownership epoch. A later owner fences an older
-Writer at the commit boundary.
+A Session Writer commits under an ownership epoch. Acquire installs a new
+epoch, Renew extends the current handle, and Release ends that epoch's hold.
+Append atomically checks the current hold, epoch, tip and expected head.
+A superseded Writer cannot commit.
+
+Session lease expiry permits takeover; it does not itself invalidate the
+current epoch. The storage clock determines expiry. A stale Release cannot
+revoke a successor's hold.
 
 Execution recovery proceeds as follows:
 
@@ -232,18 +242,15 @@ Execution recovery proceeds as follows:
 5. It attaches to an active execution, commits a terminal outcome, or applies
    the assignment's replay policy.
 
-The Worker owns execution leases and watcher goroutines. The owner and Driver
-decide when records require recovery; the Worker provides the recovery
-operations.
-
-Semantic ownership and physical execution records remain separate so that a
-Session can change owners while an external execution is being recovered.
+Execution records have their own lease fencing. A Session epoch grants no
+permission to mutate an Execution record. Session commits and Execution
+transitions remain separate protocol operations.
 
 ## Session Kernel and Runtime
 
 The Session Kernel composes the durable semantic services:
 
-- session stores and Writers;
+- session stores and a Writer factory;
 - the ledger and commit observers;
 - the module registry;
 - projections and projection caches;
@@ -252,20 +259,13 @@ The Session Kernel composes the durable semantic services:
 - chatlog commands;
 - artifacts, frozen content, and session history.
 
-The Runtime drives active work around the Kernel. It contains the Run loop,
-model and tool ports, executor integration, progress delivery, responders, and
-recovery handling.
+The Runtime assembles finite interpreters over the Kernel and Executor.
+`SessionRuntime.Step` routes submitted inputs or advances the current Turn.
+`Driver.Step` reconciles existing effects, delivers an available Outcome, or
+calls `Loop.Advance`. `Compactions.Advance/Deliver` advances the compaction
+protocol; pending maintenance gates ordinary request preparation.
 
-The Driver calls the blocking form of the Loop. The Loop waits for in-flight
-outcomes internally, then returns when the Run is complete, waiting for an
-external response, requires execution recovery, or reaches an error. The Driver
-uses Responders for external waits and Recovery for executions left by a
-previous owner.
-
-## Workspace boundary
-
-A logical Workspace has a durable binding to a physical Environment. The
-Environment provider supplies filesystem and execution capabilities.
-
-Workspace provider policy covers path validation, command execution, lifecycle,
-and isolation. Agent Core uses the provider-neutral contract.
+`runtime.Inspect` reconstructs immediate work, future execution obligations,
+and external response waits without ownership. It is a read model, not an
+authority for commits. Domain transitions are decided against the Writer's
+transactional projections and persisted through its fenced handle.

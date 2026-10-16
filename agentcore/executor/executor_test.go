@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"github.com/felinics/twilight/agentcore/executor/store"
@@ -18,6 +17,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -782,6 +782,9 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer worker.Close()
+			if page, err := worker.ListOutstanding(ctx, effect.AssignmentKey{}, 1); err != nil || len(page.Items) != 1 || page.Items[0].Key != a.Key() || page.More {
+				t.Fatalf("unACKed execution missing from directory: %+v %v", page, err)
+			}
 			if row.acknowledge {
 				err := worker.Acknowledge(ctx, a.Key())
 				if !errors.Is(err, row.wantAckErr) {
@@ -796,6 +799,10 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 			got, _, _, err := records.Load(ctx, a.Key())
 			if err != nil {
 				t.Fatal(err)
+			}
+			page, err := worker.ListOutstanding(ctx, effect.AssignmentKey{}, 1)
+			if err != nil || (len(page.Items) == 0) != row.wantCollected || page.More {
+				t.Fatalf("directory after ACK: %+v %v; collected=%v", page, err, row.wantCollected)
 			}
 			if !row.wantCollected {
 				if got.Acknowledged || got.Assignment.Body == nil || (row.state.Terminal() && got.Outcome == nil) {

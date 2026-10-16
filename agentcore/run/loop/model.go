@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/prompt"
@@ -133,7 +132,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events Eve
 
 	request, err := rt.FrozenRequest(ctx, prepared.RequestDigest)
 	if err != nil {
-		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
+		if _, serr := l.settle(ctx, rt, events, &ref, start.Snapshot.Position,
 			run.RecoverModelExecution{StepID: stepID, Effect: ref.id}); serr != nil {
 			return nil, serr
 		}
@@ -142,14 +141,15 @@ func (l *Loop) startModelStep(ctx context.Context, rt store.RunStore, events Eve
 	assignment.Body = ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest, Request: &request}
 
 	if err := l.dispatch(ctx, assignment); err != nil {
-		if errors.Is(err, effect.ErrDispatchUnknown) {
-			// The request may have crossed the external boundary. Leave the
-			// model Executing so recovery can Attach/Reconcile/Takeover it.
+		if recoverableDispatch(ctx, err) {
+			// Durable acceptance can precede a retryable store/RPC failure.
+			// Preserve the same intent; reconciliation, not a new effect,
+			// decides what the Execution Authority actually accepted.
 			return nil, fmt.Errorf("agent: loop: model dispatch outcome: %w", err)
 		}
-		// Nothing was called: withdraw the step to Open under this effect's
-		// recovery identity and surface the condition.
-		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
+		// A definite permanent refusal withdraws the step under its recovery
+		// identity. Settlement still respects the caller's bounded context.
+		if _, serr := l.settle(ctx, rt, events, &ref, start.Snapshot.Position,
 			run.RecoverModelExecution{StepID: stepID, Effect: ref.id}); serr != nil {
 			return nil, serr
 		}

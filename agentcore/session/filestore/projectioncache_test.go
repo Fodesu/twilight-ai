@@ -7,6 +7,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -163,9 +164,9 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 	if _, err := first.Create(ctx, session.CreateRequest{SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
-	writers := writer.NewWriters(first, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: module.CacheEvery(0).AtClose()})
-	w, err := writers.Writer(ctx, sid)
+	factory := &writer.Factory{Store: first, Registry: mustRegistry(t, counter),
+		Config: writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: module.CacheEvery(0).AtClose()}}
+	w, err := writertest.Open(t, ctx, factory, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,9 +193,8 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	counter.reset()
-	writers2 := writer.NewWriters(second, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: second.ProjectionCache()})
-	w2, err := writers2.Writer(ctx, sid)
+	factory2 := &writer.Factory{Store: second, Registry: mustRegistry(t, counter), Config: writer.WritersConfig{Cache: second.ProjectionCache()}}
+	w2, err := writertest.Open(t, ctx, factory2, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,8 +10,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/felinics/twilight/agentcore/testutil/local"
-	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
@@ -26,6 +24,9 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
+	"github.com/felinics/twilight/agentcore/testutil/local"
+	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 	"testing"
@@ -51,7 +52,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (*sessionstore.SessionRu
 		t.Fatal(err)
 	}
 	bindings, ledger := artifacttest.Stores(t)
-	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
+	factory := &writer.Factory{Store: store, Registry: registry, Admission: writer.Admission{Bindings: bindings, Ledger: ledger}}
 	rt, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: sessionstoretest.Frozen(t, bindings)})
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +71,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (*sessionstore.SessionRu
 	}
 	group := &writer.SemanticGroup{CommitID: "create/" + defaultRunID,
 		Batches: []writer.TypedBatch{{Domain: sessionstore.Stream(defaultRunID), Events: runEvents}}}
-	w, err := writers.Writer(ctx, defaultSession)
+	w, err := writertest.Open(t, ctx, factory, defaultSession, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -36,7 +36,7 @@ func TestWriterRetriesReleasedClaims(t *testing.T) {
 	fs := &faultStore{Stores: f.store}
 	open := func() Writer {
 		t.Helper()
-		w, err := OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
+		w, err := acquireTestWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}

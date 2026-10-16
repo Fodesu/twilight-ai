@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	run "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -48,10 +49,11 @@ func (e *effectRef) recoveryID() run.CommandID {
 // finishes from it instead of reloading a Run the projection no longer holds.
 func (l *Loop) settle(ctx context.Context, rt store.RunStore, events EventSink, e *effectRef, base run.RunPosition, cmd run.AgentCommand) (*run.RunResult, error) {
 	id := e.settlementID()
-	if _, recovering := cmd.(run.RecoverModelExecution); recovering {
+	_, recovering := cmd.(run.RecoverModelExecution)
+	if recovering {
 		id = e.recoveryID()
 	}
-	res, err := l.commit(context.WithoutCancel(ctx), rt, e.runID, id, base, cmd)
+	res, err := l.commit(ctx, rt, e.runID, id, base, cmd)
 	if err != nil {
 		if retriable(err) {
 			return nil, nil
@@ -59,16 +61,91 @@ func (l *Loop) settle(ctx context.Context, rt store.RunStore, events EventSink, 
 		return nil, err
 	}
 	l.emitCommitted(ctx, events, rt.Scope(), e.runID, res.Facts)
-	// The settlement is a Session fact: the executor may collect the
-	// effect's record. A refused or failed acknowledgement
-	// changes nothing here; the executor's time-based collection covers it.
-	if a, ok := l.Executor.(Acknowledger); ok {
-		_ = a.Acknowledge(ctx, AssignmentKey{Session: rt.Scope(), RunID: e.runID, Effect: e.id})
+	// These accepted facts are durable proof, not merely a dropped delivery
+	// or a Run that left the projection. ACK is best effort; a crash/error
+	// here is repaired by AcknowledgeSettled from the durable effect ledger.
+	// Recovery can also precede dispatch: close a missing key, and never
+	// collect an accepted execution while it is still nonterminal.
+	key := AssignmentKey{Session: rt.Scope(), RunID: e.runID, Effect: e.id}
+	if effectDisposition(res.Facts, e.id) {
+		_, _ = l.acknowledgeProven(ctx, key)
 	}
 	if res.Snapshot.State.Status.Terminal() {
 		return res.Snapshot.State.Result, nil
 	}
 	return nil, nil
+}
+
+// AcknowledgeSettled repairs the window between durable owner settlement and
+// executor ACK. It is safe after a dropped Deliver, but LoopDropped itself is
+// never proof. The optional EffectDispositionReader must resolve the effect's
+// closing facts from durable storage, including CancelRun dispositions and
+// Runs no longer held in an active projection. No command is replayed or decided.
+//
+// Only facts naming this effect's disposition qualify. Even a recovery fact
+// is not proof execution ended: Abort must first prove a terminal execution
+// or fence a missing key with a tombstone. Active/orphaned executions are
+// left readable and untouched. Unknown external effects are never replayed.
+// true means ACK succeeded (including an idempotent repeat); false means no
+// proof, no Acknowledger, an aborted key, or execution still nonterminal.
+func (l *Loop) AcknowledgeSettled(ctx context.Context, st store.RunStore, key AssignmentKey) (bool, error) {
+	if err := l.checkArgs(ctx, st, key.RunID); err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if key.Session != st.Scope() || key.Effect == "" {
+		return false, fmt.Errorf("agent: loop: ACK key does not belong to the store or has no effect")
+	}
+	proof, ok := st.(store.EffectDispositionReader)
+	if !ok {
+		return false, store.ErrEffectProofUnsupported
+	}
+	facts, found, err := proof.EffectDisposition(ctx, key.RunID, key.Effect)
+	if err != nil {
+		return false, err
+	}
+	if !found || !effectDisposition(facts, key.Effect) {
+		return false, nil
+	}
+	return l.acknowledgeProven(ctx, key)
+}
+
+// effectDisposition requires an effect-naming closing fact, not merely a
+// commit-index hit, a start, RunEnded, or a settlement of another effect.
+func effectDisposition(facts []run.Fact, id run.EffectID) bool {
+	if id == "" {
+		return false
+	}
+	for _, fact := range facts {
+		if store.DispositionEffect(fact) == id {
+			return true
+		}
+	}
+	return false
+}
+
+// acknowledgeProven is called only with durable disposition proof in hand.
+// Abort never disposes an accepted execution. It fences a missing key against
+// late Dispatch, or reports the accepted ledger's state. Lease expiry and
+// missing backend handles cannot pass this terminal gate.
+func (l *Loop) acknowledgeProven(ctx context.Context, key AssignmentKey) (bool, error) {
+	a, ok := l.Executor.(Acknowledger)
+	if !ok {
+		return false, nil
+	}
+	att, err := l.Executor.Abort(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if att.State != AttachmentTerminal || !att.Execution.Terminal() || att.Execution == ExecutionAborted {
+		return false, nil
+	}
+	if err := a.Acknowledge(ctx, key); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ownershipLost reports the terminal ownership error.

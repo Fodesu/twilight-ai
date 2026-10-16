@@ -3,12 +3,9 @@
 // the module Registry and the projections folded from it, the Run module's
 // Session adapter, the Turn protocol's committer, the chatlog's commands,
 // the content store behind the frozen bodies and the fork/collect lifecycle
-// over the Store. These components exist to keep Session durable semantic
-// state: they read it, write it atomically and project it. Everything that
-// advances an agent from that state -- the drive chain, the settlement
-// subscription, the execution port and the decision identities -- lives
-// outside, in the runtime's Execution; which process hosts which side is a
-// deployment choice.
+// over the Store. These components read durable semantic state, write it
+// atomically and project it. The runtime composes finite interpretation over
+// these semantic ports and an independent execution port.
 package sessionkernel
 
 import (
@@ -73,8 +70,6 @@ type Ports struct {
 	// CacheEvery bounds how far a cached projection may fall behind the head;
 	// zero takes module.DefaultCacheEvery.
 	CacheEvery ledger.CommitSeq
-	// Ownership configures how Writers open Sessions.
-	Ownership session.OpenOptions
 }
 
 // Kernel is the assembled Session-side semantic mechanism. Exported fields
@@ -82,7 +77,7 @@ type Ports struct {
 // is a product facade.
 type Kernel struct {
 	Store     session.Stores
-	Writers   writer.Writers
+	Writers   *writer.Factory
 	Registry  *module.Registry
 	Admission writer.Admission
 	// Runs is the Run module's Session adapter: the Run core's store bound
@@ -96,7 +91,7 @@ type Kernel struct {
 	Bus    *observe.Bus
 	Tailer *observe.SessionLedgerTailer
 	Frozen frozen.Store
-	// Projections reads every projection through the Session's Writer.
+	// Projections folds registered state without acquiring a Session handle.
 	Projections session.ProjectionReader
 	// Content materializes the frozen bodies projections name.
 	Content chatlog.ContentResolver
@@ -154,8 +149,8 @@ func New(p Ports) (*Kernel, error) { //nolint:gocritic // hugeParam: Ports is a 
 		now = time.Now
 	}
 	admission := writer.Admission{Bindings: bindings, Ledger: retention}
-	writers := writer.NewWriters(store, registry, admission, p.Ownership,
-		writer.WritersConfig{Cache: cache, CachePolicy: sessionstore.WriterCachePolicy(p.CacheEvery), Observers: observers})
+	writers := &writer.Factory{Store: store, Registry: registry, Admission: admission,
+		Config: writer.WritersConfig{Cache: cache, CachePolicy: sessionstore.WriterCachePolicy(p.CacheEvery), Observers: observers}}
 	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: registry, Store: store, Frozen: fz, Cache: cache, Now: now, PrepareGuard: compaction.RequireIdle})
 	if err != nil {
 		return nil, err
@@ -183,14 +178,10 @@ func NewRegistry(extensions []module.ModuleDescriptor) (*module.Registry, error)
 		[]module.ModuleDescriptor{chatlog.Module, sessionstore.Module, turn.Module, compaction.Module}, extensions)
 }
 
-// Close ends the Writers and every durable tail loop. The lease-free readers
-// of other processes keep working; the execution side of a host closes first.
+// Close ends the Kernel's durable read/tailer resources. Caller-owned Writers
+// and leases remain the caller's responsibility.
 func (a *Kernel) Close(ctx context.Context) error {
-	err := writer.CloseWriters(ctx, a.Writers)
-	if terr := a.Tailer.CloseContext(ctx); err == nil {
-		err = terr
-	}
-	return err
+	return a.Tailer.CloseContext(ctx)
 }
 
 // CreateSession creates the Session; ext are the segment's module extension

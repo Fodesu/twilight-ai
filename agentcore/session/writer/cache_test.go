@@ -92,7 +92,7 @@ func newCacheFixture(t testing.TB) *cacheFixture {
 
 func (f *cacheFixture) open(t testing.TB, cfg WritersConfig) Writer {
 	t.Helper()
-	w, err := openWriter(context.Background(), f.store, f.registry, Admission{}, "s", session.OpenOptions{}, cfg)
+	w, err := acquireTestWriterConfig(context.Background(), f.store, f.registry, Admission{}, "s", session.OpenOptions{}, cfg)
 	if err != nil {
 		t.Fatalf("open writer: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestWriterRejectsUnusableCacheEntries(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.counter.reset()
-			reopened, err := openWriter(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{Cache: f.cache})
+			reopened, err := acquireTestWriterConfig(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{Cache: f.cache})
 			if err != nil {
 				t.Fatalf("open with an unusable entry: %v", err)
 			}

@@ -70,22 +70,25 @@ type summaryRequests interface {
 	FrozenRequest(context.Context, run.Digest) (model.ModelRequest, error)
 }
 
-// Compactions drives Session maintenance through the same Executor and Watcher
-// as Runs. Its locks prevent two local Await registrations replacing each
-// other; persistent intent, executor identities and Writer fences provide the
-// cross-process guarantees. No model client or Run state is held here.
+// MaintenanceResult describes one finite maintenance coordination. Pending
+// means the host may release the Session and arrange a later activation.
+type MaintenanceResult struct {
+	Pending  bool
+	Progress bool
+	Key      effect.AssignmentKey
+}
+
+// Compactions coordinates durable Session maintenance without waiting for a
+// model. Local locks cover one call only; intent, executor identity and Writer
+// fences provide the cross-process guarantees.
 type Compactions struct {
 	Executor    effect.ExecutionPort
-	Watcher     *effect.Watcher
 	Requests    summaryRequests
 	Frozen      frozen.Store
 	Content     chatlog.ContentResolver
 	Policy      ContextPolicy
 	MaxAttempts int
 	Now         func() time.Time
-	// Fail receives cleanup errors asynchronously, outside operation locks
-	// and joined recovery work, so it may close the Session safely.
-	Fail func(session.SessionID, error)
 
 	mu    sync.Mutex
 	locks map[session.SessionID]*compactionLock
@@ -97,6 +100,9 @@ type compactionLock struct {
 }
 
 func (c *Compactions) acquire(ctx context.Context, sid session.SessionID) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
 	if c.locks == nil {
 		c.locks = map[session.SessionID]*compactionLock{}
@@ -159,7 +165,6 @@ func (c *Compactions) CheckCandidate(ctx context.Context, w writer.Writer, input
 	if state.Pending != "" {
 		return loop.CandidateMaintenance, nil
 	}
-	c.acknowledgeFinished(ctx, w, &state)
 	if c.Policy == nil {
 		return loop.CandidateReady, nil
 	}
@@ -275,7 +280,27 @@ func (c *Compactions) Start(ctx context.Context, w writer.Writer, id compaction.
 	return c.start(ctx, w, &intent)
 }
 
+// compactionIdentity scopes protocol actions and conversation artifacts to the
+// Session. Compaction's Own stream does not inherit operation obligations, but
+// the ledger still sees inherited commit IDs and chatlog's Inherited stream
+// carries the parent's summaries. Neither may alias the child's own work.
+func compactionIdentity(sid session.SessionID, id compaction.ID, action string) (jsonstable.Digest, error) {
+	body, err := jsonstable.EncodeTypedPayload(1, "twilight/compaction/identity", struct {
+		SessionID   session.SessionID `json:"sessionId"`
+		OperationID compaction.ID     `json:"operationId"`
+		Action      string            `json:"action"`
+	}{sid, id, action})
+	if err != nil {
+		return "", err
+	}
+	return jsonstable.DigestBytes(body), nil
+}
+
 func (c *Compactions) start(ctx context.Context, w writer.Writer, request *compaction.Request) error {
+	identity, err := compactionIdentity(w.SessionID(), request.ID, "start")
+	if err != nil {
+		return err
+	}
 	part := compaction.Start(*request)
 	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		batches, err := part.Prepare(ctx, v, c.now())
@@ -288,7 +313,7 @@ func (c *Compactions) start(ctx context.Context, w writer.Writer, request *compa
 		if err := sessionkernel.RequireQuiescentRun(v); err != nil {
 			return nil, err
 		}
-		return &writer.SemanticGroup{CommitID: ledger.CommitID("compaction-start/" + request.ID), Batches: batches}, nil
+		return &writer.SemanticGroup{CommitID: ledger.CommitID(identity), Batches: batches}, nil
 	})
 	return commitOK("start", &res, err)
 }
@@ -303,118 +328,195 @@ func (c *Compactions) NeedsRecovery(ctx context.Context, w writer.Writer) (bool,
 	return state.NeedsRecovery(), nil
 }
 
-// Recover finishes an operation left anywhere between acceptance, dispatch,
-// outcome production, Session commit and executor acknowledgement. Cancellation
-// leaves the durable intent intact; it does not cancel a replacement owner's
-// shared execution. The host must arrange later activation after closing a
-// Session explicitly; this protocol is not a global scheduling index.
-func (c *Compactions) Recover(ctx context.Context, w writer.Writer) error {
+// Advance performs one bounded coordination. It never subscribes or waits for
+// an outcome. In particular, a dispatch always returns Pending immediately.
+func (c *Compactions) Advance(ctx context.Context, w writer.Writer) (MaintenanceResult, error) {
 	release, err := c.acquire(ctx, w.SessionID())
 	if err != nil {
-		return err
+		return MaintenanceResult{}, err
 	}
 	defer release()
 	state, err := compaction.Read(ctx, w.Projections(), w.SessionID())
 	if err != nil {
-		return err
+		return MaintenanceResult{}, err
 	}
-	c.acknowledgeFinished(ctx, w, &state)
-	if state.Pending == "" {
-		return nil
+	result := MaintenanceResult{Pending: state.Pending != ""}
+	if result.Pending {
+		op := state.Operations[state.Pending]
+		result.Key = op.Request.Key(w.SessionID())
+	}
+	result.Progress, err = c.acknowledgeFinished(ctx, w, &state)
+	if err != nil || !result.Pending {
+		return result, err
 	}
 	op := state.Operations[state.Pending]
-	request, err := c.Requests.FrozenRequest(ctx, op.Request.RequestDigest)
+	attachment, err := c.Executor.Attach(ctx, result.Key)
 	if err != nil {
-		return err
+		return result, err
 	}
-	assignment := effect.Assignment{Session: run.Scope(w.SessionID()), RunID: op.Request.Key(w.SessionID()).RunID,
-		StepID: "summary", Effect: op.Request.Key(w.SessionID()).Effect, Target: op.Request.Target,
-		Body: effect.ModelAssignment{Model: op.Request.Model, Request: &request, RequestDigest: op.Request.RequestDigest}}
-	attachment, err := c.Executor.Attach(ctx, assignment.Key())
-	if err != nil {
-		return err
+	settle := func(status compaction.Status, code, message string) (MaintenanceResult, error) {
+		err := c.finish(ctx, w, &op, status, code, message, "")
+		return c.settlementResult(ctx, w, result, err)
 	}
 	switch attachment.State {
 	case effect.AttachmentMissing:
-		// An obsolete request need not reach the model. Abort closes the key
-		// against any delayed dispatch before disposing its Session intent.
+		// Close an obsolete key before disposing intent; Abort racing with
+		// acceptance is not proof that dispatch never happened.
 		contextState, err := chatlog.ReadContext(ctx, w.Projections(), w.SessionID())
 		if err != nil {
-			return err
+			return result, err
 		}
 		if err := op.Request.Plan.Validate(contextState.Entries); err != nil {
 			if !errors.Is(err, chatlog.ErrContextChanged) {
-				return err
+				return result, err
 			}
-			closed, err := c.Executor.Abort(ctx, assignment.Key())
+			closed, err := c.Executor.Abort(ctx, result.Key)
 			if err != nil {
-				return err
+				return result, err
 			}
 			if closed.State == effect.AttachmentAborted {
-				return c.finish(ctx, w, &op, compaction.Stale, "context_changed", "", "")
+				return settle(compaction.Stale, "context_changed", "")
 			}
-		} else {
-			unavailable, err := c.Executor.Validate(ctx, assignment)
-			if err != nil {
-				return err
-			}
-			if unavailable != nil {
-				closed, err := c.Executor.Abort(ctx, assignment.Key())
-				if err != nil {
-					return err
-				}
-				if closed.State == effect.AttachmentAborted {
-					return c.finish(ctx, w, &op, compaction.Failed, unavailable.Class, unavailable.Message, "")
-				}
-			} else if err := c.Executor.Dispatch(ctx, assignment); err != nil {
-				// Unknown is not a safe refusal. Keep the intent and recover
-				// by key instead of manufacturing a failure or a fresh effect.
-				return err
-			}
+			return result, nil
 		}
+		request, err := c.Requests.FrozenRequest(ctx, op.Request.RequestDigest)
+		if err != nil {
+			return result, err
+		}
+		assignment := effect.Assignment{Session: run.Scope(w.SessionID()), RunID: result.Key.RunID,
+			StepID: "summary", Effect: result.Key.Effect, Target: op.Request.Target,
+			Body: effect.ModelAssignment{Model: op.Request.Model, Request: &request, RequestDigest: op.Request.RequestDigest}}
+		unavailable, err := c.Executor.Validate(ctx, assignment)
+		if err != nil {
+			return result, err
+		}
+		if unavailable != nil {
+			closed, err := c.Executor.Abort(ctx, result.Key)
+			if err != nil {
+				return result, err
+			}
+			if closed.State == effect.AttachmentAborted {
+				return settle(compaction.Failed, unavailable.Class, unavailable.Message)
+			}
+			return result, nil
+		}
+		// Even an accepted response lost in transport keeps this exact key.
+		err = c.Executor.Dispatch(ctx, assignment)
+		result.Progress = result.Progress || err == nil
+		return result, err
 	case effect.AttachmentOrphaned:
 		if recoverer, ok := c.Executor.(effect.Recoverer); ok {
-			if err := recoverer.RecoverExecution(ctx, assignment.Key()); err != nil {
-				return err
+			if err := recoverer.RecoverExecution(ctx, result.Key); err != nil {
+				return result, err
 			}
+			result.Progress = true
 		}
+		return result, nil
 	case effect.AttachmentAborted:
-		return c.finish(ctx, w, &op, compaction.Failed, "aborted", "summary execution was aborted", "")
+		return settle(compaction.Failed, "aborted", "summary execution was aborted")
 	case effect.AttachmentActive, effect.AttachmentTerminal:
-	default:
-		return fmt.Errorf("driver: invalid summary attachment %q", attachment.State)
-	}
-	outcome, err := c.Watcher.Await(ctx, assignment.Key())
-	if err != nil {
-		return err
-	}
-	if outcome.Key != assignment.Key() {
-		return errors.New("driver: summary outcome identity mismatch")
-	}
-	switch result := outcome.Result.(type) {
-	case effect.ModelSucceeded:
-		if strings.TrimSpace(result.Result.Text) == "" || len(result.Result.ToolCalls) != 0 {
-			return c.finish(ctx, w, &op, compaction.Failed, "invalid_summary", "summary must be nonempty text without tool calls", "")
+		out, err := c.Executor.GetOutcome(ctx, result.Key)
+		if errors.Is(err, effect.ErrOutcomeNotReady) {
+			return result, nil
 		}
-		return c.finish(ctx, w, &op, compaction.Applied, "", "", result.Result.Text)
-	case effect.ModelFailed:
-		return c.finish(ctx, w, &op, compaction.Failed, string(result.Code), result.Message, "")
-	case effect.Cancelled:
-		return c.finish(ctx, w, &op, compaction.Failed, "cancelled", "summary execution was cancelled", "")
-	case effect.Unknown:
-		return c.finish(ctx, w, &op, compaction.Failed, "unknown", result.Message, "")
+		if err != nil {
+			return result, err
+		}
+		if out.Key != result.Key {
+			return result, errors.New("driver: summary outcome identity mismatch")
+		}
+		delivered, err := c.deliver(ctx, w, &state, out)
+		delivered.Progress = delivered.Progress || result.Progress
+		return delivered, err
 	default:
-		return fmt.Errorf("driver: unexpected summary outcome %T", outcome.Result)
+		return result, fmt.Errorf("driver: invalid summary attachment %q", attachment.State)
 	}
 }
 
+// Deliver adopts an outcome only for this Session's accepted effect. Duplicate
+// delivery of a settled key only retries cleanup, never rewrites its result.
+func (c *Compactions) Deliver(ctx context.Context, w writer.Writer, out effect.Outcome) (MaintenanceResult, error) {
+	release, err := c.acquire(ctx, w.SessionID())
+	if err != nil {
+		return MaintenanceResult{}, err
+	}
+	defer release()
+	state, err := compaction.Read(ctx, w.Projections(), w.SessionID())
+	if err != nil {
+		return MaintenanceResult{}, err
+	}
+	return c.deliver(ctx, w, &state, out)
+}
+
+func (c *Compactions) deliver(ctx context.Context, w writer.Writer, state *compaction.State, out effect.Outcome) (MaintenanceResult, error) {
+	result := MaintenanceResult{Pending: state.Pending != ""}
+	if result.Pending {
+		op := state.Operations[state.Pending]
+		result.Key = op.Request.Key(w.SessionID())
+	}
+	for id := range state.Operations {
+		op := state.Operations[id]
+		if op.Request.Key(w.SessionID()) != out.Key {
+			continue
+		}
+		if op.Status != compaction.Pending {
+			err := c.acknowledge(ctx, w, &op)
+			result.Progress = !op.Acknowledged && err == nil
+			return result, err
+		}
+		if state.Pending != op.Request.ID {
+			break
+		}
+		var err error
+		switch value := out.Result.(type) {
+		case effect.ModelSucceeded:
+			if strings.TrimSpace(value.Result.Text) == "" || len(value.Result.ToolCalls) != 0 {
+				err = c.finish(ctx, w, &op, compaction.Failed, "invalid_summary", "summary must be nonempty text without tool calls", "")
+			} else {
+				err = c.finish(ctx, w, &op, compaction.Applied, "", "", value.Result.Text)
+			}
+		case effect.ModelFailed:
+			err = c.finish(ctx, w, &op, compaction.Failed, string(value.Code), value.Message, "")
+		case effect.Cancelled:
+			err = c.finish(ctx, w, &op, compaction.Failed, "cancelled", "summary execution was cancelled", "")
+		case effect.Unknown:
+			err = c.finish(ctx, w, &op, compaction.Failed, "unknown", value.Message, "")
+		default:
+			return result, fmt.Errorf("driver: unexpected summary outcome %T", out.Result)
+		}
+		return c.settlementResult(ctx, w, result, err)
+	}
+	return result, errors.New("driver: summary outcome identity mismatch")
+}
+
+func (c *Compactions) settlementResult(ctx context.Context, w writer.Writer, result MaintenanceResult, err error) (MaintenanceResult, error) {
+	state, readErr := compaction.Read(ctx, w.Projections(), w.SessionID())
+	if readErr != nil {
+		return result, errors.Join(err, readErr)
+	}
+	result.Pending = state.Pending != ""
+	result.Progress = result.Progress || !result.Pending
+	return result, err
+}
+
 func (c *Compactions) finish(ctx context.Context, w writer.Writer, op *compaction.Operation, status compaction.Status, code, message, text string) error {
+	identity, err := compactionIdentity(w.SessionID(), op.Request.ID, "finish")
+	if err != nil {
+		return err
+	}
 	result := compaction.FinishedPayload{ID: op.Request.ID, Status: status, Code: code, Message: message}
 	parts := make([]unit.Part, 0, 3)
 	if status == compaction.Applied {
-		result.CompactionID = chatlog.CompactionID("compact-" + op.Request.ID)
-		summary := chatlog.Summary{ID: chatlog.SummaryID("summary-" + op.Request.ID), Parts: chatlog.Parts{chatlog.TextPart{Text: text}}}
-		var err error
+		compactionID, err := compactionIdentity(w.SessionID(), op.Request.ID, "compaction")
+		if err != nil {
+			return err
+		}
+		summaryID, err := compactionIdentity(w.SessionID(), op.Request.ID, "summary")
+		if err != nil {
+			return err
+		}
+		result.CompactionID = chatlog.CompactionID(compactionID)
+		summary := chatlog.Summary{ID: chatlog.SummaryID(summaryID), Parts: chatlog.Parts{chatlog.TextPart{Text: text}}}
 		if summary.Digest, err = chatlog.DigestSummary(&summary); err != nil {
 			return err
 		}
@@ -423,7 +525,7 @@ func (c *Compactions) finish(ctx context.Context, w writer.Writer, op *compactio
 		}), chatlog.CompactContext(result.CompactionID, summary, op.Request.Plan))
 	}
 	parts = append(parts, compaction.Finish(result))
-	res, err := unit.Commit(ctx, w, c.now(), unit.Work{CommitID: ledger.CommitID("compaction-finish/" + op.Request.ID), Parts: parts})
+	res, err := unit.Commit(ctx, w, c.now(), unit.Work{CommitID: ledger.CommitID(identity), Parts: parts})
 	if errors.Is(err, chatlog.ErrContextChanged) && status == compaction.Applied {
 		return c.finish(ctx, w, op, compaction.Stale, "context_changed", "", "")
 	}
@@ -438,11 +540,11 @@ func (c *Compactions) finish(ctx context.Context, w writer.Writer, op *compactio
 	if !found || settled.Status == compaction.Pending {
 		return errors.New("driver: compaction finish has no durable disposition")
 	}
-	c.acknowledge(ctx, w, &settled)
+	ackErr := c.acknowledge(ctx, w, &settled)
 	if settled.Status == compaction.Failed {
-		return fmt.Errorf("%w: %s: %s", ErrSummaryFailed, settled.Code, settled.Message)
+		return errors.Join(fmt.Errorf("%w: %s: %s", ErrSummaryFailed, settled.Code, settled.Message), ackErr)
 	}
-	return nil
+	return ackErr
 }
 
 func commitOK(operation string, result *writer.CommitResult, err error) error {
@@ -457,7 +559,8 @@ func commitOK(operation string, result *writer.CommitResult, err error) error {
 	}
 }
 
-func (c *Compactions) acknowledgeFinished(ctx context.Context, w writer.Writer, state *compaction.State) {
+func (c *Compactions) acknowledgeFinished(ctx context.Context, w writer.Writer, state *compaction.State) (bool, error) {
+	progress := false
 	ids := make([]compaction.ID, 0, len(state.Operations))
 	for id := range state.Operations {
 		ids = append(ids, id)
@@ -466,25 +569,33 @@ func (c *Compactions) acknowledgeFinished(ctx context.Context, w writer.Writer, 
 	for _, id := range ids {
 		op := state.Operations[id]
 		if op.Status != compaction.Pending && !op.Acknowledged {
-			c.acknowledge(ctx, w, &op)
+			if err := c.acknowledge(ctx, w, &op); err != nil {
+				return progress, err
+			}
+			progress = true
 		}
 	}
+	return progress, nil
 }
 
-func (c *Compactions) acknowledge(ctx context.Context, w writer.Writer, op *compaction.Operation) {
+func (c *Compactions) acknowledge(ctx context.Context, w writer.Writer, op *compaction.Operation) error {
 	if op.Acknowledged || op.Status == compaction.Pending {
-		return
+		return nil
 	}
-	var err error
+	identity, err := compactionIdentity(w.SessionID(), op.Request.ID, "ack")
+	if err != nil {
+		return err
+	}
 	if port, ok := c.Executor.(effect.Acknowledger); ok {
 		err = port.Acknowledge(ctx, op.Request.Key(w.SessionID()))
 	}
 	if err == nil {
 		var res writer.CommitResult
-		res, err = unit.Commit(ctx, w, c.now(), unit.Work{CommitID: ledger.CommitID("compaction-ack/" + op.Request.ID), Parts: []unit.Part{compaction.Acknowledge(op.Request.ID)}})
+		res, err = unit.Commit(ctx, w, c.now(), unit.Work{CommitID: ledger.CommitID(identity), Parts: []unit.Part{compaction.Acknowledge(op.Request.ID)}})
 		err = commitOK("acknowledge", &res, err)
 	}
-	if err != nil && c.Fail != nil {
-		go c.Fail(w.SessionID(), fmt.Errorf("driver: acknowledge summary %s: %w", op.Request.ID, err))
+	if err != nil {
+		return fmt.Errorf("driver: acknowledge summary %s: %w", op.Request.ID, err)
 	}
+	return nil
 }

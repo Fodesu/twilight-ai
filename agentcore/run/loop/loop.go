@@ -31,8 +31,6 @@ type Loop struct {
 	mu       sync.Mutex
 	slots    map[run.RunID]*runSlot
 	eventsMu sync.Mutex
-	// ownWatcher is the Watcher built when Settings names none; see watcher.
-	ownWatcher *effect.Watcher
 }
 
 // runSlot serializes one Run: step guards a single Advance or Deliver at a
@@ -102,6 +100,14 @@ func (l *Loop) dispatch(ctx context.Context, a Assignment) error {
 		case <-timer.C:
 		}
 	}
+}
+
+// A temporary refusal may still follow durable acceptance. Cancellation also
+// proves nothing about the far side of an RPC. Keep the effect identity until
+// reconciliation can distinguish acceptance from a fenced absence.
+func recoverableDispatch(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, effect.ErrDispatchUnknown) ||
+		errors.Is(err, effect.ErrDispatchRetryable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (l *Loop) targetFor(ctx context.Context, ec EffectContext) (*run.TargetRef, error) {
@@ -409,9 +415,10 @@ func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, even
 		return LoopResult{Disposition: LoopDropped}, nil
 	}
 
-	// Settlement uses a detached control context: a cancelled host request must
-	// not discard an accepted effect's outcome.
-	finished, err := l.settle(context.WithoutCancel(ctx), rt, events, &ref, snapshot.Position, cmd)
+	// The Outcome remains durable until ACK. Keep the caller's deadline on
+	// settlement RPCs: cancellation leaves a recoverable delivery obligation,
+	// rather than an unbounded commit pinning this write capability.
+	finished, err := l.settle(ctx, rt, events, &ref, snapshot.Position, cmd)
 	if err != nil {
 		return LoopResult{}, err
 	}
@@ -434,11 +441,10 @@ func (l *Loop) deliver(ctx context.Context, rt store.RunStore, out Outcome, even
 
 // Run drives the Run until it finishes, has no executable action, or the
 // context is cancelled: Advance, wait for the Outcomes of what it
-// dispatched, GetOutcome, Deliver, repeat. It is the blocking form every
-// host uses; hosts that receive Outcomes from elsewhere call Advance and
-// Deliver themselves. The caller context bounds the drive: on cancellation the
-// in-flight assignments of the Run are cancelled and their Outcomes are still
-// settled before ctx.Err is returned.
+// dispatched, GetOutcome, Deliver, repeat. This synchronous convenience uses
+// the same Advance/Deliver protocol; Activation hosts use those directly.
+// Context cancellation detaches local observation. Only a committed domain
+// cancellation authorizes cancelling an accepted external execution.
 func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, rt, runID); err != nil {
 		return LoopResult{}, err
@@ -452,8 +458,12 @@ func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, even
 
 	outcomes := make(chan outcomeRead, 64)
 	pending := map[AssignmentKey]func(){}
-	cancelled := false
-	settleCtx := context.WithoutCancel(ctx)
+	watcher := l.Settings.Watcher
+	if watcher == nil {
+		watcher = &effect.Watcher{Port: l.Executor}
+		defer watcher.Close()
+	}
+	settleCtx := ctx
 	readCtx, stopReads := context.WithCancel(settleCtx)
 	defer stopReads()
 	// Registrations with the Watcher outlive this drive unless dropped: a
@@ -465,40 +475,19 @@ func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, even
 		}
 	}()
 
-	// onOwnershipLost stops every in-flight effect: their Outcomes are not ours
-	// to write any more. The cancelled effects still report, so the
-	// pending Outcomes are drained -- never settled -- before returning; a tool
-	// that ignores its context blocks here as it always would.
-	onOwnershipLost := func(err error) error {
-		for key := range pending {
-			_ = l.Executor.Cancel(settleCtx, key)
-		}
-		for len(pending) > 0 {
-			read := <-outcomes
-			delete(pending, read.key)
-		}
-		return err
-	}
-
 	for {
 		if len(pending) == 0 {
-			if cancelled {
-				return LoopResult{}, ctx.Err()
-			}
 			s.step.Lock()
 			res, err := l.advance(ctx, rt, runID, events)
 			s.step.Unlock()
 			if err != nil {
-				if ownershipLost(err) {
-					return LoopResult{}, onOwnershipLost(err)
-				}
 				return LoopResult{}, err
 			}
 			if res.Disposition != LoopDispatched {
 				return res, nil
 			}
 			for _, k := range res.Dispatched {
-				pending[k] = l.awaitOutcome(readCtx, k, outcomes)
+				pending[k] = awaitOutcome(readCtx, watcher, k, outcomes)
 				if port, ok := l.Executor.(effect.ProgressPort); ok && events != nil {
 					go l.forwardProgress(readCtx, port, k, events)
 				}
@@ -506,20 +495,10 @@ func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, even
 		}
 
 		var read outcomeRead
-		if cancelled {
-			read = <-outcomes
-		} else {
-			select {
-			case read = <-outcomes:
-			case <-ctx.Done():
-				// Stop what we started; each cancelled effect still reports an
-				// Outcome, settled below under the detached context.
-				cancelled = true
-				for key := range pending {
-					_ = l.Executor.Cancel(settleCtx, key)
-				}
-				continue
-			}
+		select {
+		case read = <-outcomes:
+		case <-ctx.Done():
+			return LoopResult{}, ctx.Err()
 		}
 		if _, ours := pending[read.key]; !ours {
 			continue // an Outcome of an attempt this drive did not dispatch
@@ -534,9 +513,6 @@ func (l *Loop) Run(ctx context.Context, rt store.RunStore, runID run.RunID, even
 		res, err := l.deliver(settleCtx, rt, read.outcome, events)
 		s.step.Unlock()
 		if err != nil {
-			if ownershipLost(err) {
-				return LoopResult{}, onOwnershipLost(err)
-			}
 			return res, err
 		}
 		if res.Disposition == LoopFinished {
@@ -551,33 +527,19 @@ type outcomeRead struct {
 	err     error
 }
 
-// watcher is where this Loop's blocking Runs wait for Outcomes: the one
-// Settings names, or a private one over the Executor built on first use.
-func (l *Loop) watcher() *effect.Watcher {
-	if l.Settings.Watcher != nil {
-		return l.Settings.Watcher
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.ownWatcher == nil {
-		l.ownWatcher = &effect.Watcher{Port: l.Executor}
-	}
-	return l.ownWatcher
-}
-
 // awaitOutcome registers key with the Watcher and forwards what it finds to
 // outcomes: the Outcome once the executor's settlement notice (or the
 // Watcher's periodic read) makes it readable, or the definitive error of a
 // key the executor will never answer for. Nothing is held open for the
 // length of the execution; the returned cancel drops the registration.
-func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes chan<- outcomeRead) (cancel func()) {
+func awaitOutcome(ctx context.Context, watcher *effect.Watcher, key AssignmentKey, outcomes chan<- outcomeRead) (cancel func()) {
 	send := func(read outcomeRead) {
 		select {
 		case outcomes <- read:
 		case <-ctx.Done():
 		}
 	}
-	return l.watcher().Watch(ctx, key,
+	return watcher.Watch(ctx, key,
 		func(out Outcome) { send(outcomeRead{key: key, outcome: out}) },
 		func(err error) { send(outcomeRead{key: key, err: err}) })
 }

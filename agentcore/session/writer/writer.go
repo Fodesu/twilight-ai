@@ -98,11 +98,6 @@ type Writer interface {
 	Close(context.Context) error
 }
 
-// Writers is the host-maintained SessionID to Writer map.
-type Writers interface {
-	Writer(context.Context, session.SessionID) (Writer, error)
-}
-
 // WritersConfig carries the projection cache and observers. Every field is
 // optional: with no cache the Writer folds every registered projection from
 // the beginning of the log and stores nothing; with no observers nothing is
@@ -131,35 +126,21 @@ type sessionWriter struct {
 	projections *projector
 	admission   *admitter
 	observers   *observers
-	// heartbeat renews the kernel lease while the Writer is open
-	// nil when the lease never expires.
-	heartbeat *heartbeat
 }
 
-// OpenWriter takes ownership of sid and rebuilds the idempotency index and
-// every registered projection from the whole log. When a ledger
-// is configured it reconciles this Session's claims before returning
-// no Commit can be in flight yet.
-func OpenWriter(ctx context.Context, store session.Store, registry *module.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error) {
-	return openWriter(ctx, store, registry, admission, sid, opts, WritersConfig{})
-}
-
-func openWriter(ctx context.Context, store session.Store, registry *module.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions, cfg WritersConfig) (Writer, error) {
-	if store == nil || registry == nil {
-		return nil, errors.New("writer: nil store or registry")
+// Bind builds local write state over an already acquired handle. The caller
+// owns its lifetime, including renewal and release, even if Bind fails.
+func (f *Factory) Bind(ctx context.Context, kernel session.Handle) (Writer, error) {
+	if f == nil || f.Store == nil || f.Registry == nil || kernel == nil {
+		return nil, errors.New("writer: nil factory store, registry or handle")
 	}
-	kernel, err := store.Open(ctx, sid, opts)
-	if err != nil {
-		return nil, err
-	}
+	store, registry, admission, cfg := f.Store, f.Registry, f.Admission, f.Config
+	sid := kernel.SessionID()
 	header := kernel.Header()
 	w := &sessionWriter{kernel: kernel, store: store, registry: registry,
 		projections: newProjector(registry, sid, cfg.Cache, cfg.CachePolicy),
 		admission:   &admitter{Admission: admission, segment: header.ID},
 		observers:   &observers{list: cfg.Observers}}
-	if opts.LeaseDuration > 0 {
-		w.heartbeat = startHeartbeat(kernel, opts.LeaseDuration, w.onLeaseLost)
-	}
 	// The log is read from the earliest cache entry any projection resumes
 	// judging an entry costs one commit read, and a clean
 	// Close leaves every entry at the head.
@@ -170,28 +151,18 @@ func openWriter(ctx context.Context, store session.Store, registry *module.Regis
 		}
 		return one.Commits[0], true
 	}
-	abandon := func() {
-		if w.heartbeat != nil {
-			w.heartbeat.stop()
-		}
-		_ = kernel.Close(ctx)
-	}
 	from, err := w.projections.prepare(ctx, header, at)
 	if err != nil {
-		abandon()
 		return nil, err
 	}
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: from})
 	if err != nil {
-		abandon()
 		return nil, err
 	}
 	if err := w.projections.resume(&page, from); err != nil {
-		abandon()
 		return nil, err
 	}
 	if err := w.admission.reconcile(ctx, w); err != nil {
-		abandon()
 		return nil, err
 	}
 	return w, nil
@@ -216,25 +187,16 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 	return w.kernel.Committed(ledger.CommitID(owner.Identity))
 }
 
-// errWriterClosed is the failure a closed Writer keeps returning; Writers
-// recognizes it so a forgotten Writer is not closed a second time.
+// errWriterClosed is the failure a closed Writer keeps returning.
 var errWriterClosed = &ledger.Error{Code: ledger.CodeInvalid, Detail: "writer closed"}
 
-// onLeaseLost is the heartbeat's report that Renew was fenced: the Writer
-// is lost exactly as it would be by a fenced Append.
-func (w *sessionWriter) onLeaseLost(err error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.lost == nil {
-		w.lost = &ledger.Error{Code: ledger.CodeOwnershipLost, Detail: err.Error()}
-	}
-}
-
+// Close flushes local caches without renewing or releasing the caller's handle.
 func (w *sessionWriter) Close(ctx context.Context) error {
-	if w.heartbeat != nil {
-		w.heartbeat.stop()
-	}
 	w.mu.Lock()
+	if errors.Is(w.lost, errWriterClosed) {
+		w.mu.Unlock()
+		return nil
+	}
 	var writes []cacheWrite
 	// An entry at an inherited boundary is never started.
 	head := w.kernel.Head()
@@ -242,10 +204,9 @@ func (w *sessionWriter) Close(ctx context.Context) error {
 		writes = w.projections.planRefresh(head, true)
 	}
 	w.lost = errWriterClosed
-	err := w.kernel.Close(ctx)
 	w.mu.Unlock()
 	w.projections.saveRefresh(ctx, writes)
-	return err
+	return nil
 }
 
 // --- view --------------------------------------------------------------------------
@@ -357,7 +318,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	stored, err := w.kernel.Append(ctx, ledger.Proposal{CommitID: group.CommitID, Batches: batches})
 	if err != nil {
 		if claim != nil && appendOutcomeKnown(err) {
-			w.admission.release(ctx, claim) // best effort; OpenWriter reconciles any orphan
+			w.admission.release(ctx, claim) // best effort; Bind reconciles any orphan
 		}
 		if session.IsCode(err, session.ErrOwnershipLost) {
 			w.lost = &ledger.Error{Code: ledger.CodeOwnershipLost, Detail: err.Error()}

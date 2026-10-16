@@ -43,11 +43,16 @@ type ExecutionBackend interface {
 	// Start begins the execution Ref names. A definite rejection is an
 	// ordinary error; a request that may have crossed the effect boundary is
 	// effect.ErrDispatchUnknown. Start of a Ref that already started is a
-	// no-op.
+	// no-op. ctx bounds the synchronous RPC and must be honored; it is not
+	// the lifetime of the external effect, which the backend manages
+	// independently. A cancelled/deadline-ended RPC is not proof of rejection:
+	// its Ref must remain attachable/observable and safe to cancel repeatedly.
 	Start(ctx context.Context, ref string, a effect.Assignment) error
 	// Restart allocates the Ref of a new physical execution of the same
 	// Assignment after the Backend reported the previous one missing: the
-	// next attempt for the effect. Unlike Prepare it is not
+	// next attempt for the effect. It must not start that execution: only a
+	// subsequent Start, after the Worker durably commits the binding, may
+	// cross the effect boundary. Unlike Prepare it is not
 	// required to return the same Ref; a Backend whose physical execution is
 	// the durable object itself (a child Session) returns the same Ref.
 	// Whether a tool may be restarted at all is decided before the call,

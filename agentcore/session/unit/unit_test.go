@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
 	"testing"
 )
 
@@ -27,7 +28,7 @@ func newWriter(t *testing.T) writer.Writer {
 		t.Fatal(err)
 	}
 	bindings, ledger := artifacttest.Stores(t)
-	w, err := writer.OpenWriter(ctx, store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, "s", session.OpenOptions{})
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: registry, Admission: writer.Admission{Bindings: bindings, Ledger: ledger}}, "s", session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

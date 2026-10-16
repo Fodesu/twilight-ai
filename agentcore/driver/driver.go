@@ -6,113 +6,251 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/compaction"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/plan"
+	"github.com/felinics/twilight/agentcore/run/reconcile"
+	"github.com/felinics/twilight/agentcore/run/redispatch"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
+	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/turn"
 )
 
-// Driver drives an active Turn to its next quiescent point. A wait a
-// Responder can answer is not a quiescent point: the answer is committed
-// and the drive continues from it. A drive that quiesces with executions in
-// flight and no local waiter hands them to the Recovery.
-type Driver struct {
-	// Runs is the Run module's Session adapter; every drive binds it to the
-	// caller's Writer.
-	Runs     *sessionstore.SessionRunStore
-	Loops    *Loops
-	Recovery *Recovery
-	// Compactions drives context maintenance outside ordinary Run steps.
-	Compactions *Compactions
-	// Responders answer the ExternalResponse waits a drive leaves; nil
-	// answers none.
-	Responders *Responders
-	// Sink receives the drives' provisional observations: the executor's
-	// progress frames relayed by the Loop. nil discards them.
-	Sink loop.EventSink
+// Disposition describes work, not ownership or an Activation's lifecycle.
+// Waiting is not permission to release a Writer: the host must preserve every
+// outstanding obligation and its independent rediscovery path first.
+type Disposition uint8
+
+const (
+	Continue Disposition = iota
+	Waiting
+	Finished
+)
+
+type StepResult struct {
+	Disposition Disposition
+	Dispatched  []effect.AssignmentKey
 }
 
-// Drive drives the Turn while it is active: resolve its recorded preset and
-// drive its Run to the next quiescent point. alreadyDriving is true when a
-// concurrent local driver of the same Run was already carrying it, in which
-// case this call drove nothing. w is the caller's ownership capability over
-// the Session: the decision whether to drive reads w's own projections, and
-// the Loop commits through w, so a superseded owner plans against its own
-// epoch's view and is fenced at commit instead of adopting the new owner's
-// state. The caller's ctx bounds the drive, so cancellation is the caller's
-// decision. The Turn's committed status is the Turn protocol's read, not
-// this method's.
-func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (alreadyDriving bool, err error) {
-	ref := turn.TurnRef{SessionID: w.SessionID(), TurnID: turnID}
-	surface, err := turn.ReadSurface(ctx, w.Projections(), ref.SessionID)
-	if err != nil {
-		return false, err
+// Driver interprets durable Session state for a finite interval. It never
+// awaits an external execution, starts a background continuation, acquires
+// ownership, or retains the caller's Writer after a method returns.
+type Driver struct {
+	Runs            *sessionstore.SessionRunStore
+	Loops           *Loops
+	Compactions     *Compactions
+	MissingEffects  reconcile.MissingPolicy
+	Redispatches    redispatch.Store
+	MaxRedispatches int
+	Sink            loop.EventSink
+}
+
+// Step reconciles existing executions once, settles available outcomes, and
+// advances a Turn to an external boundary. Scheduling another Step, including
+// after an uncertain dispatch or a temporary failure, belongs to the host.
+func (d *Driver) Step(ctx context.Context, w writer.Writer, turnID turn.TurnID) (StepResult, error) {
+	if err := ctx.Err(); err != nil {
+		return StepResult{}, err
 	}
-	view, ok := surface.Turns[ref.TurnID]
+	if w == nil {
+		return StepResult{}, errors.New("driver: a writer is required")
+	}
+	// Maintenance may replace context. Never prepare an ordinary request
+	// until its durable operation has settled, even after an ownership change.
+	if d.Compactions != nil {
+		maintenance, err := d.Compactions.Advance(ctx, w)
+		if err != nil {
+			return StepResult{}, err
+		}
+		if maintenance.Pending {
+			return StepResult{Disposition: Waiting}, nil
+		}
+		if maintenance.Progress {
+			return StepResult{Disposition: Continue}, nil
+		}
+	}
+	surface, err := turn.ReadSurface(ctx, w.Projections(), w.SessionID())
+	if err != nil {
+		return StepResult{}, err
+	}
+	view, ok := surface.Turns[turnID]
 	if !ok {
-		return false, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
+		return StepResult{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, turnID)
 	}
 	if view.Status != turn.TurnActive {
-		return false, nil
+		return StepResult{Disposition: Finished}, nil
 	}
-	l, err := d.Loops.For(view.Preset)
+	lp, err := d.Loops.For(view.Preset)
 	if err != nil {
-		return false, err
+		return StepResult{}, err
 	}
-	for {
-		res, err := l.Run(ctx, d.Runs.Bind(w), view.RunID, d.Sink)
-		if d.Compactions != nil && (errors.Is(err, compaction.ErrPending) || (err == nil && res.Reason == loop.ContextMaintenance)) {
-			if err := d.Compactions.Recover(ctx, w); err != nil {
-				return false, err
-			}
+	st := d.Runs.Bind(w)
+	snapshot, err := st.Load(ctx, view.RunID)
+	if err != nil {
+		return StepResult{}, err
+	}
+	// No callbacks are installed. Reconciliation is a one-shot comparison of
+	// two authorities; active effects belong to the Executor, not this call.
+	rec := &reconcile.Reconciler{Executions: d.Loops.Executor, Missing: d.MissingEffects,
+		Attempts: d.Redispatches, Epoch: w.Epoch(), MaxRedispatches: d.MaxRedispatches,
+		Redispatch: func(ctx context.Context, key effect.AssignmentKey) error {
+			return lp.Redispatch(ctx, st, key)
+		}}
+	for _, target := range plan.RecoveryTargets(&snapshot.State) {
+		key := effect.AssignmentKey{Session: st.Scope(), RunID: view.RunID, Effect: target.Effect}
+		decision, found, err := rec.ReconcileEffect(ctx, st, &snapshot, key)
+		if err != nil {
+			return StepResult{}, err
+		}
+		if !found || decision.Recovery != nil {
+			return StepResult{Disposition: Continue}, nil
+		}
+		out, err := d.Loops.Executor.GetOutcome(ctx, key)
+		if errors.Is(err, effect.ErrOutcomeNotReady) || errors.Is(err, effect.ErrExecutionNotFound) {
 			continue
 		}
 		if err != nil {
-			if errors.Is(err, loop.ErrRunAlreadyRunning) {
-				return true, nil
-			}
-			return false, err
+			return StepResult{}, err
 		}
-		if res.ExecutionRecovery {
-			// The drive quiesced with executions in flight and no local
-			// waiter. Offer every Executing target reattachment and dispose
-			// what no executor answers, instead of leaving the Turn to a
-			// driver that already returned.
-			if _, err := d.Recovery.Recover(context.WithoutCancel(ctx), w); err != nil {
-				d.Recovery.fail(ref.SessionID, fmt.Errorf("driver: recovering a quiesced drive: %w", err))
-			}
+		res, err := lp.Deliver(ctx, st, out, d.Sink)
+		if err != nil {
+			return StepResult{}, err
 		}
-		if res.Disposition == loop.LoopWaiting && d.Responders != nil {
-			settled, err := d.Responders.answerWaiting(ctx, w, view.RunID)
-			if err != nil {
-				return false, err
-			}
-			if settled {
-				continue
-			}
+		if res.Disposition == loop.LoopFinished {
+			return StepResult{Disposition: Finished}, nil
 		}
-		return false, nil
+		// Return at a durable boundary instead of recursively driving the
+		// next effect. The host's budget can now choose to continue or yield.
+		return StepResult{Disposition: Continue}, nil
+	}
+	res, err := lp.Advance(ctx, st, view.RunID, d.Sink)
+	if err != nil {
+		if errors.Is(err, compaction.ErrPending) {
+			return StepResult{Disposition: Continue}, nil
+		}
+		return StepResult{}, err
+	}
+	switch res.Disposition {
+	case loop.LoopFinished:
+		return StepResult{Disposition: Finished}, nil
+	case loop.LoopDispatched:
+		return StepResult{Disposition: Waiting, Dispatched: res.Dispatched}, nil
+	case loop.LoopWaiting:
+		if res.Reason == loop.ContextMaintenance {
+			return StepResult{Disposition: Continue}, nil
+		}
+		return StepResult{Disposition: Waiting}, nil
+	default:
+		return StepResult{Disposition: Continue}, nil
 	}
 }
 
-// ResumeWaiting answers, under the Session's recovery lifetime, every
-// ExternalResponse wait a previous owner left with a Responder and drives
-// the owning Turn on from each answer. A Session that opens runs it after
-// the takeover disposition: the Responder continues from its durable
-// state. It returns at once; the answers run in the background and their
-// failures reach the Recovery's Fail.
-func (d *Driver) ResumeWaiting(ctx context.Context, w writer.Writer) {
-	if d.Responders == nil {
-		return
+// ReconcileExecution handles a discovered execution even after its Run left
+// the active projection. A durable domain disposition authorizes cancellation
+// of still-running work and later ACK; a lost Activation alone never does.
+func (d *Driver) ReconcileExecution(ctx context.Context, w writer.Writer, key effect.AssignmentKey) error {
+	if key.Session != run.Scope(w.SessionID()) {
+		return errors.New("driver: execution belongs to another session")
 	}
-	lt := d.Recovery.lifetimeOf(w)
-	d.Responders.answerAll(ctx, w, lt.ctx, func(a *answer) {
-		turnID, err := ownerOf(lt.ctx, lt.w, a.call.Request.RunID)
-		if err == nil {
-			_, err = d.Drive(lt.ctx, lt.w, turnID)
-		}
+	if d.Compactions != nil {
+		state, err := compaction.Read(ctx, w.Projections(), w.SessionID())
 		if err != nil {
-			d.Recovery.fail(lt.w.SessionID(), fmt.Errorf("driver: drive after response of run %s: %w", a.call.Request.RunID, err))
+			return err
 		}
-	})
+		for id := range state.Operations {
+			op := state.Operations[id]
+			if op.Request.Key(w.SessionID()) == key {
+				_, err := d.Compactions.Advance(ctx, w)
+				return err
+			}
+		}
+	}
+	lp, _, err := d.Loops.ForRun(ctx, w, key.RunID)
+	if err != nil {
+		return err
+	}
+	st := d.Runs.Bind(w)
+	proof, ok := st.(store.EffectDispositionReader)
+	if !ok {
+		return store.ErrEffectProofUnsupported
+	}
+	_, disposed, err := proof.EffectDisposition(ctx, key.RunID, key.Effect)
+	if err != nil {
+		return err
+	}
+	if disposed {
+		att, err := d.Loops.Executor.Abort(ctx, key)
+		if err != nil {
+			return err
+		}
+		switch att.State {
+		case effect.AttachmentAborted:
+			return nil
+		case effect.AttachmentTerminal:
+			_, err := lp.AcknowledgeSettled(ctx, st, key)
+			return err
+		default:
+			// This is backed by a permanent semantic disposition, unlike
+			// cancellation inferred from a local context or fencing error.
+			if err := d.Loops.Executor.Cancel(ctx, key); err != nil {
+				return err
+			}
+			if att.State == effect.AttachmentOrphaned {
+				if recoverer, ok := d.Loops.Executor.(effect.Recoverer); ok {
+					return recoverer.RecoverExecution(ctx, key)
+				}
+			}
+			return nil
+		}
+	}
+	out, err := d.Loops.Executor.GetOutcome(ctx, key)
+	if errors.Is(err, effect.ErrOutcomeNotReady) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = d.Deliver(ctx, w, out)
+	return err
+}
+
+// Deliver admits one externally discovered Outcome under the current Writer.
+// A dropped result is not, by itself, proof that the Executor may collect it.
+func (d *Driver) Deliver(ctx context.Context, w writer.Writer, out effect.Outcome) (StepResult, error) {
+	if out.Key.Session != run.Scope(w.SessionID()) {
+		return StepResult{}, errors.New("driver: outcome belongs to another session")
+	}
+	if d.Compactions != nil {
+		state, err := compaction.Read(ctx, w.Projections(), w.SessionID())
+		if err != nil {
+			return StepResult{}, err
+		}
+		for id := range state.Operations {
+			op := state.Operations[id]
+			if op.Request.Key(w.SessionID()) == out.Key {
+				_, err := d.Compactions.Deliver(ctx, w, out)
+				return StepResult{Disposition: Continue}, err
+			}
+		}
+	}
+	lp, _, err := d.Loops.ForRun(ctx, w, out.Key.RunID)
+	if err != nil {
+		return StepResult{}, err
+	}
+	st := d.Runs.Bind(w)
+	res, err := lp.Deliver(ctx, st, out, d.Sink)
+	if err != nil {
+		return StepResult{}, err
+	}
+	if res.Disposition == loop.LoopDropped {
+		if _, err := lp.AcknowledgeSettled(ctx, st, out.Key); err != nil {
+			return StepResult{}, err
+		}
+	}
+	if res.Disposition == loop.LoopFinished {
+		return StepResult{Disposition: Finished}, nil
+	}
+	return StepResult{Disposition: Continue}, nil
 }

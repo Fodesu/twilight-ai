@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/plan"
 )
 
 func TestUnknownToolOutcomeContinues(t *testing.T) {
@@ -64,9 +66,9 @@ func (p *refusingPort) Settlements(ctx context.Context, epoch string, after uint
 	return ctx.Err()
 }
 
-// a retryable refusal is dispatched again inside the Advance and
-// the call completes; a refusal that persists past the bound is a Known
-// dispatch failure of the call, and the Run continues.
+// Retryable refusal is retried within Advance's bound. Exhausting that local
+// budget preserves durable intent: a future pass offers the same assignment,
+// rather than manufacturing a Known failure or a fresh external effect.
 func TestRetryableDispatchRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -79,14 +81,36 @@ func TestRetryableDispatchRefusal(t *testing.T) {
 			f.wrapPort = func(inner effect.ExecutionPort) effect.ExecutionPort { port.ExecutionPort = inner; return port }
 			f.Tool("echo", run.DirectExecution)
 			f.Model(ToolCalls("echo", "c1"), Text("done"))
-			f.Run()
-			f.RequireCompleted("done")
 			if tc.ran {
+				f.Run()
+				f.RequireCompleted("done")
 				f.RequireRan("echo")
 				return
 			}
-			f.RequireCallFailed("c1", run.ToolOutcomeKnown)
-			f.RequireFailureClass(run.FailureExecution)
+			f.RunError(effect.ErrDispatchRetryable)
+			snapshot := f.load()
+			targets := plan.RecoveryTargets(&snapshot.State)
+			if len(targets) != 1 {
+				t.Fatalf("temporary refusal lost durable intent: %+v", snapshot.State)
+			}
+			key := effect.AssignmentKey{Session: f.rt.Scope(), RunID: f.runID, Effect: targets[0].Effect}
+			if err := f.loop.Redispatch(f.ctx, f.rt, key); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(f.ctx, 3*time.Second)
+			defer cancel()
+			observer := &effect.Watcher{Port: port, Poll: time.Millisecond}
+			defer observer.Close()
+			outcome, err := observer.Await(ctx, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.loop.Deliver(ctx, f.rt, outcome, nil); err != nil {
+				t.Fatal(err)
+			}
+			f.Run()
+			f.RequireCompleted("done")
+			f.RequireRan("echo")
 		})
 	}
 }

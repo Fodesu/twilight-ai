@@ -31,6 +31,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/testutil/local"
 	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
@@ -101,10 +102,7 @@ func newCompactFixture(t *testing.T, inv compactInvoker, tools ...local.Executab
 	if err := k.CreateSession(ctx, compactSession, nil); err != nil {
 		t.Fatal(err)
 	}
-	f.w, err = k.Writers.Writer(ctx, compactSession)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.acquire()
 	return f
 }
 
@@ -134,24 +132,81 @@ func (f *compactFixture) execution(port effect.ExecutionPort, policy driver.Cont
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.t.Cleanup(x.Close)
 	return x
+}
+
+func (f *compactFixture) acquire() {
+	f.t.Helper()
+	w, err := writertest.Open(f.t, f.ctx, f.k.Writers, compactSession, session.OpenOptions{})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.w = w
 }
 
 func (f *compactFixture) reopenWriter() {
 	f.t.Helper()
-	if err := writer.CloseWriter(f.ctx, f.k.Writers, compactSession); err != nil {
+	if err := f.w.Close(f.ctx); err != nil {
 		f.t.Fatal(err)
 	}
-	// A new Writers set represents a new owner, sharing the same durable
-	// sessions, content bindings and retention authority, not its old cache.
-	writers := writer.NewWriters(f.k.Store, f.k.Registry, f.k.Admission, session.OpenOptions{}, writer.WritersConfig{})
-	var err error
-	f.w, err = writers.Writer(f.ctx, compactSession)
-	if err != nil {
-		f.t.Fatal(err)
+	f.acquire()
+}
+
+// Only tests wait. Production Step/Advance always give ownership back to the
+// host instead of holding a Writer while an executor completes work.
+func (f *compactFixture) drive(x *rt.Execution, w writer.Writer, id turn.TurnID) (driver.StepResult, error) {
+	f.t.Helper()
+	for {
+		result, err := x.Driver.Step(f.ctx, w, id)
+		if err != nil || result.Disposition == driver.Finished {
+			return result, err
+		}
+		if result.Disposition == driver.Waiting {
+			if err := compactPoll(f.ctx); err != nil {
+				return result, err
+			}
+		}
 	}
-	f.t.Cleanup(func() { _ = writer.CloseWriters(context.Background(), writers) })
+}
+
+func compactPoll(ctx context.Context) error {
+	timer := time.NewTimer(time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (f *compactFixture) advance(c *driver.Compactions, w writer.Writer) (driver.MaintenanceResult, error) {
+	f.t.Helper()
+	for {
+		result, err := c.Advance(f.ctx, w)
+		if err != nil || !result.Pending {
+			return result, err
+		}
+		if err := compactPoll(f.ctx); err != nil {
+			return result, err
+		}
+	}
+}
+
+func (f *compactFixture) awaitOutcome(port effect.ExecutionPort, key effect.AssignmentKey) effect.Outcome {
+	f.t.Helper()
+	for {
+		out, err := port.GetOutcome(f.ctx, key)
+		if err == nil {
+			return out
+		}
+		if !errors.Is(err, effect.ErrOutcomeNotReady) {
+			f.t.Fatal(err)
+		}
+		if err := compactPoll(f.ctx); err != nil {
+			f.t.Fatal(err)
+		}
+	}
 }
 
 func (f *compactFixture) startTurn(id string, stop bool) sessionkernel.TurnResult {
@@ -344,10 +399,10 @@ func TestCompactionCandidateRebuildAndBudget(t *testing.T) {
 			x := f.execution(f.worker, policy, true)
 			f.history()
 			current := f.startTurn("current", false)
-			_, err := x.Driver.Drive(f.ctx, f.w, current.Ref.TurnID)
+			_, err := f.drive(x, f.w, current.Ref.TurnID)
 			if tc.noProgress {
 				if !errors.Is(err, driver.ErrCompactionNoProgress) {
-					t.Fatalf("Drive = %v, want ErrCompactionNoProgress", err)
+					t.Fatalf("Step = %v, want ErrCompactionNoProgress", err)
 				}
 			} else if err != nil {
 				t.Fatal(err)
@@ -396,19 +451,18 @@ func TestCompactionCandidateRebuildAndBudget(t *testing.T) {
 			}
 			if tc.noProgress {
 				// The same preparation remains protected on an explicit retry.
-				if _, err := x.Driver.Drive(f.ctx, f.w, current.Ref.TurnID); !errors.Is(err, driver.ErrCompactionNoProgress) {
-					t.Fatalf("repeat Drive=%v", err)
+				if _, err := f.drive(x, f.w, current.Ref.TurnID); !errors.Is(err, driver.ErrCompactionNoProgress) {
+					t.Fatalf("repeat Step=%v", err)
 				}
 				if summaries.Load() != 1 {
 					t.Fatal("no-progress preparation summarized twice")
 				}
 				// The boundary guard is durable, not an Execution-local counter.
-				x.Close()
 				f.reopenWriter()
 				freshPolicy := &compactPolicy{limit: tc.limit}
 				replacement := f.execution(f.worker, freshPolicy, true)
-				if _, err := replacement.Driver.Drive(f.ctx, f.w, current.Ref.TurnID); !errors.Is(err, driver.ErrCompactionNoProgress) {
-					t.Fatalf("Drive after owner replacement=%v", err)
+				if _, err := f.drive(replacement, f.w, current.Ref.TurnID); !errors.Is(err, driver.ErrCompactionNoProgress) {
+					t.Fatalf("Step after owner replacement=%v", err)
 				}
 				if summaries.Load() != 1 || freshPolicy.builds != 0 {
 					t.Fatal("owner replacement forgot no-progress preparation")
@@ -435,15 +489,14 @@ func (p *compactPort) Attach(ctx context.Context, key effect.AssignmentKey) (eff
 	result, err := p.Worker.Attach(ctx, key)
 	select {
 	case p.attached <- key:
-	case <-ctx.Done():
+	default:
 	}
 	return result, err
 }
 func (p *compactPort) Dispatch(ctx context.Context, a effect.Assignment) error {
 	select {
 	case p.dispatched <- a.Key():
-	case <-ctx.Done():
-		return ctx.Err()
+	default:
 	}
 	return p.Worker.Dispatch(ctx, a)
 }
@@ -497,17 +550,14 @@ func (w *compactWriter) Commit(ctx context.Context, fn writer.CommitFn) (writer.
 	return result, err
 }
 
-func (f *compactFixture) openAndWait(x *rt.Execution) {
+func (f *compactFixture) settleMaintenance(x *rt.Execution) {
 	f.t.Helper()
-	w := &compactWriter{Writer: f.w, acked: make(chan struct{}, 1)}
-	if _, err := x.Open(f.ctx, w); err != nil {
+	if _, err := f.advance(x.Compactions, f.w); err != nil {
 		f.t.Fatal(err)
 	}
-	waitCompact(f.t, f.ctx, w.acked)
-	x.Stop(compactSession)
 }
 
-func TestCompactionOpenRecoversUndispatchedIdleSession(t *testing.T) {
+func TestCompactionAdvanceRecoversUndispatchedIdleSession(t *testing.T) {
 	var calls atomic.Int32
 	f := newCompactFixture(t, func(context.Context, sdk.Request) (sdk.ModelResult, error) {
 		calls.Add(1)
@@ -521,7 +571,6 @@ func TestCompactionOpenRecoversUndispatchedIdleSession(t *testing.T) {
 		t.Fatal("Start dispatched a model")
 	}
 	before := f.state().Operations["accepted"]
-	old.Close()
 	oldEpoch := f.w.Epoch()
 	f.reopenWriter()
 	if f.w.Epoch() <= oldEpoch {
@@ -530,7 +579,7 @@ func TestCompactionOpenRecoversUndispatchedIdleSession(t *testing.T) {
 	// Neither policy nor Frozen is supplied to the replacement Execution.
 	port := newCompactPort(f.worker)
 	x := f.execution(port, nil, false)
-	f.openAndWait(x)
+	f.settleMaintenance(x)
 	op := f.state().Operations["accepted"]
 	if op.Status != compaction.Applied || !op.Acknowledged || !reflect.DeepEqual(op.Request, before.Request) {
 		t.Fatalf("recovered operation=%+v", op)
@@ -542,7 +591,7 @@ func TestCompactionOpenRecoversUndispatchedIdleSession(t *testing.T) {
 		t.Fatalf("summary calls=%d", calls.Load())
 	}
 	f.counts(1, 1, 0)
-	if err := x.Compactions.Recover(f.ctx, f.w); err != nil {
+	if _, err := x.Compactions.Advance(f.ctx, f.w); err != nil {
 		t.Fatal(err)
 	}
 	f.counts(1, 1, 0)
@@ -574,37 +623,27 @@ func TestCompactionInFlightOwnerHandoff(t *testing.T) {
 	f.accept(old, "in-flight")
 	accepted := f.state().Operations["in-flight"]
 	key := accepted.Request.Key(compactSession)
-	oldOpened := make(chan error, 1)
-	oldWriter := f.w
-	go func() { _, err := old.Open(f.ctx, oldWriter); oldOpened <- err }()
+	result, err := old.Compactions.Advance(f.ctx, f.w)
+	if err != nil || !result.Pending || result.Key != key {
+		t.Fatalf("dispatch=%+v, %v", result, err)
+	}
 	waitCompact(t, f.ctx, started)
-	// Stop must cancel and join the old Recover waiter without cancelling the
-	// executor-owned physical summary. A new owner attaches the same key.
-	stopped := make(chan struct{})
-	go func() { old.Stop(compactSession); close(stopped) }()
-	waitCompact(t, f.ctx, stopped)
-	if err := waitCompact(t, f.ctx, oldOpened); !errors.Is(err, context.Canceled) {
-		t.Fatalf("old Open=%v, want cancellation", err)
-	}
 	if op := f.state().Operations["in-flight"]; op.Status != compaction.Pending || op.Acknowledged {
-		t.Fatalf("cancelled waiter settled operation=%+v", op)
+		t.Fatalf("dispatch settled operation=%+v", op)
 	}
-	old.Close()
+	// Advance has returned; releasing ownership never cancels physical work.
 	f.reopenWriter()
 	port := newCompactPort(f.worker)
 	x := f.execution(port, nil, false)
-	w := &compactWriter{Writer: f.w, acked: make(chan struct{}, 1)}
-	opened := make(chan error, 1)
-	go func() { _, err := x.Open(f.ctx, w); opened <- err }()
+	result, err = x.Compactions.Advance(f.ctx, f.w)
+	if err != nil || !result.Pending {
+		t.Fatalf("reattach=%+v, %v", result, err)
+	}
 	if got := waitCompact(t, f.ctx, port.attached); got != key {
 		t.Fatalf("replacement attached=%+v, want %+v", got, key)
 	}
 	close(release)
-	if err := waitCompact(t, f.ctx, opened); err != nil {
-		t.Fatal(err)
-	}
-	waitCompact(t, f.ctx, w.acked)
-	x.Stop(compactSession)
+	f.settleMaintenance(x)
 	if calls.Load() != 1 || len(port.dispatched) != 0 {
 		t.Fatalf("handoff redispatched: calls=%d dispatches=%d", calls.Load(), len(port.dispatched))
 	}
@@ -627,8 +666,8 @@ func TestCompactionSuccessfulOutcomeBeforeCommitSurvivesWorkerRestart(t *testing
 	op := f.state().Operations["before-commit"]
 	injected := errors.New("session append unavailable")
 	w := &compactWriter{Writer: f.w, failFinish: injected}
-	if err := old.Compactions.Recover(f.ctx, w); !errors.Is(err, injected) {
-		t.Fatalf("Recover=%v", err)
+	if _, err := f.advance(old.Compactions, w); !errors.Is(err, injected) {
+		t.Fatalf("Advance=%v", err)
 	}
 	outcome, err := f.worker.GetOutcome(f.ctx, op.Request.Key(compactSession))
 	if err != nil {
@@ -641,13 +680,12 @@ func TestCompactionSuccessfulOutcomeBeforeCommitSurvivesWorkerRestart(t *testing
 		t.Fatal("uncommitted outcome acknowledged or intent lost")
 	}
 	f.counts(0, 0, 0)
-	old.Close()
 	f.worker.Close()
 	f.reopenWriter()
 	f.newWorker() // same executor record store, different Worker incarnation
 	newPort := newCompactPort(f.worker)
 	x := f.execution(newPort, nil, false)
-	f.openAndWait(x)
+	f.settleMaintenance(x)
 	if got := waitCompact(t, f.ctx, newPort.attached); got != op.Request.Key(compactSession) {
 		t.Fatalf("new key=%+v", got)
 	}
@@ -705,16 +743,15 @@ func TestCompactionContextChangeMakesInflightSummaryStale(t *testing.T) {
 	x := f.execution(f.worker, nil, true)
 	f.history()
 	f.accept(x, "stale")
-	done := make(chan error, 1)
-	go func() { done <- x.Compactions.Recover(f.ctx, f.w) }()
+	if result, err := x.Compactions.Advance(f.ctx, f.w); err != nil || !result.Pending {
+		t.Fatalf("Advance=%+v, %v", result, err)
+	}
 	waitCompact(t, f.ctx, started)
 	// Delivering input (not merely submitting it) changes the real Context.
 	f.startTurn("concurrent-input", true)
 	changed := f.context().Entries
 	close(release)
-	if err := waitCompact(t, f.ctx, done); err != nil {
-		t.Fatal(err)
-	}
+	f.settleMaintenance(x)
 	op := f.state().Operations["stale"]
 	if op.Status != compaction.Stale || op.CompactionID != "" || !op.Acknowledged || op.Code != "context_changed" {
 		t.Fatalf("operation=%+v", op)
@@ -725,45 +762,7 @@ func TestCompactionContextChangeMakesInflightSummaryStale(t *testing.T) {
 	f.counts(0, 0, 0)
 }
 
-func TestCompactionACKRetryDoesNotRegenerateOrRecommit(t *testing.T) {
-	var calls atomic.Int32
-	f := newCompactFixture(t, func(context.Context, sdk.Request) (sdk.ModelResult, error) {
-		calls.Add(1)
-		return sdk.ModelResult{Text: compactSummary}, nil
-	})
-	port := newCompactPort(f.worker)
-	port.failACK.Store(true)
-	old := f.execution(port, nil, true)
-	f.history()
-	f.accept(old, "ack-retry")
-	if err := old.Compactions.Recover(f.ctx, f.w); err != nil {
-		t.Fatal(err)
-	}
-	op := f.state().Operations["ack-retry"]
-	if op.Status != compaction.Applied || op.Acknowledged || port.ackCalls.Load() != 1 {
-		t.Fatalf("operation after failed ACK=%+v calls=%d", op, port.ackCalls.Load())
-	}
-	f.counts(1, 1, 0)
-	old.Close()
-	f.reopenWriter()
-	x := f.execution(port, nil, false)
-	f.openAndWait(x)
-	for i := 0; i < 2; i++ {
-		if err := x.Compactions.Recover(f.ctx, f.w); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if calls.Load() != 1 || port.ackCalls.Load() != 2 || !f.state().Operations["ack-retry"].Acknowledged {
-		t.Fatalf("calls=%d ACKs=%d state=%+v", calls.Load(), port.ackCalls.Load(), f.state())
-	}
-	if needed, err := x.Compactions.NeedsRecovery(f.ctx, f.w); err != nil || needed {
-		t.Fatalf("NeedsRecovery=%v, %v", needed, err)
-	}
-	f.counts(1, 1, 0)
-	f.assertAtomicFinish()
-}
-
-func TestCompactionIdentityGuardAndForkIsolation(t *testing.T) {
+func TestCompactionIdentityAndPendingGuard(t *testing.T) {
 	var calls atomic.Int32
 	f := newCompactFixture(t, func(context.Context, sdk.Request) (sdk.ModelResult, error) {
 		calls.Add(1)
@@ -794,30 +793,6 @@ func TestCompactionIdentityGuardAndForkIsolation(t *testing.T) {
 	if len(f.state().Operations) != 1 || calls.Load() != 0 {
 		t.Fatal("conflicting Start mutated intent or dispatched")
 	}
-	// Fork while no Turn is active. Conversation crosses the fork, ownership
-	// of a parent's pending maintenance effect must not.
-	page, err := f.k.Store.ReadCommits(f.ctx, session.CommitReadRequest{SessionID: compactSession})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.k.Fork(f.ctx, sessionkernel.ForkRequest{Parent: compactSession, At: page.Head.Next - 1, Child: "child"}); err != nil {
-		t.Fatal(err)
-	}
-	childState, err := compaction.Read(f.ctx, f.k.Projections, "child")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(childState.Operations) != 0 || childState.Pending != "" || childState.NeedsRecovery() {
-		t.Fatalf("child inherited maintenance=%+v", childState)
-	}
-	childContext, err := chatlog.ReadContext(f.ctx, f.k.Projections, "child")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(childContext.Entries, f.context().Entries) {
-		t.Fatal("fork did not inherit identical Context")
-	}
-
 	current := f.startTurn("guarded", false)
 	bound := f.k.Runs.Bind(f.w)
 	snap, err := bound.Load(f.ctx, current.RunID)
@@ -855,8 +830,8 @@ func TestCompactionSummaryFailureIsNotConversation(t *testing.T) {
 	f.history()
 	before := f.context().Entries
 	f.accept(x, "failure")
-	if err := x.Compactions.Recover(f.ctx, f.w); !errors.Is(err, driver.ErrSummaryFailed) {
-		t.Fatalf("Recover=%v, want ErrSummaryFailed", err)
+	if _, err := f.advance(x.Compactions, f.w); !errors.Is(err, driver.ErrSummaryFailed) {
+		t.Fatalf("Advance=%v, want ErrSummaryFailed", err)
 	}
 	op := f.state().Operations["failure"]
 	if op.Status != compaction.Failed || !op.Acknowledged || op.CompactionID != "" || op.Code == "" {
@@ -866,35 +841,6 @@ func TestCompactionSummaryFailureIsNotConversation(t *testing.T) {
 		t.Fatal("failed summary changed Context")
 	}
 	f.counts(0, 0, 0)
-}
-
-func TestCompactionACKFailureCallbackMayCloseSession(t *testing.T) {
-	f := newCompactFixture(t, func(context.Context, sdk.Request) (sdk.ModelResult, error) {
-		return sdk.ModelResult{Text: compactSummary}, nil
-	})
-	port := newCompactPort(f.worker)
-	port.failACK.Store(true)
-	x := f.execution(port, nil, true)
-	closed := make(chan error, 1)
-	x.Compactions.Fail = func(sid session.SessionID, failure error) {
-		x.Stop(sid)
-		if err := writer.CloseWriter(f.ctx, f.k.Writers, sid); err != nil {
-			closed <- err
-			return
-		}
-		closed <- failure
-	}
-	f.history()
-	f.accept(x, "close-on-failure")
-	// The asynchronous cleanup callback can cancel Open before it returns.
-	if _, err := x.Open(f.ctx, f.w); err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
-	}
-	if err := waitCompact(t, f.ctx, closed); err == nil {
-		t.Fatal("missing failure notification")
-	}
-	// Stop joins opening, but opening must not join this callback itself.
-	x.Close()
 }
 
 type compactGateTool struct {
@@ -961,10 +907,7 @@ func TestCompactionStartsAfterReattachedToolOutcome(t *testing.T) {
 	if err != nil || len(modelCall.Dispatched) != 1 {
 		t.Fatalf("model dispatch=%+v, %v", modelCall, err)
 	}
-	out, err := old.Watcher.Await(f.ctx, modelCall.Dispatched[0])
-	if err != nil {
-		t.Fatal(err)
-	}
+	out := f.awaitOutcome(f.worker, modelCall.Dispatched[0])
 	if _, err := lp.Deliver(f.ctx, bound, out, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -973,7 +916,6 @@ func TestCompactionStartsAfterReattachedToolOutcome(t *testing.T) {
 		t.Fatalf("tool dispatch=%+v, %v", toolCall, err)
 	}
 	waitCompact(t, f.ctx, tool.started)
-	old.Close()
 	f.reopenWriter()
 	policy := &driver.BudgetPolicy{
 		Budget: func(context.Context, run.ModelRef) (prompt.TokenBudget, error) {
@@ -997,15 +939,17 @@ func TestCompactionStartsAfterReattachedToolOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	observed := &compactWriter{Writer: f.w, modelCompleted: make(chan struct{}, 1)}
-	if _, err := x.Open(f.ctx, observed); err != nil {
-		t.Fatal(err)
+	if result, err := x.Driver.Step(f.ctx, observed, current.Ref.TurnID); err != nil || result.Disposition != driver.Waiting {
+		t.Fatalf("Step=%+v, %v", result, err)
 	}
 	if len(f.state().Operations) != 0 {
 		t.Fatal("maintenance existed before the recovered tool outcome")
 	}
 	close(tool.release)
+	if _, err := f.drive(x, observed, current.Ref.TurnID); err != nil {
+		t.Fatal(err)
+	}
 	waitCompact(t, f.ctx, observed.modelCompleted)
-	x.Stop(compactSession)
 	if summaries.Load() != 1 || normal.Load() != 2 {
 		t.Fatalf("summary/normal calls=%d/%d", summaries.Load(), normal.Load())
 	}

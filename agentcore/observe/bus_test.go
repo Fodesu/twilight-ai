@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
 )
 
 type rowPayload struct {
@@ -80,7 +81,7 @@ func TestSubscribeFromCatchesUpThenGoesLive(t *testing.T) {
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
-	w, err := writer.NewWriters(store, reg, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{Observers: []writer.CommitObserver{bus, tailer}}).Writer(ctx, sid)
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: reg, Config: writer.WritersConfig{Observers: []writer.CommitObserver{bus, tailer}}}, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +159,7 @@ func TestSubscribeFromTailsCommitsFromAnotherBus(t *testing.T) {
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
-	w, err := writer.NewWriters(store, reg, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{Observers: []writer.CommitObserver{writerBus}}).Writer(ctx, sid)
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: reg, Config: writer.WritersConfig{Observers: []writer.CommitObserver{writerBus}}}, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

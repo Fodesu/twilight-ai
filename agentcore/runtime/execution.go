@@ -1,16 +1,12 @@
 package runtime
 
 import (
-	"context"
 	"errors"
-	"time"
 
 	"github.com/felinics/twilight/agentcore/chatlog"
 	"github.com/felinics/twilight/agentcore/driver"
-	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/prompt"
-	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -18,211 +14,74 @@ import (
 	"github.com/felinics/twilight/agentcore/run/redispatch"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/writer"
 )
 
-// ExecutionSources are the Session-side services the drive chain reads;
-// a composition root assembles them over the same Kernel the Sessions
-// live in.
+// ExecutionSources are durable semantic reads, independent of ownership.
 type ExecutionSources struct {
-	// Runs is the Run module's Session adapter.
-	Runs *sessionstore.SessionRunStore
-	// Projections reads the Sessions' folded state.
+	Runs        *sessionstore.SessionRunStore
 	Projections session.ProjectionReader
-	// Content materializes the frozen bodies projections name.
-	Content chatlog.ContentResolver
-	// Frozen stores new summary requests before their intents are accepted.
-	// Required with ContextPolicy or explicit Compactions.Start; recovery
-	// reads already accepted requests through Runs even when this is nil.
-	Frozen frozen.Store
+	Content     chatlog.ContentResolver
+	Frozen      frozen.Store
 }
 
-// ExecutionConfig composes one Execution: the effect port it drives, the
-// preset identities it resolves and the policies of the drive chain.
+// ExecutionConfig supplies interpretation and recovery policy. It deliberately
+// contains no Session lease, heartbeat, polling interval, or Owner lifecycle.
 type ExecutionConfig struct {
-	// Executor is the effect layer port: required.
-	Executor effect.ExecutionPort
-	// Presets is the catalog of preset identities; nil selects an
-	// in-memory catalog.
-	Presets preset.Catalog
-	// PromptBuilders resolves each preset's PromptBuilderRef:
-	// required. The runtime ships no builder; the agent built on it supplies
-	// its catalog (agent/prompt.DefaultPromptBuilders for the reference agent).
-	PromptBuilders *prompt.Catalog
-	// MissingEffects is the takeover policy for an Executing effect the
-	// Executor holds nothing: the zero value disposes it,
-	// reconcile.RedispatchMissing hands it to the Executor again within a
-	// budget and requires Redispatches.
-	MissingEffects reconcile.MissingPolicy
-	// Redispatches is the dispatch ledger RedispatchMissing writes; durable
-	// like every store. Unused under DisposeMissing.
-	Redispatches redispatch.Store
-	// MaxRedispatches bounds redispatches per effect; zero selects the
-	// reconciler's default.
-	MaxRedispatches int
-	// RedispatchRetry is the interval between reconciliations after the
-	// executor safely refused a redispatch before the effect boundary; zero
-	// selects the recovery default. Unknown boundaries are not redispatched.
-	RedispatchRetry time.Duration
-	// Planner, when set, is consulted between the steps of every Run with
-	// the Writer of the Session being driven: the application's in-turn
-	// context policy.
-	Planner driver.Planner
-	// ContextPolicy evaluates complete candidates before PrepareModelRequest.
-	// Nil disables automatic compaction, not recovery of accepted operations.
-	ContextPolicy driver.ContextPolicy
-	// MaxCompactionAttempts bounds failed/stale summaries per candidate
-	// preparation; zero selects driver.DefaultCompactionAttempts. A successful
-	// compaction is allowed once before the rebuilt request must fit policy.
+	Executor              effect.ExecutionPort
+	Presets               preset.Catalog
+	PromptBuilders        *prompt.Catalog
+	MissingEffects        reconcile.MissingPolicy
+	Redispatches          redispatch.Store
+	MaxRedispatches       int
+	Planner               driver.Planner
+	ContextPolicy         driver.ContextPolicy
 	MaxCompactionAttempts int
-	// Responders answer ExternalResponse waits by the ToolRef whose calls
-	// they answer; nil answers none.
-	Responders map[run.ToolRef]driver.Responder
-	// TargetResolver supplies the opaque resource target of each effect
-	// It belongs to the application's resource layer; nil
-	// gives every effect no target.
-	TargetResolver loop.TargetResolver
-	// Fail receives failures of work the Execution's components do outside
-	// any caller's call, such as settling a reattached Outcome; nil
-	// discards them.
-	Fail func(session.SessionID, error)
-	// OrphanProbe is how often an effect still waiting is attached and, when
-	// orphaned, handed to RecoverExecution: by the Watcher of a live drive
-	// and by the Reconciler of a takeover. Zero selects the defaults.
-	OrphanProbe time.Duration
+	TargetResolver        loop.TargetResolver
+	Sink                  loop.EventSink
 }
 
-// Execution is the execution side assembled over one Session kernel: the
-// settlement subscription, the drive chain (Loops, Driver, Recovery,
-// Responders), the preset identities and the effect port. It is what
-// advances an agent from Session durable state; which process hosts it
-// next to which kernel is a deployment choice.
+// Execution assembles finite protocol interpreters. Constructing it starts no
+// goroutines and opening a Writer requires no execution-side Open/Close pair.
+// Durable work discovery and ephemeral Activations are agent-layer concerns.
 type Execution struct {
-	// Executor is the effect port the drive chain dispatches through.
-	Executor effect.ExecutionPort
-	// Presets is the catalog of preset identities the Loops resolve and
-	// the Turn protocol starts Turns under.
-	Presets preset.Catalog
-	// Watcher is the settlement subscription every Loop and Reconciler of
-	// this Execution waits on; a host component that waits for an effect of
-	// its own (compaction's summary) shares it instead of subscribing again.
-	Watcher *effect.Watcher
-	// Compactions accepts and recovers Session context-maintenance operations.
+	Executor    effect.ExecutionPort
+	Presets     preset.Catalog
 	Compactions *driver.Compactions
-	// Driver drives an active Turn; Recovery runs the takeover disposition
-	// when a Session opens and ends its listeners when it closes. Both sit
-	// on the Loops and the Watcher NewExecution built.
-	Driver   *driver.Driver
-	Recovery *driver.Recovery
-	// Progress is the transient stream of the running effects: the drive
-	// chain's provisional observations and the failures this side reports.
-	Progress *observe.Progresses
+	Driver      *driver.Driver
 }
 
-// NewExecution assembles the execution side over the Session-side sources
-// of the same process. The kernel and the execution side assemble
-// independently (sessionkernel.New and NewExecution); pairing them is the
-// composition root's act.
-func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error) { //nolint:gocritic // hugeParam: ExecutionConfig is a by-value options struct read once
-	if cfg.Executor == nil {
-		return nil, errors.New("runtime: an Executor port is required")
+func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error) {
+	if cfg.Executor == nil || cfg.PromptBuilders == nil {
+		return nil, errors.New("runtime: executor and prompt builder catalog are required")
 	}
-	if cfg.PromptBuilders == nil {
-		return nil, errors.New("runtime: a prompt builder catalog is required (ExecutionConfig.PromptBuilders); the runtime ships no default")
+	if src.Runs == nil || src.Projections == nil || src.Content == nil {
+		return nil, errors.New("runtime: runs, projections and content are required")
 	}
-	if cfg.MaxCompactionAttempts < 0 {
-		return nil, errors.New("runtime: negative compaction attempt limit")
+	if cfg.MaxRedispatches < 0 || cfg.MaxCompactionAttempts < 0 {
+		return nil, errors.New("runtime: negative recovery attempt limit")
 	}
 	if cfg.ContextPolicy != nil && src.Frozen == nil {
-		return nil, errors.New("runtime: context policy requires ExecutionSources.Frozen")
+		return nil, errors.New("runtime: context policy requires a frozen store")
 	}
 	switch cfg.MissingEffects {
 	case reconcile.DisposeMissing:
 	case reconcile.RedispatchMissing:
 		if cfg.Redispatches == nil {
-			return nil, errors.New("runtime: MissingEffects=redispatch requires a dispatch ledger (ExecutionConfig.Redispatches)")
+			return nil, errors.New("runtime: redispatch policy requires a dispatch ledger")
 		}
 	default:
-		return nil, errors.New("runtime: unknown MissingEffects policy")
-	}
-	if cfg.MaxRedispatches < 0 {
-		return nil, errors.New("runtime: MaxRedispatches must not be negative")
-	}
-	if cfg.RedispatchRetry < 0 {
-		return nil, errors.New("runtime: RedispatchRetry must not be negative")
+		return nil, errors.New("runtime: unknown missing effect policy")
 	}
 	presets := cfg.Presets
 	if presets == nil {
 		presets = preset.NewMemory()
 	}
-	x := &Execution{Executor: cfg.Executor, Presets: presets, Progress: observe.NewProgresses()}
-	x.Watcher = &effect.Watcher{Port: cfg.Executor, Probe: cfg.OrphanProbe}
-	// Failures the components report outside any caller's call reach the
-	// caller's callback and the Session's transient stream.
-	fail := cfg.Fail
-	if fail == nil {
-		fail = func(session.SessionID, error) {}
-	}
-	report := func(sid session.SessionID, err error) {
-		fail(sid, err)
-		x.Progress.Failed(sid, err)
-	}
-	x.Compactions = &driver.Compactions{Executor: cfg.Executor, Watcher: x.Watcher, Requests: src.Runs,
-		Frozen: src.Frozen, Content: src.Content, Policy: cfg.ContextPolicy, MaxAttempts: cfg.MaxCompactionAttempts, Fail: report}
-	// A nil resolver gives every effect no target.
-	loops := &driver.Loops{Executor: cfg.Executor, Presets: presets, PromptBuilders: cfg.PromptBuilders, Targets: cfg.TargetResolver,
-		Sources: prompt.Sources{Projections: src.Projections, Content: src.Content}, Watcher: x.Watcher, Planner: cfg.Planner, Candidates: x.Compactions}
-	x.Recovery = &driver.Recovery{Runs: src.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: report, Compactions: x.Compactions,
-		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, MaxRedispatches: cfg.MaxRedispatches,
-		RedispatchRetry: cfg.RedispatchRetry, OrphanProbe: cfg.OrphanProbe, Sink: progressSink{x.Progress}}
-	var responders *driver.Responders
-	if len(cfg.Responders) > 0 {
-		responders = &driver.Responders{Runs: src.Runs, Tools: cfg.Responders, Fail: report}
-	}
-	x.Driver = &driver.Driver{Runs: src.Runs, Loops: loops, Recovery: x.Recovery, Compactions: x.Compactions, Responders: responders, Sink: progressSink{x.Progress}}
-	x.Recovery.Driver = x.Driver
-	return x, nil
-}
-
-// Open settles accepted compaction work before recovering ordinary Runs for
-// a Session whose Writer a host just acquired. Callers must await success
-// before driving this Writer. The caller context bounds opening; summary
-// execution or settlement errors are returned, not deferred to Fail.
-// The returned count is the number of Run recovery commands issued.
-func (x *Execution) Open(ctx context.Context, w writer.Writer) (int, error) {
-	return x.Recovery.Open(ctx, w)
-}
-
-// ResumeWaiting answers, with this Execution's Responders, the waits a
-// previous owner left open: the Responder continues from its durable state.
-func (x *Execution) ResumeWaiting(ctx context.Context, w writer.Writer) {
-	x.Driver.ResumeWaiting(ctx, w)
-}
-
-// Stop ends the recovery listeners of one Session: its Writer's release (or
-// takeover by another process) follows.
-func (x *Execution) Stop(sid session.SessionID) {
-	x.Recovery.Stop(sid)
-}
-
-// Close ends the execution side in the order its drives require: the
-// recovery listeners, then the settlement subscription. Every Session it
-// drove was released (Owner.Close) before this.
-func (x *Execution) Close() {
-	x.Recovery.Close()
-	x.Watcher.Close()
-}
-
-// progressSink is the drive's loop.EventSink: provisional observations
-// become transient Progress events; committed observations are already on
-// the committed stream from the Writer, so they are dropped here.
-type progressSink struct{ progress *observe.Progresses }
-
-func (s progressSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic // hugeParam: EventSink contract takes the Event by value
-	if e.Durability != loop.EventProvisional {
-		return nil
-	}
-	s.progress.Publish(session.SessionID(e.Session), observe.Progress{RunID: e.RunID, Effect: e.Effect, Generation: e.Generation,
-		Sequence: e.Sequence, Kind: string(e.Kind), Payload: e.Payload})
-	return nil
+	maintenance := &driver.Compactions{Executor: cfg.Executor, Requests: src.Runs,
+		Frozen: src.Frozen, Content: src.Content, Policy: cfg.ContextPolicy, MaxAttempts: cfg.MaxCompactionAttempts}
+	loops := &driver.Loops{Executor: cfg.Executor, Presets: presets, PromptBuilders: cfg.PromptBuilders,
+		Targets: cfg.TargetResolver, Sources: prompt.Sources{Projections: src.Projections, Content: src.Content},
+		Planner: cfg.Planner, Candidates: maintenance}
+	return &Execution{Executor: cfg.Executor, Presets: presets, Compactions: maintenance,
+		Driver: &driver.Driver{Runs: src.Runs, Loops: loops, Compactions: maintenance, MissingEffects: cfg.MissingEffects,
+			Redispatches: cfg.Redispatches, MaxRedispatches: cfg.MaxRedispatches, Sink: cfg.Sink}}, nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
 )
 
 func TestPlanCompaction(t *testing.T) {
@@ -130,7 +131,7 @@ func compactionWriter(t *testing.T) writer.Writer {
 		t.Fatal(err)
 	}
 	bindings, artifacts := artifacttest.Stores(t)
-	w, err := writer.OpenWriter(ctx, store, reg, writer.Admission{Bindings: bindings, Ledger: artifacts}, "s", session.OpenOptions{})
+	w, err := writertest.Open(t, ctx, &writer.Factory{Store: store, Registry: reg, Admission: writer.Admission{Bindings: bindings, Ledger: artifacts}}, "s", session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

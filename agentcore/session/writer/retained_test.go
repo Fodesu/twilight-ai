@@ -71,7 +71,7 @@ func retainedOnReopen(t *testing.T, commits int) uint64 {
 		t.Fatal(err)
 	}
 	cache := session.NewMemoryProjectionCache()
-	w, err := openWriter(ctx, store, reg, Admission{}, "s", session.OpenOptions{}, WritersConfig{})
+	w, err := acquireTestWriterConfig(ctx, store, reg, Admission{}, "s", session.OpenOptions{}, WritersConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func retainedOnReopen(t *testing.T, commits int) uint64 {
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	primed, err := openWriter(ctx, store, reg, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{Cache: cache})
+	primed, err := acquireTestWriterConfig(ctx, store, reg, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{Cache: cache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func retainedOnReopen(t *testing.T, commits int) uint64 {
 		runtime.GC()
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
-		got, err := openWriter(ctx, store, reg, Admission{}, "s", session.OpenOptions{Takeover: true}, cfg)
+		got, err := acquireTestWriterConfig(ctx, store, reg, Admission{}, "s", session.OpenOptions{Takeover: true}, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}

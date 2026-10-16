@@ -22,9 +22,10 @@ import (
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/sessionstore/sessionstoretest"
 	"github.com/felinics/twilight/agentcore/run/store"
-	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
+	"github.com/felinics/twilight/agentcore/sessionkernel"
 	"github.com/felinics/twilight/agentcore/turn"
 	"testing"
 	"time"
@@ -53,7 +54,7 @@ type harness struct {
 	retention artifact.RetentionLedger
 	now       int64
 	seq       int
-	writers   writer.Writers
+	w         writer.Writer
 	rt        *sessionstore.SessionRunStore
 	c         *sessionkernel.Coordinator
 }
@@ -78,7 +79,12 @@ func newHarness(t testing.TB, f Fixture) *harness {
 func (h *harness) open() {
 	h.t.Helper()
 	clock := func() time.Time { return time.UnixMilli(h.now) }
-	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.retention}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
+	factory := &writer.Factory{Store: h.store, Registry: h.registry, Admission: writer.Admission{Bindings: h.bindings, Ledger: h.retention}}
+	var err error
+	h.w, err = writertest.Open(h.t, h.ctx, factory, sid, session.OpenOptions{Takeover: true})
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	runs, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: h.registry, Store: h.store, Frozen: h.frozen, Now: clock})
 	if err != nil {
 		h.t.Fatal(err)
@@ -105,11 +111,7 @@ func (h *harness) ref(turnID turn.TurnID) turn.TurnRef {
 
 func (h *harness) writer() writer.Writer {
 	h.t.Helper()
-	w, err := h.writers.Writer(h.ctx, sid)
-	if err != nil {
-		h.fatal(err)
-	}
-	return w
+	return h.w
 }
 
 // commit writes one typed group through the Writer and returns the outcome.

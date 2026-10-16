@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/testutil/local"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/store"
+	"github.com/felinics/twilight/agentcore/testutil/local"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -52,10 +52,9 @@ func (c *commitLog) settlementsFor(callID CallID) int {
 
 // Two tool calls run in parallel. The Session is taken over while both are
 // executing; the first worker to finish has its settlement fenced with
-// ErrOwnershipLost. The Loop must then cancel every other
-// worker's ctx, commit no further settlement, and return that error without
-// waiting for the blocked worker to be released on its own.
-func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
+// ErrOwnershipLost. The Loop must detach, commit no further settlement, and
+// leave accepted executions alive for the successor instead of cancelling them.
+func TestOwnershipLossDetachesAndStopsSettling(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
 	oldWriter := stack.writer(t) // the superseded owner's capability
@@ -64,7 +63,8 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	started := make(chan CallID, 2)
 	takenOver := make(chan struct{})
-	block := make(chan struct{}) // never closed: B may only leave through ctx
+	block := make(chan struct{})
+	defer close(block) // the external execution is released independently
 	var bSawCancel atomic.Bool
 	var order atomic.Int32
 	var slowCall atomic.Value // CallID of the worker that arrived second
@@ -127,8 +127,8 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("loop did not return after ownership loss; it waited for the blocked worker")
 	}
-	if !bSawCancel.Load() {
-		t.Fatal("the blocked worker's ctx was not cancelled")
+	if bSawCancel.Load() {
+		t.Fatal("losing Session ownership cancelled an independently owned execution")
 	}
 	if n := oldRuntime.settlementsFor(slowID); n != 0 {
 		t.Fatalf("fenced loop committed %d settlement(s) for the cancelled worker", n)

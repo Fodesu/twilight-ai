@@ -33,16 +33,15 @@ func TestCompactionUnknownDispatchKeepsAcceptedIdentity(t *testing.T) {
 	f.history()
 	f.accept(old, "unknown-dispatch")
 	accepted := f.state().Operations["unknown-dispatch"]
-	if err := old.Compactions.Recover(f.ctx, f.w); !errors.Is(err, effect.ErrDispatchUnknown) {
-		t.Fatalf("Recover=%v", err)
+	if result, err := old.Compactions.Advance(f.ctx, f.w); !errors.Is(err, effect.ErrDispatchUnknown) || !result.Pending || result.Key != accepted.Request.Key(compactSession) {
+		t.Fatalf("Advance=%+v, %v", result, err)
 	}
 	if op := f.state().Operations["unknown-dispatch"]; op.Status != compaction.Pending || op.Acknowledged {
 		t.Fatalf("uncertain dispatch rejected: %+v", op)
 	}
-	old.Close()
 	f.reopenWriter()
 	fresh := f.execution(f.worker, nil, false)
-	f.openAndWait(fresh)
+	f.settleMaintenance(fresh)
 	op := f.state().Operations["unknown-dispatch"]
 	if op.Status != compaction.Applied || !op.Acknowledged || !reflect.DeepEqual(op.Request, accepted.Request) || calls.Load() != 1 {
 		t.Fatalf("recovered=%+v calls=%d", op, calls.Load())
@@ -62,7 +61,7 @@ func TestCompactionObsoleteBeforeDispatchClosesExecutionKey(t *testing.T) {
 	accepted := f.state().Operations["obsolete"]
 	f.startTurn("new-context", true)
 	before := f.context().Entries
-	if err := x.Compactions.Recover(f.ctx, f.w); err != nil {
+	if _, err := x.Compactions.Advance(f.ctx, f.w); err != nil {
 		t.Fatal(err)
 	}
 	op := f.state().Operations["obsolete"]
@@ -89,14 +88,13 @@ func TestCompactionFailureAttemptsAreBoundedAcrossOwners(t *testing.T) {
 	f.history()
 	current := f.startTurn("bounded", false)
 	for i := 0; i < driver.DefaultCompactionAttempts; i++ {
-		if _, err := x.Driver.Drive(f.ctx, f.w, current.Ref.TurnID); !errors.Is(err, driver.ErrSummaryFailed) {
+		if _, err := f.drive(x, f.w, current.Ref.TurnID); !errors.Is(err, driver.ErrSummaryFailed) {
 			t.Fatalf("attempt %d: %v", i, err)
 		}
 	}
-	x.Close()
 	f.reopenWriter()
 	replacement := f.execution(f.worker, &compactPolicy{limit: 80}, true)
-	if _, err := replacement.Driver.Drive(f.ctx, f.w, current.Ref.TurnID); !errors.Is(err, driver.ErrCompactionNoProgress) {
+	if _, err := f.drive(replacement, f.w, current.Ref.TurnID); !errors.Is(err, driver.ErrCompactionNoProgress) {
 		t.Fatalf("attempt limit after replacement: %v", err)
 	}
 	if calls.Load() != int32(driver.DefaultCompactionAttempts) || len(f.state().Operations) != driver.DefaultCompactionAttempts {

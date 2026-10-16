@@ -5,19 +5,16 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/store"
+	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/sdk"
 )
 
-// frozenModel stands in for the backend boundary: the effect protocol
-// carries only frozen model results.
 func frozenModel(r sdk.ModelResult) model.ModelResult {
 	frozen, err := sdkconv.FreezeModelResult(r)
 	if err != nil {
@@ -26,28 +23,27 @@ func frozenModel(r sdk.ModelResult) model.ModelResult {
 	return frozen
 }
 
-// fakePort is an execution store whose Attach answers a fixed state and
-// whose GetOutcome is scripted per test.
+// fakePort records all work. Outcomes are read only by explicit host calls,
+// never by Plan, a subscription, or a background recovery task.
 type fakePort struct {
 	mu       sync.Mutex
 	state    effect.AttachmentState
 	asked    []effect.AssignmentKey
 	aborted  []effect.AssignmentKey
 	outcome  func(context.Context, effect.AssignmentKey) (effect.Outcome, error)
+	reads    int
 	attachEr error
-	// accepted, when set, is what Abort finds instead of a missing key: an
-	// acceptance that reached the ledger first.
 	accepted effect.AttachmentState
 }
 
-func (p *fakePort) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
+func (*fakePort) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
 	return nil, nil
 }
-func (p *fakePort) Dispatch(context.Context, effect.Assignment) error { return nil }
+func (*fakePort) Dispatch(context.Context, effect.Assignment) error { return nil }
 func (p *fakePort) Attach(_ context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.asked = append(p.asked, key)
-	p.mu.Unlock()
 	if p.attachEr != nil {
 		return effect.Attachment{}, p.attachEr
 	}
@@ -65,35 +61,29 @@ func (p *fakePort) Abort(_ context.Context, key effect.AssignmentKey) (effect.At
 	}
 	return effect.Attachment{State: p.state}, nil
 }
-func (p *fakePort) GetStatus(context.Context, effect.AssignmentKey) (effect.ExecutionStatus, error) {
+func (*fakePort) GetStatus(context.Context, effect.AssignmentKey) (effect.ExecutionStatus, error) {
 	return effect.ExecutionRunning, nil
 }
 func (p *fakePort) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
-	if p.outcome == nil {
+	p.mu.Lock()
+	p.reads++
+	outcome := p.outcome
+	p.mu.Unlock()
+	if outcome == nil {
 		return effect.Outcome{}, effect.ErrOutcomeNotReady
 	}
-	return p.outcome(ctx, key)
+	return outcome(ctx, key)
 }
-func (p *fakePort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
-
-// watching is the Watcher a test Reconciler waits with: a fast poll, since
-// fakePort offers no settlement stream, and closed with the test.
-func watching(t *testing.T, port effect.ExecutionPort) *effect.Watcher {
-	t.Helper()
-	w := &effect.Watcher{Port: port, Poll: 5 * time.Millisecond, Reconnect: 5 * time.Millisecond}
-	t.Cleanup(w.Close)
-	return w
+func (*fakePort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
+func (*fakePort) Settlements(context.Context, string, uint64, func(effect.Settlement) bool) error {
+	panic("a recovery pass must not subscribe or leave background work")
 }
 
 func executingModel(eff run.EffectID) *store.Snapshot {
-	return &store.Snapshot{State: run.MachineState{
-		RunID: "r1", Status: run.RunActive,
-		Current: run.ModelStep{RefValue: run.StepRef{RunID: "r1", ID: "s1"}, Model: "m", RequestDigest: "sha256:req", Status: run.ModelExecuting, Effect: eff},
-	}}
+	return &store.Snapshot{State: run.MachineState{RunID: "r1", Status: run.RunActive,
+		Current: run.ModelStep{RefValue: run.StepRef{RunID: "r1", ID: "s1"}, Model: "m", RequestDigest: "sha256:req", Status: run.ModelExecuting, Effect: eff}}}
 }
 
-// Each executor observation maps to exactly one verdict; only missing and
-// aborted produce a recovery command (missing is closed to aborted first), and only an unknown state is an error.
 func TestPlanVerdicts(t *testing.T) {
 	for _, tc := range []struct {
 		state    effect.AttachmentState
@@ -108,217 +98,133 @@ func TestPlanVerdicts(t *testing.T) {
 		{effect.AttachmentAborted, Dispose, effect.AttachmentAborted, true},
 	} {
 		port := &fakePort{state: tc.state}
-		r := &Reconciler{Executions: port}
-		decisions, err := r.Plan(context.Background(), "s", executingModel("c1"))
+		decisions, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1"))
 		if err != nil || len(decisions) != 1 {
-			t.Fatalf("%s: plan = %+v %v", tc.state, decisions, err)
+			t.Fatalf("%s: plan=%+v %v", tc.state, decisions, err)
 		}
 		d := decisions[0]
-		if d.Verdict != tc.want || (d.Recovery != nil) != tc.disposes || d.Observed != tc.observed {
-			t.Fatalf("%s: decision = %+v, want %s disposes=%v", tc.state, d, tc.want, tc.disposes)
+		if d.Verdict != tc.want || (d.Recovery != nil) != tc.disposes || d.Observed != tc.observed || d.Retry {
+			t.Fatalf("%s: decision=%+v want=%s disposes=%v", tc.state, d, tc.want, tc.disposes)
 		}
-		if len(port.asked) != 1 || port.asked[0] != (effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}) {
-			t.Fatalf("%s: asked = %+v", tc.state, port.asked)
+		if len(port.asked) != 1 || port.asked[0] != (effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}) || port.reads != 0 {
+			t.Fatalf("%s: asked=%+v reads=%d", tc.state, port.asked, port.reads)
 		}
 	}
 	if _, err := (&Reconciler{Executions: &fakePort{state: "weird"}}).Plan(context.Background(), "s", executingModel("c1")); err == nil {
 		t.Fatal("unknown attachment state accepted")
 	}
-	// No executor to ask proves nothing: an error, not a disposal. Only an
-	// explicit Abandon disposes without asking, and only for a scope with no
-	// executor at all: beside a port it is a configuration error, so the
-	// Abort cannot be skipped while an executor exists.
 	if _, err := (&Reconciler{}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, ErrNoExecutionPort) {
-		t.Fatalf("plan without executor = %v, want ErrNoExecutionPort", err)
+		t.Fatalf("no executor: %v", err)
 	}
 	port := &fakePort{state: effect.AttachmentActive}
 	if _, err := (&Reconciler{Abandon: true, Executions: port}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, ErrAbandonWithExecutor) || len(port.asked) != 0 || len(port.aborted) != 0 {
-		t.Fatalf("plan with Abandon beside an executor = %v asked=%d aborted=%d, want ErrAbandonWithExecutor and no calls", err, len(port.asked), len(port.aborted))
-	}
-	// Deliver without a Lifetime would keep targets with nothing reading
-	// their Outcome and nothing saying so: a configuration error, refused
-	// before the executor is asked.
-	port = &fakePort{state: effect.AttachmentActive}
-	if _, err := (&Reconciler{Executions: port, Deliver: func(effect.Outcome) {}}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, ErrDeliverWithoutLifetime) || len(port.asked) != 0 {
-		t.Fatalf("plan with Deliver and no Lifetime = %v asked=%d, want ErrDeliverWithoutLifetime and no calls", err, len(port.asked))
+		t.Fatalf("Abandon beside executor: %v asked=%d aborted=%d", err, len(port.asked), len(port.aborted))
 	}
 	decisions, err := (&Reconciler{Abandon: true}).Plan(context.Background(), "s", executingModel("c1"))
 	if err != nil || len(decisions) != 1 || decisions[0].Verdict != Dispose || decisions[0].Recovery == nil {
-		t.Fatalf("plan with Abandon = %+v %v", decisions, err)
+		t.Fatalf("Abandon: %+v %v", decisions, err)
 	}
 	if _, ok := decisions[0].Recovery.Command.(run.RecoverModelExecution); !ok {
-		t.Fatalf("model disposal = %T", decisions[0].Recovery.Command)
+		t.Fatalf("model disposal=%T", decisions[0].Recovery.Command)
 	}
-	// A target whose start fact recorded no effect cannot be asked about.
 	if _, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("")); !errors.Is(err, ErrTargetWithoutEffect) {
-		t.Fatalf("plan of a target without effect = %v, want ErrTargetWithoutEffect", err)
+		t.Fatalf("target without effect: %v", err)
 	}
 }
 
-// AssignmentFromTarget carries the digest-level description of the target
-// and never an inline request body.
 func TestAssignmentFromTarget(t *testing.T) {
 	targets := plan.RecoveryTargets(&executingModel("c1").State)
 	if len(targets) != 1 {
-		t.Fatalf("targets = %d", len(targets))
+		t.Fatalf("targets=%d", len(targets))
 	}
 	a := AssignmentFromTarget("s", targets[0])
 	if model, ok := a.Model(); !ok || model.Request != nil || model.RequestDigest != "sha256:req" {
-		t.Fatalf("assignment = %+v", a)
+		t.Fatalf("assignment=%+v", a)
 	}
 	if a.Key() != (effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}) {
-		t.Fatalf("key = %+v", a.Key())
+		t.Fatalf("key=%+v", a.Key())
 	}
 }
 
-// A kept target's Outcome read is retried by the Watcher on a transport
-// error and never fabricated; the real one is delivered when it arrives.
+// A host explicitly retries a failed read after another finite pass. Plan
+// never fabricates an Outcome, owns a read retry, or retains a registration.
 func TestKeptOutcomeReadRetries(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	failed := make(chan struct{})
-	ready := make(chan struct{})
-	var once sync.Once
-	result := frozenModel(sdk.ModelResult{Text: "eventual"})
-	port := &fakePort{state: effect.AttachmentActive, outcome: func(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
-		select {
-		case <-ready:
-			return effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: result}}, nil
-		default:
-			once.Do(func() { close(failed) })
-			return effect.Outcome{}, errors.New("temporary transport error")
-		}
-	}}
-	delivered := make(chan effect.Outcome, 1)
-	r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: watching(t, port), Deliver: func(out effect.Outcome) { delivered <- out }}
-	if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
-		t.Fatal(err)
-	}
-	<-failed
-	select {
-	case out := <-delivered:
-		t.Fatalf("read failure fabricated outcome: %+v", out)
-	default:
-	}
-	close(ready)
-	select {
-	case out := <-delivered:
-		if r, ok := out.ModelResult(); !ok || r.Text != "eventual" {
-			t.Fatalf("delivered = %+v", out)
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-}
-
-// A kept target's registration ends with the reconciler's Lifetime: an
-// Outcome that becomes readable afterwards is not delivered.
-func TestLifetimeStopsOutcomeWatcher(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	lifetime, stop := context.WithCancel(ctx)
-	var mu sync.Mutex
+	ctx := context.Background()
 	ready := false
-	reads := make(chan struct{}, 64)
-	port := &fakePort{state: effect.AttachmentOrphaned, outcome: func(context.Context, effect.AssignmentKey) (effect.Outcome, error) {
-		select {
-		case reads <- struct{}{}:
-		default:
-		}
-		mu.Lock()
-		defer mu.Unlock()
+	boom := errors.New("temporary transport error")
+	result := frozenModel(sdk.ModelResult{Text: "eventual"})
+	port := &fakePort{state: effect.AttachmentActive, outcome: func(_ context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 		if !ready {
-			return effect.Outcome{}, effect.ErrOutcomeNotReady
+			return effect.Outcome{}, boom
 		}
-		return effect.Outcome{Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "late"})}}, nil
+		return effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: result}}, nil
 	}}
-	delivered := make(chan effect.Outcome, 1)
-	r := &Reconciler{Executions: port, Lifetime: lifetime, Watcher: watching(t, port), Deliver: func(out effect.Outcome) { delivered <- out }}
-	decisions, err := r.Plan(ctx, "s", executingModel("c1"))
-	if err != nil || decisions[0].Verdict != Defer {
-		t.Fatalf("plan = %+v %v", decisions, err)
-	}
-	<-reads
-	stop()
-	time.Sleep(20 * time.Millisecond)
-	mu.Lock()
-	ready = true
-	mu.Unlock()
-	select {
-	case out := <-delivered:
-		t.Fatalf("delivered %+v after the Lifetime ended", out)
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-// A read the executor answers definitively (no record for the key, no
-// Outcome ever) drops the registration and reports through Fail after one
-// read; a read that fails otherwise is retried by the Watcher and neither
-// fabricates an Outcome nor reports.
-func TestOutcomeReadErrorTaxonomy(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	cases := []struct {
-		name       string
-		err        error
-		definitive bool
-	}{
-		{"execution not found is definitive", effect.ErrExecutionNotFound, true},
-		{"outcome unavailable is definitive", effect.ErrOutcomeUnavailable, true},
-		{"transport failures are retried", errors.New("boom"), false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var mu sync.Mutex
-			reads := 0
-			port := &fakePort{state: effect.AttachmentActive, outcome: func(context.Context, effect.AssignmentKey) (effect.Outcome, error) {
-				mu.Lock()
-				reads++
-				mu.Unlock()
-				return effect.Outcome{}, tc.err
-			}}
-			failed := make(chan error, 1)
-			r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: watching(t, port),
-				Deliver: func(out effect.Outcome) { t.Errorf("delivered %+v", out) },
-				Fail:    func(_ effect.AssignmentKey, err error) { failed <- err }}
-			if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
-				t.Fatal(err)
+	key := effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}
+	for pass := 0; pass < 2; pass++ {
+		r := &Reconciler{Executions: port}
+		decisions, err := r.Plan(ctx, "s", executingModel("c1"))
+		if err != nil || len(decisions) != 1 || decisions[0].Verdict != Keep || port.reads != pass {
+			t.Fatalf("pass=%d decisions=%+v err=%v reads=%d", pass, decisions, err, port.reads)
+		}
+		out, err := port.GetOutcome(ctx, key)
+		if pass == 0 {
+			if !errors.Is(err, boom) || out.Result != nil {
+				t.Fatalf("failed read fabricated Outcome: %+v %v", out, err)
 			}
-			if !tc.definitive {
-				time.Sleep(50 * time.Millisecond)
-				mu.Lock()
-				n := reads
-				mu.Unlock()
-				if n < 2 {
-					t.Fatalf("transient failure read %d times, want retries", n)
-				}
-				select {
-				case err := <-failed:
-					t.Fatalf("transient failure reported %v", err)
-				default:
-				}
-				return
-			}
-			select {
-			case err := <-failed:
-				if !errors.Is(err, tc.err) {
-					t.Fatalf("fail = %v, want %v", err, tc.err)
-				}
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			time.Sleep(30 * time.Millisecond)
-			mu.Lock()
-			n := reads
-			mu.Unlock()
-			if n != 1 {
-				t.Fatalf("definitive error read %d times, want 1", n)
-			}
-		})
+			ready = true
+		} else if m, ok := out.ModelResult(); err != nil || !ok || m.Text != "eventual" {
+			t.Fatalf("explicit read=%+v %v", out, err)
+		}
 	}
 }
 
-// recoveringPort is a fakePort that can also take records back.
+func TestRecoveryPassCanDisconnectAndResume(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	port := &recoveringPort{fakePort: &fakePort{state: effect.AttachmentOrphaned}}
+	first := &Reconciler{Executions: port}
+	if ds, err := first.Plan(ctx, "s", executingModel("c1")); err != nil || len(ds) != 1 || ds[0].Verdict != Defer {
+		t.Fatalf("first pass=%+v %v", ds, err)
+	}
+	cancel()
+	if _, err := first.Plan(ctx, "s", executingModel("c1")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled pass=%v", err)
+	}
+	if len(port.asked) != 1 || len(port.recovered) != 1 || port.reads != 0 {
+		t.Fatalf("disconnected pass retained work: asks=%d recoveries=%d reads=%d", len(port.asked), len(port.recovered), port.reads)
+	}
+	// A new activation has no lifetime, watcher, or registration to rebuild.
+	port.state = effect.AttachmentTerminal
+	port.outcome = func(_ context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
+		return effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "late"})}}, nil
+	}
+	second := &Reconciler{Executions: port}
+	if ds, err := second.Plan(context.Background(), "s", executingModel("c1")); err != nil || len(ds) != 1 || ds[0].Verdict != Keep || port.reads != 0 {
+		t.Fatalf("resumed pass=%+v %v reads=%d", ds, err, port.reads)
+	}
+	out, err := port.GetOutcome(context.Background(), effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"})
+	if m, ok := out.ModelResult(); err != nil || !ok || m.Text != "late" || port.reads != 1 {
+		t.Fatalf("resumed explicit read=%+v %v reads=%d", out, err, port.reads)
+	}
+}
+
+// Read error taxonomy belongs to the effect reader/watcher, not reconciliation.
+// Even a definitive read failure cannot silently become a recovery disposition.
+func TestOutcomeReadErrorsDoNotBecomePlanDisposal(t *testing.T) {
+	for _, readErr := range []error{effect.ErrExecutionNotFound, effect.ErrOutcomeUnavailable, errors.New("transport failure")} {
+		port := &fakePort{state: effect.AttachmentActive, outcome: func(context.Context, effect.AssignmentKey) (effect.Outcome, error) { return effect.Outcome{}, readErr }}
+		r := &Reconciler{Executions: port}
+		for pass := 0; pass < 2; pass++ {
+			ds, err := r.Plan(context.Background(), "s", executingModel("c1"))
+			if err != nil || len(ds) != 1 || ds[0].Verdict != Keep || ds[0].Recovery != nil || port.reads != pass || len(port.aborted) != 0 {
+				t.Fatalf("readErr=%v pass=%d decisions=%+v err=%v reads=%d aborts=%d", readErr, pass, ds, err, port.reads, len(port.aborted))
+			}
+			if _, err := port.GetOutcome(context.Background(), effect.AssignmentKey{}); !errors.Is(err, readErr) {
+				t.Fatalf("explicit read=%v want=%v", err, readErr)
+			}
+		}
+	}
+}
+
 type recoveringPort struct {
 	*fakePort
 	recovered []effect.AssignmentKey
@@ -331,124 +237,81 @@ func (p *recoveringPort) RecoverExecution(_ context.Context, key effect.Assignme
 	return nil
 }
 
-// An orphaned target is deferred, and a port that can recover is asked to
-// take the record back once, at Plan time; a port that cannot is only
-// observed. Keep and Dispose never ask.
 func TestPlanAsksRecovererForOrphans(t *testing.T) {
 	for _, tc := range []struct {
 		state         effect.AttachmentState
 		wantRecovered int
 	}{
-		{effect.AttachmentOrphaned, 1},
-		{effect.AttachmentActive, 0},
-		{effect.AttachmentMissing, 0},
+		{effect.AttachmentOrphaned, 1}, {effect.AttachmentActive, 0}, {effect.AttachmentMissing, 0},
 	} {
 		port := &recoveringPort{fakePort: &fakePort{state: tc.state}}
 		if _, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1")); err != nil {
-			t.Fatalf("%s: plan: %v", tc.state, err)
+			t.Fatalf("%s: %v", tc.state, err)
 		}
-		if len(port.recovered) != tc.wantRecovered {
-			t.Fatalf("%s: recovered = %v, want %d", tc.state, port.recovered, tc.wantRecovered)
+		if len(port.recovered) != tc.wantRecovered || port.reads != 0 {
+			t.Fatalf("%s: recovered=%v reads=%d", tc.state, port.recovered, port.reads)
 		}
 	}
-	plain := &fakePort{state: effect.AttachmentOrphaned}
-	if _, err := (&Reconciler{Executions: plain}).Plan(context.Background(), "s", executingModel("c1")); err != nil {
-		t.Fatalf("plain port: %v", err)
-	}
-}
-
-// A kept target still waiting is re-attached at OrphanProbe intervals: a
-// record that has become orphaned is recovered once per episode, and the
-// Outcome the recovery produces is delivered.
-func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var mu sync.Mutex
-	ready := false
-	port := &recoveringPort{fakePort: &fakePort{state: effect.AttachmentActive}}
-	port.outcome = func(context.Context, effect.AssignmentKey) (effect.Outcome, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if !ready {
-			return effect.Outcome{}, effect.ErrOutcomeNotReady
-		}
-		return effect.Outcome{Result: effect.ModelSucceeded{Result: frozenModel(sdk.ModelResult{Text: "recovered"})}}, nil
-	}
-	delivered := make(chan effect.Outcome, 1)
-	r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: watching(t, port), OrphanProbe: 10 * time.Millisecond, Deliver: func(out effect.Outcome) { delivered <- out }}
-	if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
+	if _, err := (&Reconciler{Executions: &fakePort{state: effect.AttachmentOrphaned}}).Plan(context.Background(), "s", executingModel("c1")); err != nil {
 		t.Fatal(err)
 	}
-	// The Worker dies: the record reads as orphaned from now on.
-	port.mu.Lock()
-	port.state = effect.AttachmentOrphaned
-	port.mu.Unlock()
-	deadline := time.Now().Add(8 * time.Second)
-	for {
-		port.mu.Lock()
-		n := len(port.recovered)
-		port.mu.Unlock()
-		if n == 1 {
-			break
+}
+
+// Orphan detection is a later explicit pass, not a periodic probe installed
+// by the earlier Keep. A successful recovery is observed on another pass.
+func TestRepeatedPlanRecoversNewOrphan(t *testing.T) {
+	port := &recoveringPort{fakePort: &fakePort{state: effect.AttachmentActive}}
+	r := &Reconciler{Executions: port}
+	for pass, state := range []effect.AttachmentState{effect.AttachmentActive, effect.AttachmentOrphaned, effect.AttachmentActive, effect.AttachmentTerminal} {
+		port.state = state
+		ds, err := r.Plan(context.Background(), "s", executingModel("c1"))
+		want := Keep
+		if state == effect.AttachmentOrphaned {
+			want = Defer
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("recovery requests = %d, want 1", n)
+		if err != nil || len(ds) != 1 || ds[0].Verdict != want || port.reads != 0 {
+			t.Fatalf("pass=%d decisions=%+v err=%v reads=%d", pass, ds, err, port.reads)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	// Recovery took the record back and finished it.
-	mu.Lock()
-	ready = true
-	mu.Unlock()
-	select {
-	case out := <-delivered:
-		if m, ok := out.Result.(effect.ModelSucceeded); !ok || m.Result.Text != "recovered" {
-			t.Fatalf("delivered %+v", out)
-		}
-	case <-ctx.Done():
-		t.Fatal("outcome was not delivered after recovery")
-	}
-	port.mu.Lock()
-	n := len(port.recovered)
-	port.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("recovery requests = %d, want exactly 1", n)
+	if len(port.asked) != 4 || len(port.recovered) != 1 {
+		t.Fatalf("asks=%d recoveries=%d", len(port.asked), len(port.recovered))
 	}
 }
 
-// a missing effect is closed on the executor before the Run
-// disposes it, so a Dispatch that arrives later starts nothing; when an
-// acceptance reached the executor first, Abort reports it and the target is
-// kept or deferred instead of disposed.
 func TestPlanClosesMissingBeforeDisposing(t *testing.T) {
-	cases := []struct {
+	for _, tc := range []struct {
 		name     string
-		accepted effect.AttachmentState // what Abort finds when the acceptance won
+		accepted effect.AttachmentState
 		want     Verdict
 		disposes bool
 	}{
 		{"tombstone stands", "", Dispose, true},
 		{"acceptance won and runs", effect.AttachmentActive, Keep, false},
 		{"acceptance won without a lease", effect.AttachmentOrphaned, Defer, false},
-	}
-	for _, tc := range cases {
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			port := &fakePort{state: effect.AttachmentMissing, accepted: tc.accepted}
-			decisions, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1"))
-			if err != nil || len(decisions) != 1 {
-				t.Fatalf("plan = %+v %v", decisions, err)
+			ds, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1"))
+			if err != nil || len(ds) != 1 {
+				t.Fatalf("plan=%+v %v", ds, err)
 			}
-			d := decisions[0]
-			if d.Verdict != tc.want || (d.Recovery != nil) != tc.disposes || len(port.aborted) != 1 {
-				t.Fatalf("decision = %+v aborted=%d, want %s disposes=%v after one Abort", d, len(port.aborted), tc.want, tc.disposes)
+			if d := ds[0]; d.Verdict != tc.want || (d.Recovery != nil) != tc.disposes || len(port.aborted) != 1 {
+				t.Fatalf("decision=%+v aborts=%d want=%s dispose=%v", d, len(port.aborted), tc.want, tc.disposes)
 			}
 		})
 	}
-	// Anything the executor still holds is never aborted.
 	for _, state := range []effect.AttachmentState{effect.AttachmentActive, effect.AttachmentOrphaned, effect.AttachmentTerminal} {
 		port := &fakePort{state: state}
 		if _, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1")); err != nil || len(port.aborted) != 0 {
-			t.Fatalf("%s: aborted=%d %v, want no Abort", state, len(port.aborted), err)
+			t.Fatalf("%s: aborts=%d err=%v", state, len(port.aborted), err)
 		}
+	}
+}
+
+func TestPlanTransportFailureIsNotAbsence(t *testing.T) {
+	boom := errors.New("executor unreachable")
+	port := &fakePort{state: effect.AttachmentMissing, attachEr: boom}
+	if ds, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, boom) || len(ds) != 0 || len(port.aborted) != 0 {
+		t.Fatalf("plan=%+v err=%v aborts=%d", ds, err, len(port.aborted))
 	}
 }

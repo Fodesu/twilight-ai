@@ -30,6 +30,10 @@ type WorkerOptions struct {
 	// restarted process while an older incarnation could still be alive.
 	ID            string
 	LeaseDuration time.Duration
+	// StartTimeout bounds the synchronous Start RPC, not the external effect's
+	// lifetime. Caller cancellation/deadlines and Close also end this RPC.
+	// Backends must honor the RPC context. Defaults to 30 seconds.
+	StartTimeout time.Duration
 	// Clock reads the lease clock. It must agree with the Store's clock; the
 	// Store remains the fencing authority. Defaults to time.Now.
 	Clock func() time.Time
@@ -70,17 +74,20 @@ const defaultLeaseDuration = 30 * time.Second
 // Neither operation is part of effect.ExecutionPort, which
 // stays the per-assignment data plane.
 type Worker struct {
-	store     executionstore.Store
-	routes    []Route
-	backends  map[string]ExecutionBackend
-	id        string
-	lease     time.Duration
-	now       func() time.Time
-	lifecycle context.Context
-	stop      context.CancelFunc
-	// wg counts the goroutines the Worker started: each record's heartbeat
-	// and watcher. Close cancels lifecycle and waits.
-	wg sync.WaitGroup
+	store        executionstore.Store
+	routes       []Route
+	backends     map[string]ExecutionBackend
+	id           string
+	lease        time.Duration
+	startTimeout time.Duration
+	now          func() time.Time
+	lifecycle    context.Context
+	stop         context.CancelFunc
+	// wg counts heartbeats, watchers and in-flight synchronous Start RPCs.
+	// workMu prevents registration after Close begins waiting.
+	wg      sync.WaitGroup
+	workMu  sync.Mutex
+	closing bool
 
 	retry       RetryBudget
 	progress    *ProgressHub
@@ -123,6 +130,9 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	if opts.LeaseDuration <= 0 {
 		opts.LeaseDuration = defaultLeaseDuration
 	}
+	if opts.StartTimeout <= 0 {
+		opts.StartTimeout = 30 * time.Second
+	}
 	now := opts.Clock
 	if now == nil {
 		now = time.Now
@@ -137,7 +147,7 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 		settlements = NewSettlementHub(opts.ID+"/"+strconv.FormatInt(now().UnixNano(), 36), 0)
 	}
 	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
-		retry: opts.Retry, progress: progress, settlements: settlements,
+		retry: opts.Retry, startTimeout: opts.StartTimeout, progress: progress, settlements: settlements,
 		lifecycle: lifecycle, stop: stop}
 	w.notices.worker = w
 	if err := w.recover(ctx); err != nil {
@@ -147,21 +157,37 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	return w, nil
 }
 
+// beginWork registers work before Close can begin waiting.
+func (w *Worker) beginWork() bool {
+	w.workMu.Lock()
+	defer w.workMu.Unlock()
+	if w.closing {
+		return false
+	}
+	w.wg.Add(1)
+	return true
+}
+
 // spawn runs fn as a Worker goroutine counted by Close.
 func (w *Worker) spawn(fn func()) {
-	w.wg.Add(1)
+	if !w.beginWork() {
+		return
+	}
 	go func() {
 		defer w.wg.Done()
 		fn()
 	}()
 }
 
-// Close stops every heartbeat and every watcher, and
+// Close stops every heartbeat, watcher and in-flight Start RPC, and
 // waits for them. Records keep their leases until they expire: another
 // incarnation adopts them through RecoverExecution. Close
 // does not cancel backend executions.
 func (w *Worker) Close() {
+	w.workMu.Lock()
+	w.closing = true
 	w.stop()
+	w.workMu.Unlock()
 	w.wg.Wait()
 	w.settlements.Close()
 }
@@ -253,7 +279,7 @@ func (w *Worker) transition(lease executionstore.Lease, typ ledger.EventType, to
 		if !executionstore.LegalTransition(state.State, to) {
 			return nil, fmt.Errorf("%w: %s from %s", executionstore.ErrStateConflict, typ, state.State)
 		}
-		return &ledger.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s", uint64(lease.Epoch), state.State)), Batches: []ledger.EventBatch{{Events: []ledger.Event{w.event(typ, nil)}}}}, nil
+		return &ledger.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s/%s", uint64(lease.Epoch), state.State, state.ExecutionRef.Ref)), Batches: []ledger.EventBatch{{Events: []ledger.Event{w.event(typ, nil)}}}}, nil
 	}
 }
 
@@ -427,12 +453,13 @@ func (w *Worker) RecoverExecution(ctx context.Context, key effect.AssignmentKey)
 }
 
 // Acknowledge is effect.Acknowledger: the Owner reports that
-// the Outcome of key is settled as a Session fact. The ledger records
-// outcome_acknowledged and its fold collects the execution: the payload,
-// Outcome and Superseded refs leave the fold, while the key, its digest,
-// state and ExecutionRef remain, so the execution still answers Attach with
-// terminal, refuses a Dispatch that would execute the key again, and answers
-// GetOutcome with ErrOutcomeCollected. The execution must be settled;
+// the Outcome of key is settled as a durable Session fact and will not be
+// needed again. The caller must prove that disposition; an expired lease or
+// a dropped delivery is not proof. Until safe ACK the store must retain a
+// readable Outcome, including across Worker restarts. The ledger records
+// outcome_acknowledged, after which retention may collect the payload and
+// Outcome. The key remains accepted and terminal: late Dispatch starts
+// nothing, and GetOutcome answers ErrOutcomeCollected. The execution must be settled;
 // acknowledging one still in flight is a caller error (ErrStateConflict),
 // and a key without a ledger is ErrExecutionNotFound. Repeating it changes
 // nothing.
@@ -612,6 +639,8 @@ func (w *Worker) GetStatus(ctx context.Context, key effect.AssignmentKey) (effec
 // of the ledger, answered at once. An unsettled execution is
 // effect.ErrOutcomeNotReady; when to read again is what Settlements tells a
 // subscriber, so no request is held open for the length of an execution.
+// A terminal Outcome remains readable until the owner safely acknowledges
+// its durable disposition; lease expiry alone never authorizes collection.
 func (w *Worker) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	state, _, ok, err := w.store.Load(ctx, key)
 	if err != nil {
@@ -648,36 +677,42 @@ func (w *Worker) GetOutcomeEnvelope(ctx context.Context, key effect.AssignmentKe
 	return *state.Outcome, nil
 }
 
+// Cancel records a controller command before touching the backend. A
+// controller need not hold (or acquire) an execution lease: even a never
+// claimed or expired acceptance must stop being eligible to start/retry.
+// Recovery of a bound cancellation may only attach, cancel and observe.
 func (w *Worker) Cancel(ctx context.Context, key effect.AssignmentKey) error {
-	state, _, ok, err := w.store.Load(ctx, key)
+	var ref ExecutionRef
+	var terminal bool
+	err := w.commit(ctx, executionstore.Lease{}, key, func(state *executionstore.Execution, _ ledger.Head) (*ledger.Commit, error) {
+		ref, terminal = state.ExecutionRef, state.Terminal()
+		if terminal || state.State == effect.ExecutionCancelRequested {
+			return nil, nil
+		}
+		return &ledger.Commit{CommitID: executionstore.DeriveCommitID(key, "cancel", ""),
+			Batches: []ledger.EventBatch{{Events: []ledger.Event{w.event(executionstore.EventCancelRequested, nil)}}}}, nil
+	})
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return effect.ErrExecutionNotFound
-	}
-	if state.Terminal() {
+	if terminal {
 		return nil
 	}
-	backend, err := w.backend(state.ExecutionRef)
+	if ref.Provider == "" {
+		// Binding is forbidden after cancellation; no physical execution
+		// can have started, so this is a definite cancellation, not Unknown.
+		return w.finishOwned(ctx, executionstore.Lease{Key: key}, &protocol.OutcomeEnvelope{
+			ProtocolVersion: protocol.ProtocolVersion, Key: key, Cancelled: true,
+		}, effect.ExecutionCancelled, nil)
+	}
+	backend, err := w.backend(ref)
 	if err != nil {
 		return err
 	}
-	lease := state.Lease
-	if err := w.requestCancelOwned(ctx, lease); err != nil {
-		return err
-	}
-	return backend.Cancel(ctx, state.ExecutionRef.Ref)
-}
-
-// requestCancelOwned commits cancel_requested under the current lease; an
-// execution already cancelling or settled is left as it is.
-func (w *Worker) requestCancelOwned(ctx context.Context, lease executionstore.Lease) error {
-	err := w.commit(ctx, lease, lease.Key, w.transition(lease, executionstore.EventCancelRequested, effect.ExecutionCancelRequested, "cancel"))
-	if errors.Is(err, executionstore.ErrStateConflict) {
-		// Settled between the caller's read and this write: nothing left to
-		// cancel, and the caller's backend Cancel is harmless on a finished
-		// execution.
+	err = backend.Cancel(ctx, ref.Ref)
+	if errors.Is(err, effect.ErrExecutionNotFound) {
+		// The durable command stands; RecoverExecution reconciles a missing
+		// bound Ref conservatively, without allocating another attempt.
 		return nil
 	}
 	return err

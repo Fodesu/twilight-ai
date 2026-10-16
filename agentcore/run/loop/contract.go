@@ -78,8 +78,8 @@ type Settings struct {
 	// Watcher is where a blocking Run waits for the Outcomes it dispatched:
 	// one per (owner, executor), shared with the Reconciler, so waiting on
 	// N effects costs one settlement subscription. Its Port must be the
-	// Loop's Executor. Nil builds a private one over the Executor, which
-	// serves a single-process host; a host with a Reconciler shares its.
+	// Loop's Executor. Nil builds a call-scoped watcher over the Executor,
+	// closed when Run returns. Advance and Deliver never require one.
 	Watcher *effect.Watcher
 }
 

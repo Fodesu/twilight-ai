@@ -8,17 +8,19 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
-	"github.com/felinics/twilight/agentcore/testutil/local"
-	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/agentcore/prompt"
 	. "github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	"github.com/felinics/twilight/agentcore/run/store"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/testutil/local"
+	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -477,55 +479,65 @@ func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 
 // cancellingInvoker cancels the outer ctx from inside Generate, simulating a
 // shutdown arriving mid-execution.
-type cancellingInvoker struct{ cancel context.CancelFunc }
+type cancellingInvoker struct {
+	cancel  context.CancelFunc
+	release chan struct{}
+}
 
 func (c *cancellingInvoker) Generate(ctx context.Context, _ sdk.Request) (sdk.ModelResult, error) {
 	c.cancel()
-	<-ctx.Done()
-	return sdk.ModelResult{}, ctx.Err()
+	select {
+	case <-c.release:
+		return textResult("continued"), nil
+	case <-ctx.Done():
+		return sdk.ModelResult{}, ctx.Err()
+	}
 }
 
-func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
+func TestLoopMidExecutionCancellationDetachesWithoutRecoveringEffect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	invoker := &cancellingInvoker{cancel: cancel}
-	rt, w := loopRuntime(t)
-	loop, _ := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
-
-	_, err := loop.Run(ctx, rt.Bind(w), "run-1", nil)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want context.Canceled", err)
-	}
-	// The model step is withdrawn via RecoverModelExecution: the Run is Open,
-	// still active, and the aborted step is not counted.
-	snap, _ := rt.Bind(w).Load(context.Background(), "run-1")
-	if _, open := snap.State.Current.(Open); !open {
-		t.Fatalf("current = %#v, want Open", snap.State.Current)
-	}
-	if snap.State.ModelSteps != 0 {
-		t.Fatalf("ModelSteps = %d", snap.State.ModelSteps)
-	}
-	recovered := false
-	for _, e := range recordFacts(t, rt, "run-1") {
-		if _, ok := e.(ModelStepRecovered); ok {
-			recovered = true
+	defer cancel()
+	invoker := &cancellingInvoker{cancel: cancel, release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-invoker.release:
+		default:
+			close(invoker.release)
 		}
-	}
-	if !recovered {
-		t.Fatal("no ModelStepRecovered fact committed")
-	}
-
-	// A fresh Loop plans a new step; the cancelled one left no count behind.
-	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
-	loop2, _ := newLoop(t, nil, fakeCatalog{invoker2}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
-	res, err := loop2.Run(context.Background(), rt.Bind(w), "run-1", nil)
+	}()
+	rt, w := loopRuntime(t)
+	lp, err := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Result == nil || res.Result.Status != RunCompleted || invoker2.calls.Load() != 1 {
-		t.Fatalf("res = %+v, model calls = %d", res, invoker2.calls.Load())
+	_, err = lp.Run(ctx, rt.Bind(w), "run-1", nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	final, _ := rt.Bind(w).Load(context.Background(), "run-1")
-	if final.State.ModelSteps != 1 {
-		t.Fatalf("ModelSteps = %d after resume, want 1 (only the replanned step counts)", final.State.ModelSteps)
+	snap, err := rt.Bind(w).Load(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, ok := snap.State.Current.(ModelStep)
+	if !ok || step.Status != ModelExecuting || snap.State.ModelSteps != 1 {
+		t.Fatalf("detachment changed the execution intent: %+v", snap.State)
+	}
+	for _, fact := range recordFacts(t, rt, "run-1") {
+		if _, recovered := fact.(ModelStepRecovered); recovered {
+			t.Fatal("local context cancellation manufactured a recovery fact")
+		}
+	}
+	close(invoker.release)
+	control, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stop()
+	observer := &effect.Watcher{Port: lp.Executor, Poll: time.Millisecond}
+	defer observer.Close()
+	outcome, err := observer.Await(control, AssignmentKey{Session: rt.Bind(w).Scope(), RunID: "run-1", Effect: step.Effect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := lp.Deliver(control, rt.Bind(w), outcome, nil)
+	if err != nil || res.Disposition != LoopFinished || res.Result.Status != RunCompleted {
+		t.Fatalf("accepted execution did not survive detachment: %+v %v", res, err)
 	}
 }

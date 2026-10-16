@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/testutil/local"
-	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -17,6 +15,8 @@ import (
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/store"
+	"github.com/felinics/twilight/agentcore/testutil/local"
+	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -80,7 +80,11 @@ func (e *recordingExecutor) Attach(_ context.Context, key AssignmentKey) (Attach
 func (e *recordingExecutor) Abort(ctx context.Context, key AssignmentKey) (Attachment, error) {
 	e.mu.Lock()
 	_, dispatched := e.outcomes[key]
+	out, settled := e.settled[key]
 	e.mu.Unlock()
+	if settled {
+		return Attachment{State: AttachmentTerminal, Execution: out.Status()}, nil
+	}
 	if dispatched && e.attachReply {
 		return e.Attach(ctx, key)
 	}
@@ -312,7 +316,13 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	}
 
 	result := mustFreezeResult(t, textResult("done"))
-	delivered, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: a.Key(), Result: ModelSucceeded{Result: result}}, nil)
+	out := Outcome{Key: a.Key(), Result: ModelSucceeded{Result: result}}
+	// Deliver consumes an already terminal execution. Durable settlement alone
+	// does not authorize collection of a still-active external effect.
+	exec.mu.Lock()
+	exec.settled = map[AssignmentKey]Outcome{a.Key(): out}
+	exec.mu.Unlock()
+	delivered, err := l.Deliver(ctx, rt.Bind(w), out, nil)
 	if err != nil || delivered.Disposition != LoopFinished || delivered.Result == nil || delivered.Result.Status != RunCompleted {
 		t.Fatalf("deliver = %+v %v", delivered, err)
 	}
@@ -459,7 +469,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 		reattached = append(reattached, out)
 		mu.Unlock()
 	}
-	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: deliverToNew})
+	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec})
 	if err != nil || n != 0 {
 		t.Fatalf("RecoverInterrupted with a reachable executor = %d %v, want 0 dispositions", n, err)
 	}
@@ -471,6 +481,12 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 		t.Fatalf("step after reattach = %+v, want Executing under the original effect", step)
 	}
 
+	// Reconciliation is a finite observation pass. The host explicitly owns
+	// its settlement subscription after the original effect was kept.
+	watcher := &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}
+	defer watcher.Close()
+	unwatch := watcher.Watch(ctx, a.Key(), deliverToNew, func(err error) { t.Errorf("watch outcome: %v", err) })
+	defer unwatch()
 	// The attempt finishes on the executor; its Outcome reaches the new owner.
 	result := mustFreezeResult(t, textResult("done"))
 	exec.deliver(t, a.Key(), Outcome{Result: ModelSucceeded{Result: result}})
@@ -514,7 +530,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	}
 	a := exec.last()
 	stack.open(t)
-	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: func(Outcome) {}})
+	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec})
 	if err != nil || n != 1 || len(exec.attached) != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
 	}

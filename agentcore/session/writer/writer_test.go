@@ -103,7 +103,7 @@ func (f *fixture) admission() Admission { return Admission{Bindings: f.bindings,
 
 func (f *fixture) open(t *testing.T, takeover bool) Writer {
 	t.Helper()
-	w, err := OpenWriter(context.Background(), f.store, f.registry, f.admission(), "s", session.OpenOptions{Takeover: takeover})
+	w, err := acquireTestWriter(context.Background(), f.store, f.registry, f.admission(), "s", session.OpenOptions{Takeover: takeover})
 	if err != nil {
 		t.Fatalf("open writer: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrOwned) {
+	if _, err := acquireTestWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrOwned) {
 		t.Fatalf("second writer = %v, want owned", err)
 	}
 	if err := w.Close(ctx); err != nil {
@@ -233,17 +233,14 @@ func TestWriterOwnershipLost(t *testing.T) {
 	if got := notes(t, w2); len(got) != 1 {
 		t.Fatalf("fenced write leaked: %v", got)
 	}
-	ws := NewWriters(f.store, f.registry, f.admission(), session.OpenOptions{}, WritersConfig{})
-	if _, err := ws.Writer(ctx, "s"); !session.IsCode(err, session.ErrOwned) {
-		t.Fatalf("writers while owned = %v", err)
+	if _, err := f.store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrOwned) {
+		t.Fatalf("acquire while owned = %v", err)
 	}
 	_ = w2.Close(ctx)
-	a, err := ws.Writer(ctx, "s")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := ws.Writer(ctx, "s"); a != b {
-		t.Fatal("Writers handed out two writers for one session")
+	again := f.open(t, false)
+	defer again.Close(ctx)
+	if again.Epoch() <= w2.Epoch() {
+		t.Fatal("explicit acquisition did not advance epoch")
 	}
 }
 
@@ -284,13 +281,13 @@ func TestProjectionUnknownEvents(t *testing.T) {
 	kw, _ = f.store.Open(ctx, "s", session.OpenOptions{})
 	raw("strict", "twilight/a/strict", `{"v":1}`) // in scope, not registered: fold fails
 	_ = kw.Close(ctx)
-	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !errors.Is(err, &ledger.Error{Code: ledger.CodeUnknownEvent}) {
+	if _, err := acquireTestWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !errors.Is(err, &ledger.Error{Code: ledger.CodeUnknownEvent}) {
 		t.Fatalf("open with unknown strict event = %v", err)
 	}
 }
 
 // claims are Active before the commit exists; an
-// orphan claim is released on the next OpenWriter; a live claim survives.
+// orphan claim is released on the next Bind; a live claim survives.
 // a missing resolver or ledger is a configuration
 // error, so it must surface as an error rather than as a CommitInvalid outcome
 // that reads like a verdict on the commit. It must not be rejected earlier
@@ -308,7 +305,7 @@ func TestCommitWithoutAdmission(t *testing.T) {
 	if _, err := f.bindings.CreateBinding(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	empty, err := OpenWriter(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{})
+	empty, err := acquireTestWriter(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{})
 	if err != nil {
 		t.Fatalf("open without admission: %v", err)
 	}
@@ -323,7 +320,7 @@ func TestCommitWithoutAdmission(t *testing.T) {
 
 	// A payload that does carry a reference against a nil resolver is a
 	// configuration error, not an invalid commit.
-	withRef, err := OpenWriter(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{Takeover: true})
+	withRef, err := acquireTestWriter(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{Takeover: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +338,7 @@ func TestCommitWithoutAdmission(t *testing.T) {
 	}
 
 	// A resolver without a ledger fails the same way, at claim time.
-	noLedger, err := OpenWriter(ctx, f.store, f.registry, Admission{Bindings: f.bindings}, "s", session.OpenOptions{Takeover: true})
+	noLedger, err := acquireTestWriter(ctx, f.store, f.registry, Admission{Bindings: f.bindings}, "s", session.OpenOptions{Takeover: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +453,7 @@ func TestBindingAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := OpenWriter(ctx, f.store, reg, Admission{Bindings: f.bindings, Ledger: f.ledger}, "s", session.OpenOptions{})
+	w, err := acquireTestWriter(ctx, f.store, reg, Admission{Bindings: f.bindings, Ledger: f.ledger}, "s", session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

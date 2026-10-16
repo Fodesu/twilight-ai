@@ -54,7 +54,8 @@ const (
 	EventExecutionStarted ledger.EventType = "execution_started"
 	// EventExecutionRunning: the backend accepted the start.
 	EventExecutionRunning ledger.EventType = "execution_running"
-	// EventCancelRequested: cancellation was asked of the backend.
+	// EventCancelRequested: a controller durably requested cancellation.
+	// It is unfenced and grants no right to start or restart execution.
 	EventCancelRequested ledger.EventType = "cancel_requested"
 	// EventExecutionRestarted: the attempt moved to a new Ref, the previous
 	// one joining the audit trail.
@@ -219,12 +220,13 @@ func LegalTransition(from, to effect.ExecutionStatus) bool {
 
 // Fenced reports whether an event may only be committed under the key's
 // lease. Acceptance and the abort tombstone precede any lease; settlement
-// by Dispose and the Owner's acknowledgement come from outside the lease
-// Everything else is the lease
-// holder's.
+// by Dispose, cancellation commands and the Owner's acknowledgement come
+// from outside the lease. These controller commands grant no physical
+// execution authority: Start/Restart still require a live lease and an
+// uncancelled, nonterminal state. Everything else is the lease holder's.
 func Fenced(typ ledger.EventType) bool {
 	switch typ {
-	case EventExecutionAccepted, EventExecutionAborted, EventExecutionBound, EventExecutionSettled, EventOutcomeAcknowledged:
+	case EventExecutionAccepted, EventExecutionAborted, EventExecutionBound, EventExecutionSettled, EventCancelRequested, EventOutcomeAcknowledged:
 		return false
 	default:
 		return true
@@ -271,8 +273,8 @@ func apply(s ExecutionState, e *ledger.Event) (ExecutionState, error) { //nolint
 		}
 		s.State = effect.ExecutionAborted
 	case EventExecutionBound:
-		if s.State == "" || s.Terminal() {
-			return s, errors.New("bound outside an accepted, unsettled execution")
+		if s.State == "" || s.Terminal() || s.State == effect.ExecutionCancelRequested {
+			return s, errors.New("bound outside an uncancelled, unsettled execution")
 		}
 		if s.ExecutionRef.Provider != "" {
 			return s, errors.New("bound twice; a new attempt is a restart")
@@ -305,8 +307,8 @@ func apply(s ExecutionState, e *ledger.Event) (ExecutionState, error) { //nolint
 		}
 		s.State = effect.ExecutionCancelRequested
 	case EventExecutionRestarted:
-		if s.State == "" || s.Terminal() {
-			return s, errors.New("restart outside an unsettled execution")
+		if s.State == "" || s.Terminal() || s.State == effect.ExecutionCancelRequested {
+			return s, errors.New("restart outside an uncancelled, unsettled execution")
 		}
 		var p Restarted
 		if err := e.Decode(&p); err != nil {

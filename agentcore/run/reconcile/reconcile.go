@@ -1,16 +1,6 @@
-// Package reconcile compares what the Run machine believes about an effect
-// with what the execution store actually holds, and turns the difference into
-// Run commands or a second Dispatch. It is the
-// process manager between the two authorities and the one place that reads
-// three sources: the machine says which effects are outstanding (an
-// Executing model step or tool call and the EffectID it requested), the
-// executor says whether it still holds an attempt for that effect, and the
-// dispatch ledger (agentcore/run/redispatch) says which redispatch of this effect
-// was decided and whether it reached the executor. Per effect the Reconciler decides whether
-// the Run keeps waiting for the attempt's Outcome, hands the effect to the
-// executor again, or disposes it. Neither the Loop nor the store adapter
-// interprets executor observations, and the Run never learns which attempt
-// the executor made.
+// Package reconcile compares durable Run intents with Execution Authority.
+// A pass is finite: it installs no listeners, timers or background work.
+// Hosts schedule later passes from the returned decisions and durable state.
 package reconcile
 
 import (
@@ -28,79 +18,37 @@ import (
 	"github.com/felinics/twilight/agentcore/run/store"
 )
 
-// Verdict is the reconciler's decision for one Executing target.
 type Verdict string
 
 const (
-	// Keep: the executor still holds an attempt for the effect (active, or
-	// terminal with an Outcome to read), so the target stays Executing and
-	// its Outcome settles under the effect's settlement identity.
-	Keep Verdict = "keep"
-	// Defer: the executor holds a durable record nobody is running (orphaned).
-	// The target stays Executing and its Outcome is still awaited: nothing
-	// proves the effect was absent. The Reconciler asks a port that can
-	// (effect.Recoverer) to take the record back once; only an explicit
-	// disposal ends the wait otherwise.
-	Defer Verdict = "defer"
-	// Dispose: the executor holds no attempt for the effect and none will be
-	// made -- the key is closed with Abort first -- so the Run
-	// recovers the target itself: an Executing model step is withdrawn to
-	// Open, an Executing tool call settles as Unknown.
-	Dispose Verdict = "dispose"
-	// Redispatch: the executor held no attempt for the effect and was handed
-	// the Assignment again within the budget. The target stays
-	// Executing and its Outcome is awaited like a kept one.
+	Keep       Verdict = "keep"
+	Defer      Verdict = "defer"
+	Dispose    Verdict = "dispose"
 	Redispatch Verdict = "redispatch"
 )
 
-// Decision is one target's verdict and, for Dispose, the recovery command.
+// Decision is a recovery verdict, not a promise that a local goroutine will
+// resume the Run. Retry means a refusal before the effect boundary. Unknown
+// dispatch is never interpreted as proof that an effect did not happen.
 type Decision struct {
 	Target   plan.RecoveryTarget
 	Observed effect.AttachmentState
 	Verdict  Verdict
 	Recovery *plan.RecoveryDisposition
-	// Retry reports a retryable refusal that happened before the effect
-	// boundary. No outcome watch is installed while it is true: the owner
-	// may safely offer the same pending assignment again after an interval.
-	// An unknown dispatch never sets Retry because it may have crossed the
-	// boundary and must not trigger a compensating dispatch.
-	Retry bool
+	Retry    bool
 }
 
-// ErrNoExecutionPort reports a Plan over Executing targets with no executor
-// to ask and no Abandon: an executor that cannot be reached proves nothing
-// about the executions it may hold, so the targets cannot be disposed.
-var ErrNoExecutionPort = errors.New("reconcile: executing targets but no execution port to ask; set Abandon to dispose without proof")
+var (
+	ErrNoExecutionPort     = errors.New("reconcile: executing targets but no execution port; set Abandon only when no executor serves the scope")
+	ErrAbandonWithExecutor = errors.New("reconcile: Abandon cannot bypass an existing executor's Abort protocol")
+	ErrMissingPolicyPorts  = errors.New("reconcile: RedispatchMissing requires Redispatch and Attempts")
+	ErrTargetWithoutEffect = errors.New("reconcile: executing target records no effect")
+)
 
-// ErrDeliverWithoutLifetime reports Deliver set without the Lifetime that
-// bounds the registrations it needs: kept targets would wait with nothing
-// ending the wait, and nothing would say so.
-var ErrDeliverWithoutLifetime = errors.New("reconcile: Deliver set without a Lifetime to bound the outcome waits")
-
-// ErrDeliverWithoutWatcher reports Deliver set without the Watcher that
-// carries the executor's settlement notices to it.
-var ErrDeliverWithoutWatcher = errors.New("reconcile: Deliver set without a Watcher on the execution port")
-
-// ErrAbandonWithExecutor reports Abandon set beside an Executions port: with
-// an executor to ask, disposal must go through Abort, and a
-// caller that wants to bypass it has to give up the port explicitly.
-var ErrAbandonWithExecutor = errors.New("reconcile: Abandon set with an execution port; disposal without Abort is only for a scope no executor serves")
-
-// MissingPolicy is what the reconciler does with an Executing effect the
-// executor holds nothing. It is the
-// deployment's recovery decision, stated explicitly: the ports a policy
-// needs are checked against the policy, and no port's presence or absence
-// selects a policy by itself.
 type MissingPolicy uint8
 
 const (
-	// DisposeMissing, the zero value: the Run recovers the target itself
-	// (an Executing model step is withdrawn to Open, an Executing tool call
-	// settles as Unknown). No dispatch ledger is needed.
 	DisposeMissing MissingPolicy = iota
-	// RedispatchMissing: the Assignment is handed to the executor again
-	// within the redispatch budget, the attempts recorded in the dispatch
-	// ledger. Requires Redispatch and Attempts.
 	RedispatchMissing
 )
 
@@ -115,109 +63,34 @@ func (p MissingPolicy) String() string {
 	}
 }
 
-// ErrMissingPolicyPorts reports RedispatchMissing without the ports it
-// needs: the Redispatch port and the dispatch ledger (Attempts).
-var ErrMissingPolicyPorts = errors.New("reconcile: RedispatchMissing requires the Redispatch port and the dispatch ledger (Attempts)")
-
-// ErrTargetWithoutEffect reports an Executing target whose start fact
-// recorded no EffectID: the executor cannot be asked about it and the
-// machine state is inconsistent.
-var ErrTargetWithoutEffect = errors.New("reconcile: executing target records no effect")
-
-// Reconciler is the recovery decision of one owner over a Scope.
+// Reconciler carries only one-pass dependencies. An unreachable Executor is
+// not an absent execution. Disposal closes the assignment key with Abort
+// before committing a recovery fact, fencing any delayed Dispatch.
 type Reconciler struct {
-	// Executions is the execution store's port, asked once per Executing
-	// target. Nil with Abandon unset is an error whenever a target exists:
-	// "no executor to ask" is not "no execution". A port that
-	// also implements effect.Recoverer is asked to take an orphaned record
-	// back; one that does not leaves orphaned records to an external
-	// controller.
 	Executions effect.ExecutionPort
-	// Abandon disposes every Executing target without asking an executor and
-	// without closing the keys. It is the caller's statement
-	// that no executor serves this Scope at all: none holds an attempt, and
-	// none can receive a late Dispatch, because there is no executor. That
-	// holds for a scope that never had an execution port (conformance
-	// tests, an offline repair of a Session whose executor is gone); it is
-	// never inferred from an unreachable Executions, and it is not a way to
-	// skip Abort when an executor exists: Abandon beside a non-nil
-	// Executions is ErrAbandonWithExecutor.
-	Abandon bool
-	// Deliver receives the Outcome of every kept target once it can be read;
-	// the caller settles it through the Loop. Nil means kept targets stay
-	// Executing until something else delivers their Outcome.
-	Deliver func(effect.Outcome)
-	// Fail receives a kept target whose Outcome will never be readable: the
-	// executor answers its read definitively (effect.ErrExecutionNotFound,
-	// effect.ErrOutcomeUnavailable). The target stays Executing; the next
-	// RecoverInterrupted plans it again, and a record that is gone by then is
-	// disposed. Nil discards the report.
-	Fail func(effect.AssignmentKey, error)
-	// Watcher is where kept targets wait for their Outcome: one per
-	// (owner, executor), shared by every Plan and by the Loop, so waiting on
-	// N effects costs one settlement subscription rather than N readers.
-	// Required with Deliver (ErrDeliverWithoutWatcher); its Port must be
-	// Executions.
-	Watcher *effect.Watcher
-	// Lifetime bounds the registrations Plan makes with Watcher: when it
-	// ends, kept targets not yet delivered are dropped. Required with
-	// Deliver (ErrDeliverWithoutLifetime).
-	Lifetime context.Context
-	// OrphanProbe is how often a kept target still waiting is re-attached
-	// to see whether its record has lost its Worker, in which case recovery
-	// is asked for once per orphaned episode. Zero selects
-	// DefaultOrphanProbe; negative disables the probe.
-	OrphanProbe time.Duration
-
-	// Missing is the policy for an effect the executor holds nothing for.
-	// The zero value disposes; RedispatchMissing requires
-	// Redispatch and Attempts.
-	Missing MissingPolicy
-	// Redispatch hands the Assignment of an Executing effect the executor
-	// holds nothing for to the executor again (loop.Redispatch on the
-	// owner's Writer). Used under RedispatchMissing only.
-	Redispatch func(ctx context.Context, key effect.AssignmentKey) error
-	// Attempts is the dispatch ledger: which redispatch of each effect was
-	// planned, whether it reached the executor, and whether the reconciler
-	// gave up.
-	Attempts redispatch.Store
-	// Epoch fences the dispatch ledger: the Session owner's.
-	Epoch ledger.Epoch
-	// MaxRedispatches bounds redispatches per effect; zero selects
-	// DefaultMaxRedispatches.
+	// Abandon is only for an offline scope that no executor serves. It is
+	// never inferred from network errors or used alongside Executions.
+	Abandon         bool
+	Missing         MissingPolicy
+	Redispatch      func(context.Context, effect.AssignmentKey) error
+	Attempts        redispatch.Store
+	Epoch           ledger.Epoch
 	MaxRedispatches int
-	// Requeue is notified when a redispatch ended at a temporary boundary
-	// and the effect needs another reconciliation. It must not block Plan;
-	// the Recovery implementation deduplicates these requests per Session
-	// lifetime. Nil leaves retry scheduling to the caller.
-	Requeue func(effect.AssignmentKey)
-	// Now stamps the dispatch ledger; nil selects time.Now.
-	Now func() time.Time
+	Now             func() time.Time
 }
 
-// DefaultMaxRedispatches is the redispatch budget of one effect.
 const DefaultMaxRedispatches = 3
 
-// DefaultOrphanProbe is how often a kept target still waiting is re-attached
-// to see whether its record has lost its Worker.
-const DefaultOrphanProbe = 15 * time.Second
-
-// AssignmentFromTarget rebuilds the Assignment of an Executing target from
-// the machine state, so the executor can be asked whether it still holds an
-// attempt for the effect. Only the key and the digest-level description are
-// known here; the inline request body never travels this way.
 func AssignmentFromTarget(scope run.Scope, t plan.RecoveryTarget) effect.Assignment {
 	a := effect.Assignment{Session: scope, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Effect: t.Effect}
-	switch {
-	case t.Call != nil:
+	if t.Call != nil {
 		a.Body = effect.ToolAssignment{ToolRef: t.Call.ToolRef, DefinitionDigest: t.Call.DefinitionDigest, Arguments: t.Call.Arguments, Policy: t.Call.Policy}
-	case t.Model != nil:
+	} else if t.Model != nil {
 		a.Body = effect.ModelAssignment{Model: t.Model.Model, RequestDigest: t.Model.RequestDigest}
 	}
 	return a
 }
 
-// verdictOf maps an executor observation onto the reconciler's vocabulary.
 func verdictOf(state effect.AttachmentState) (Verdict, error) {
 	switch state {
 	case effect.AttachmentActive, effect.AttachmentTerminal:
@@ -231,28 +104,22 @@ func verdictOf(state effect.AttachmentState) (Verdict, error) {
 	}
 }
 
-// Plan decides every Executing target of one Run. It asks the executor once
-// per effect and starts the Outcome read of every effect it does not dispose.
-// It writes no Run fact: the Dispose decisions it returns are committed by
-// Apply. It does write outside the Run when a policy asks for it: under
-// RedispatchMissing the dispatch ledger records each redispatch attempt, and
-// every effect it disposes has its key closed at the executor first (Abort). The recovery command of a disposed effect is identified by
-// the effect, so any owner that plans the same state issues the
-// same command.
+// Plan observes every executing target once. It writes no Run facts, but
+// may close a missing key, record a redispatch, or request orphan recovery.
 func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *store.Snapshot) ([]Decision, error) {
 	return r.plan(ctx, scope, snapshot, nil)
 }
 
-// plan optionally limits reconciliation to one AssignmentKey. Recovery uses
-// this form for an interval retry so unrelated effects do not acquire another
-// watcher or get dispatched again.
 func (r *Reconciler) plan(ctx context.Context, scope run.Scope, snapshot *store.Snapshot, only *effect.AssignmentKey) ([]Decision, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	targets := plan.RecoveryTargets(&snapshot.State)
 	if only != nil {
 		filtered := targets[:0]
-		for _, target := range targets {
-			if (effect.AssignmentKey{Session: scope, RunID: target.RunID, Effect: target.Effect}) == *only {
-				filtered = append(filtered, target)
+		for _, t := range targets {
+			if (effect.AssignmentKey{Session: scope, RunID: t.RunID, Effect: t.Effect}) == *only {
+				filtered = append(filtered, t)
 			}
 		}
 		targets = filtered
@@ -263,16 +130,10 @@ func (r *Reconciler) plan(ctx context.Context, scope run.Scope, snapshot *store.
 	if err := r.checkMissingPolicy(); err != nil {
 		return nil, err
 	}
-	if r.Deliver != nil && r.Lifetime == nil {
-		return nil, ErrDeliverWithoutLifetime
-	}
-	if r.Deliver != nil && r.Watcher == nil {
-		return nil, ErrDeliverWithoutWatcher
-	}
 	if r.Abandon && r.Executions != nil {
 		return nil, ErrAbandonWithExecutor
 	}
-	out := make([]Decision, 0, len(targets))
+	decisions := make([]Decision, 0, len(targets))
 	for _, t := range targets {
 		if t.Effect == "" {
 			return nil, fmt.Errorf("%w: run %s step %s call %q", ErrTargetWithoutEffect, t.RunID, t.StepID, t.CallID)
@@ -282,32 +143,22 @@ func (r *Reconciler) plan(ctx context.Context, scope run.Scope, snapshot *store.
 			if r.Executions == nil {
 				return nil, ErrNoExecutionPort
 			}
-			assignment := AssignmentFromTarget(scope, t)
-			attachment, err := r.Executions.Attach(ctx, assignment.Key())
+			key := AssignmentFromTarget(scope, t).Key()
+			attachment, err := r.Executions.Attach(ctx, key)
 			if err != nil {
 				return nil, err
-			}
-			if !attachment.State.Valid() {
-				return nil, fmt.Errorf("reconcile: executor returned attachment state %q", attachment.State)
 			}
 			d.Observed = attachment.State
 			if d.Verdict, err = verdictOf(attachment.State); err != nil {
 				return nil, err
 			}
-			if d.Verdict == Defer {
-				r.recoverOrphan(ctx, assignment.Key())
-			}
 			if d.Verdict == Dispose && attachment.State == effect.AttachmentMissing {
-				if d.Verdict, d.Retry, err = r.missing(ctx, assignment.Key()); err != nil {
+				if d.Verdict, d.Retry, err = r.missing(ctx, key); err != nil {
 					return nil, err
 				}
 			}
 			if d.Verdict == Dispose {
-				// Missing is what the executor holds now, not what it will
-				// accept: close the key before the Run disposes the effect,
-				// so a Dispatch that arrives later starts nothing
-				// An acceptance that got there first is kept.
-				closed, err := r.Executions.Abort(ctx, assignment.Key())
+				closed, err := r.Executions.Abort(ctx, key)
 				if err != nil {
 					return nil, err
 				}
@@ -315,41 +166,26 @@ func (r *Reconciler) plan(ctx context.Context, scope run.Scope, snapshot *store.
 				if d.Verdict, err = verdictOf(closed.State); err != nil {
 					return nil, err
 				}
-				if d.Verdict == Defer {
-					r.recoverOrphan(ctx, assignment.Key())
-				}
 			}
-			if d.Retry {
-				if r.Requeue != nil {
-					r.Requeue(assignment.Key())
+			if d.Verdict == Defer && d.Observed == effect.AttachmentOrphaned {
+				if recoverer, ok := r.Executions.(effect.Recoverer); ok {
+					if err := recoverer.RecoverExecution(ctx, key); err != nil {
+						return nil, err
+					}
 				}
-			} else if d.Verdict != Dispose {
-				r.awaitOutcome(assignment.Key())
 			}
 		}
 		if d.Verdict == Dispose {
-			rec := plan.RecoveryCommand(schema.Identity(), t)
-			d.Recovery = &rec
+			recovery := plan.RecoveryCommand(schema.Identity(), t)
+			d.Recovery = &recovery
 		}
-		out = append(out, d)
+		decisions = append(decisions, d)
 	}
-	return out, nil
+	return decisions, nil
 }
 
-// missing decides an effect the executor holds nothing for: within the
-// redispatch budget it is handed over again and stays Executing, otherwise
-// it is disposed. The dispatch ledger records each attempt in
-// two steps: planned before the Dispatch, dispatched once the Dispatch
-// reached the executor. A planned attempt the ledger does not show as
-// dispatched is owed, and is made again before any new one is planned, so
-// a crash between the two steps costs no budget and never leaves a Dispatch
-// the ledger does not know about; the executor recognises the replay by
-// its key. A refusal the executor may lift later
-// ErrDispatchRetryable leaves the attempt owed and asks for a later retry.
-// A lost response (ErrDispatchUnknown) also leaves the attempt owed, but does
-// not ask for an automatic retry because the request may have crossed the
-// effect boundary; its outcome watcher may still discover an accepted record.
-// Any definite rejection ends the attempts.
+// A planned-but-unconfirmed redispatch is reused, not charged as a fresh
+// attempt. The same assignment key remains authoritative across Activations.
 func (r *Reconciler) missing(ctx context.Context, key effect.AssignmentKey) (Verdict, bool, error) {
 	if r.Missing == DisposeMissing {
 		return Dispose, false, nil
@@ -394,7 +230,6 @@ func (r *Reconciler) missing(ctx context.Context, key effect.AssignmentKey) (Ver
 	}
 }
 
-// checkMissingPolicy verifies the ports the configured policy needs.
 func (r *Reconciler) checkMissingPolicy() error {
 	switch r.Missing {
 	case DisposeMissing:
@@ -416,101 +251,6 @@ func (r *Reconciler) now() int64 {
 	return time.Now().UnixMilli()
 }
 
-// awaitOutcome registers a kept effect with the Watcher: its Outcome goes to
-// Deliver once the executor's settlement notice, or the Watcher's periodic
-// read, finds it; a definitive read (the executor holds nothing readable
-// for the key) goes to Fail. Nothing here holds a request open for the
-// length of the execution. While the target waits, the orphan probe
-// re-attaches it at OrphanProbe intervals and asks for recovery once per
-// orphaned episode; Lifetime ends both.
-func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
-	if r.Deliver == nil || r.Lifetime == nil || r.Watcher == nil {
-		return
-	}
-	probeCtx, stopProbe := context.WithCancel(r.Lifetime)
-	cancel := r.Watcher.Watch(r.Lifetime, key,
-		func(out effect.Outcome) {
-			stopProbe()
-			if r.Lifetime.Err() == nil {
-				r.Deliver(out)
-			}
-		},
-		func(err error) {
-			stopProbe()
-			if r.Lifetime.Err() == nil {
-				r.fail(key, err)
-			}
-		})
-	go func() {
-		<-probeCtx.Done()
-		if r.Lifetime.Err() != nil {
-			cancel()
-		}
-	}()
-	if r.OrphanProbe < 0 {
-		return
-	}
-	if _, ok := r.Executions.(effect.Recoverer); !ok {
-		return
-	}
-	interval := r.OrphanProbe
-	if interval == 0 {
-		interval = DefaultOrphanProbe
-	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		asked := false
-		for {
-			select {
-			case <-probeCtx.Done():
-				return
-			case <-ticker.C:
-				r.probeOrphan(probeCtx, key, &asked)
-			}
-		}
-	}()
-}
-
-func (r *Reconciler) fail(key effect.AssignmentKey, err error) {
-	if r.Fail != nil {
-		r.Fail(key, err)
-	}
-}
-
-// recoverOrphan asks the executor to take an orphaned record back, when the
-// port can (effect.Recoverer). It is the Owner acting on its own Run's
-// effect: the record was just observed orphaned, so this is the moment to
-// ask. A failed or impossible recovery leaves the target deferred; giving
-// the execution up is a separate decision, made through Dispose.
-func (r *Reconciler) recoverOrphan(ctx context.Context, key effect.AssignmentKey) {
-	if rec, ok := r.Executions.(effect.Recoverer); ok {
-		_ = rec.RecoverExecution(ctx, key)
-	}
-}
-
-// probeOrphan re-attaches a kept target still waiting and asks for recovery
-// when its record has become orphaned. asked keeps the request to once per
-// orphaned episode; a record under a live lease again resets it.
-func (r *Reconciler) probeOrphan(ctx context.Context, key effect.AssignmentKey, asked *bool) {
-	attachment, err := r.Executions.Attach(ctx, key)
-	if err != nil {
-		return
-	}
-	switch attachment.State {
-	case effect.AttachmentOrphaned:
-		if !*asked {
-			*asked = true
-			r.recoverOrphan(ctx, key)
-		}
-	case effect.AttachmentActive:
-		*asked = false
-	}
-}
-
-// Apply commits the Dispose decisions through the bound store and returns
-// how many were accepted. A decision another actor has already overtaken
-// (stale, terminal, conflict) is skipped.
 func Apply(ctx context.Context, st store.RunStore, decisions []Decision) (int, error) {
 	n := 0
 	for i := range decisions {
@@ -536,15 +276,7 @@ func Apply(ctx context.Context, st store.RunStore, decisions []Decision) (int, e
 	return n, nil
 }
 
-// Reconcile is Plan then Apply for one Run: the takeover disposition of its
-// Executing targets. It returns the number of accepted recovery
-// commands.
 func (r *Reconciler) Reconcile(ctx context.Context, st store.RunStore, snapshot *store.Snapshot) (int, error) {
-	if r.Lifetime != nil {
-		if err := r.Lifetime.Err(); err != nil {
-			return 0, err
-		}
-	}
 	decisions, err := r.Plan(ctx, st.Scope(), snapshot)
 	if err != nil {
 		return 0, err
@@ -552,17 +284,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, st store.RunStore, snapshot 
 	return Apply(ctx, st, decisions)
 }
 
-// ReconcileEffect re-reads and reconciles only key's target from snapshot.
-// It is the interval-retry counterpart of Session-level Reconcile: limiting
-// the pass to one effect prevents retries from replacing unrelated watches
-// or redispatching unrelated targets. ok is false once the durable Run no
-// longer has that effect executing.
-func (r *Reconciler) ReconcileEffect(ctx context.Context, st store.RunStore, snapshot *store.Snapshot, key effect.AssignmentKey) (decision Decision, ok bool, err error) {
-	if r.Lifetime != nil {
-		if err := r.Lifetime.Err(); err != nil {
-			return Decision{}, false, err
-		}
-	}
+func (r *Reconciler) ReconcileEffect(ctx context.Context, st store.RunStore, snapshot *store.Snapshot, key effect.AssignmentKey) (Decision, bool, error) {
 	decisions, err := r.plan(ctx, st.Scope(), snapshot, &key)
 	if err != nil {
 		return Decision{}, false, err

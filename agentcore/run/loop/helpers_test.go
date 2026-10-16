@@ -3,15 +3,14 @@ package loop
 import (
 	"context"
 	"errors"
-	"github.com/felinics/twilight/agentcore/testutil/local"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
-	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
+	"github.com/felinics/twilight/agentcore/prompt"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
@@ -20,6 +19,8 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
+	"github.com/felinics/twilight/agentcore/testutil/local"
 	"testing"
 	"time"
 )
@@ -42,7 +43,8 @@ type testStack struct {
 	registry *module.Registry
 	bindings artifact.BindingStore
 	ledger   artifact.RetentionLedger
-	writers  writer.Writers
+	writers  *writer.Factory
+	w        writer.Writer
 	runtime  *sessionstore.SessionRunStore
 	now      func() time.Time
 }
@@ -72,7 +74,8 @@ func (s *testStack) open(t testing.TB) {
 	if s.bindings == nil {
 		s.bindings, s.ledger = artifacttest.Stores(t)
 	}
-	s.writers = writer.NewWriters(s.store, s.registry, writer.Admission{Bindings: s.bindings, Ledger: s.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
+	s.writers = &writer.Factory{Store: s.store, Registry: s.registry, Admission: writer.Admission{Bindings: s.bindings, Ledger: s.ledger}}
+	s.w = nil
 	rt, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: s.registry, Store: s.store, Frozen: sessionstoretest.Frozen(t, s.bindings), Now: s.now})
 	if err != nil {
 		t.Fatal(err)
@@ -84,10 +87,14 @@ func (s *testStack) open(t testing.TB) {
 // command of the drive takes.
 func (s *testStack) writer(t testing.TB) writer.Writer {
 	t.Helper()
-	w, err := s.writers.Writer(context.Background(), testSession)
+	if s.w != nil {
+		return s.w
+	}
+	w, err := writertest.Open(t, context.Background(), s.writers, testSession, session.OpenOptions{Takeover: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.w = w
 	return w
 }
 
@@ -108,10 +115,7 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	}
 	group := &writer.SemanticGroup{CommitID: ledger.CommitID("create/" + string(runID)),
 		Batches: []writer.TypedBatch{{Domain: sessionstore.Stream(runID), Events: runEvents}}}
-	w, err := s.writers.Writer(context.Background(), testSession)
-	if err != nil {
-		t.Fatal(err)
-	}
+	w := s.writer(t)
 	res, err := w.Commit(context.Background(), func(writer.View) (*writer.SemanticGroup, error) { return group, nil })
 	if err != nil {
 		t.Fatal(err)

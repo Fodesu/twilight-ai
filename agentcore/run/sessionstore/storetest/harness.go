@@ -25,6 +25,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/session/writer/writertest"
 	"github.com/felinics/twilight/agentcore/turn"
 	"sync"
 	"testing"
@@ -74,7 +75,8 @@ type harness struct {
 	frozen   frozen.Store
 	cache    *session.MemoryProjectionCache
 	clock    *clock
-	writers  writer.Writers
+	writers  *writer.Factory
+	w        writer.Writer
 	rt       *sessionstore.SessionRunStore
 	seq      int
 }
@@ -100,8 +102,9 @@ func newHarness(t testing.TB, f Fixture) *harness {
 // Takeover lets it supersede the previous owner process, if any.
 func (h *harness) open() {
 	h.t.Helper()
-	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true},
-		writer.WritersConfig{Cache: h.cache, CachePolicy: sessionstore.WriterCachePolicy(0)})
+	h.writers = &writer.Factory{Store: h.store, Registry: h.registry, Admission: writer.Admission{Bindings: h.bindings, Ledger: h.ledger},
+		Config: writer.WritersConfig{Cache: h.cache, CachePolicy: sessionstore.WriterCachePolicy(0)}}
+	h.w = nil
 	rt, err := sessionstore.NewSessionRunStore(sessionstore.Config{Registry: h.registry, Store: h.store,
 		Frozen: h.frozen, Cache: h.cache, Now: h.clock.Now})
 	if err != nil {
@@ -126,10 +129,14 @@ func (h *harness) fatal(args ...any) { h.t.Helper(); h.t.Fatal(args...) }
 
 func (h *harness) writer() writer.Writer {
 	h.t.Helper()
-	w, err := h.writers.Writer(h.ctx, sid)
+	if h.w != nil {
+		return h.w
+	}
+	w, err := writertest.Open(h.t, h.ctx, h.writers, sid, session.OpenOptions{Takeover: true})
 	if err != nil {
 		h.fatal(err)
 	}
+	h.w = w
 	return w
 }
 

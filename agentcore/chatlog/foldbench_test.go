@@ -45,7 +45,7 @@ func benchFold(b *testing.B, def module.ProjectionDefinition, n int) {
 // Context now appends and copies only the map an event writes; Surface keeps
 // its content in persistent Tables (O(sqrt(n)) per write). These benchmarks
 // pin the shape: doubling N should roughly double elapsed time. The cost is
-// paid by OpenWriter's rebuild and ProjectionReader.Load, which fold the log.
+// paid by Writer binding's rebuild and ProjectionReader.Load, which fold the log.
 func BenchmarkSurfaceFold(b *testing.B) {
 	for _, n := range []int{400, 800, 1600, 3200} {
 		b.Run(fmt.Sprint(n), func(b *testing.B) { benchFold(b, SurfaceProjection, n) })

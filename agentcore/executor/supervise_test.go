@@ -128,7 +128,7 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	}
 	backend := newTestBackend()
 	worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{
-		ID: "worker-b", LeaseDuration: time.Second,
+		ID: "worker-b", LeaseDuration: time.Second, Clock: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	run "github.com/felinics/twilight/agentcore/run"
@@ -115,8 +114,8 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 		assignment := probe
 		assignment.Effect = ref.id
 		if err := l.dispatch(ctx, assignment); err != nil {
-			if errors.Is(err, effect.ErrDispatchUnknown) {
-				// The request may have crossed the external boundary. Keep the
+			if recoverableDispatch(ctx, err) {
+				// Acceptance may precede a temporary refusal or lost response. Keep the
 				// call Executing for explicit recovery rather than claiming a
 				// known failure or dispatching a duplicate.
 				return dispatched, fmt.Errorf("agent: loop: tool dispatch outcome: %w", err)
@@ -124,7 +123,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt store.RunStore, events Eve
 			// The effect never started: settle it as a Known execution
 			// failure so the call does not stay Executing.
 			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}
-			if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
+			if _, serr := l.settle(ctx, rt, events, &ref, start.Snapshot.Position,
 				run.SubmitToolFailure{StepID: act.StepID, CallID: callID, Effect: ref.id, Failure: failure, Outcome: run.ToolOutcomeKnown}); serr != nil {
 				return dispatched, serr
 			}

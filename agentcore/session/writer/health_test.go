@@ -50,7 +50,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := session.NewMemoryProjectionCache()
-	w, err := openWriter(ctx, store, registry, Admission{}, "s", session.OpenOptions{}, WritersConfig{Cache: cache, CachePolicy: module.CacheEvery(1)})
+	w, err := acquireTestWriterConfig(ctx, store, registry, Admission{}, "s", session.OpenOptions{}, WritersConfig{Cache: cache, CachePolicy: module.CacheEvery(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	w, err = openWriter(ctx, store, registry2, Admission{}, "s", session.OpenOptions{}, WritersConfig{Cache: cache, CachePolicy: module.CacheEvery(1)})
+	w, err = acquireTestWriterConfig(ctx, store, registry2, Admission{}, "s", session.OpenOptions{}, WritersConfig{Cache: cache, CachePolicy: module.CacheEvery(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := openWriter(ctx, store, reg1, Admission{}, "s", session.OpenOptions{}, WritersConfig{})
+	w, err := acquireTestWriterConfig(ctx, store, reg1, Admission{}, "s", session.OpenOptions{}, WritersConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err = openWriter(ctx, store, reg2, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{})
+	w, err = acquireTestWriterConfig(ctx, store, reg2, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{})
 	if err != nil {
 		t.Fatalf("reopen with a failing derived projection: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = w.Close(ctx)
-	if _, err := openWriter(ctx, store, reg3, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{}); err == nil {
+	if _, err := acquireTestWriterConfig(ctx, store, reg3, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{}); err == nil {
 		t.Fatal("reopen with a failing authoritative projection succeeded")
 	}
 }

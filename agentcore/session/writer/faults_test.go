@@ -92,7 +92,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			seg := tipSegment(t, f.store, "s")
 			claimID := DeriveClaimID(seg, "c1", set.RefSetDigest)
 			fs := &faultStore{Stores: f.store}
-			w, err := OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
+			w, err := acquireTestWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +120,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			if err := w.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
-			w, err = OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
+			w, err = acquireTestWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -155,7 +155,7 @@ func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 	fs := &faultStore{Stores: base.store}
 	open := func(takeover bool) Writer {
 		t.Helper()
-		w, err := OpenWriter(ctx, fs, base.registry, base.admission(), "s", session.OpenOptions{Takeover: takeover})
+		w, err := acquireTestWriter(ctx, fs, base.registry, base.admission(), "s", session.OpenOptions{Takeover: takeover})
 		if err != nil {
 			t.Fatalf("open writer: %v", err)
 		}

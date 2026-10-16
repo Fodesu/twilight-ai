@@ -112,7 +112,7 @@ func TestPlanRedispatchesMissingWithinBudget(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			calls, requeues := 0, 0
+			calls := 0
 			r := &Reconciler{Executions: &fakePort{state: effect.AttachmentMissing}, Missing: RedispatchMissing, Attempts: store, Epoch: 1, MaxRedispatches: 2,
 				Redispatch: func(_ context.Context, k effect.AssignmentKey) error {
 					calls++
@@ -120,30 +120,59 @@ func TestPlanRedispatchesMissingWithinBudget(t *testing.T) {
 						t.Fatalf("redispatch of %+v", k)
 					}
 					return tc.redispatch
-				},
-				Requeue: func(k effect.AssignmentKey) {
-					requeues++
-					if k != key {
-						t.Fatalf("requeue of %+v", k)
-					}
 				}}
 			decisions, err := r.Plan(ctx, "s", executingModel("c1"))
 			if err != nil || len(decisions) != 1 {
 				t.Fatalf("plan = %+v %v", decisions, err)
 			}
 			d := decisions[0]
-			wantRequeue := 0
-			if errors.Is(tc.redispatch, effect.ErrDispatchRetryable) {
-				wantRequeue = 1
-			}
-			if d.Verdict != tc.want || (d.Recovery != nil) != (tc.want == Dispose) || calls != tc.calls || requeues != wantRequeue {
-				t.Fatalf("decision = %+v calls=%d requeues=%d, want %s calls=%d requeues=%d", d, calls, requeues, tc.want, tc.calls, wantRequeue)
+			wantRetry := tc.calls > 0 && errors.Is(tc.redispatch, effect.ErrDispatchRetryable)
+			if d.Verdict != tc.want || (d.Recovery != nil) != (tc.want == Dispose) || calls != tc.calls || d.Retry != wantRetry {
+				t.Fatalf("decision = %+v calls=%d, want %s calls=%d retry=%v", d, calls, tc.want, tc.calls, wantRetry)
 			}
 			state, _, _, err := store.Load(ctx, key)
 			if err != nil || state.Planned != tc.planned || state.Dispatched != tc.dispatched || state.GivenUp != tc.gaveUp {
 				t.Fatalf("ledger = %+v %v, want planned=%d dispatched=%d givenUp=%v", state, err, tc.planned, tc.dispatched, tc.gaveUp)
 			}
 		})
+	}
+}
+
+// A disconnected recovery pass leaves a durable pending attempt, not a
+// background retry. A new activation explicitly plans again and reuses it.
+func TestRedispatchPassCanResumePendingAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	key := effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}
+	attemptStore := newAttempts()
+	port := &fakePort{state: effect.AttachmentMissing}
+	calls := 0
+	first := &Reconciler{Executions: port, Missing: RedispatchMissing, Attempts: attemptStore, Epoch: 1, MaxRedispatches: 1,
+		Redispatch: func(context.Context, effect.AssignmentKey) error { calls++; return effect.ErrDispatchRetryable }}
+	ds, err := first.Plan(ctx, "s", executingModel("c1"))
+	if err != nil || len(ds) != 1 || ds[0].Verdict != Defer || !ds[0].Retry || calls != 1 {
+		t.Fatalf("first pass=%+v err=%v calls=%d", ds, err, calls)
+	}
+	cancel()
+	if _, err := first.Plan(ctx, "s", executingModel("c1")); !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("disconnected pass err=%v calls=%d", err, calls)
+	}
+	state, _, _, err := attemptStore.Load(context.Background(), key)
+	if err != nil || state.Planned != 1 || state.Dispatched != 0 || state.Pending() != 1 || state.GivenUp {
+		t.Fatalf("pending ledger=%+v err=%v", state, err)
+	}
+	second := &Reconciler{Executions: port, Missing: RedispatchMissing, Attempts: attemptStore, Epoch: 2, MaxRedispatches: 1,
+		Redispatch: func(context.Context, effect.AssignmentKey) error { calls++; return nil }}
+	ds, err = second.Plan(context.Background(), "s", executingModel("c1"))
+	state, _, _, loadErr := attemptStore.Load(context.Background(), key)
+	if err != nil || loadErr != nil || len(ds) != 1 || ds[0].Verdict != Redispatch || ds[0].Retry || calls != 2 || state.Planned != 1 || state.Dispatched != 1 || state.GivenUp {
+		t.Fatalf("resumed pass=%+v err=%v ledger=%+v loadErr=%v calls=%d", ds, err, state, loadErr, calls)
+	}
+	// The accepted execution is observed in another finite pass. No attempt
+	// is charged and no Outcome is consumed implicitly.
+	port.state = effect.AttachmentActive
+	ds, err = second.Plan(context.Background(), "s", executingModel("c1"))
+	if err != nil || len(ds) != 1 || ds[0].Verdict != Keep || calls != 2 || port.reads != 0 {
+		t.Fatalf("accepted pass=%+v err=%v calls=%d reads=%d", ds, err, calls, port.reads)
 	}
 }
 

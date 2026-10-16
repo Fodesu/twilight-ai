@@ -69,6 +69,11 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		}
 		claimed.ExecutionRef = bound
 	}
+	if claimed.State == effect.ExecutionCancelRequested && claimed.ExecutionRef.Provider == "" {
+		return w.finishOwned(ctx, lease, &protocol.OutcomeEnvelope{
+			ProtocolVersion: protocol.ProtocolVersion, Key: key, Cancelled: true,
+		}, effect.ExecutionCancelled, nil)
+	}
 	backend, err := w.backend(claimed.ExecutionRef)
 	if err != nil {
 		return err
@@ -77,21 +82,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	if claimed.State == effect.ExecutionCancelRequested {
 		leaseDone := make(chan struct{})
 		w.spawn(func() { w.heartbeat(lease, leaseDone) })
-		attachment, attachErr := backend.Attach(ctx, ref)
-		if attachErr != nil {
-			close(leaseDone)
-			return attachErr
-		}
-		if attachment.State != effect.AttachmentActive && attachment.State != effect.AttachmentTerminal {
-			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, Unknown: true,
-				Error: &protocol.WireError{Code: "cancel_reconciliation_unknown", Message: "cancelled execution is no longer attached"}}
-			_ = w.finishOwned(ctx, lease, &env, effect.ExecutionUnknown, nil)
-			close(leaseDone)
-			return nil
-		}
-		cancelErr := backend.Cancel(ctx, ref)
-		w.spawn(func() { w.watch(lease, backend, ref, leaseDone) })
-		return cancelErr
+		return w.cancelOwned(ctx, lease, backend, ref, leaseDone)
 	}
 	leaseDone := make(chan struct{})
 	w.spawn(func() { w.heartbeat(lease, leaseDone) })
@@ -120,6 +111,27 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	return w.start(ctx, lease, &claimed, backend, ref, leaseDone)
 }
 
+// cancelOwned never prepares, restarts or starts. A persisted binding may
+// already have crossed the effect boundary; absent backend evidence is not
+// proof of a side-effect-free cancellation.
+func (w *Worker) cancelOwned(ctx context.Context, lease executionstore.Lease, backend ExecutionBackend, ref string, done chan struct{}) error {
+	attachment, err := backend.Attach(ctx, ref)
+	if err != nil {
+		close(done)
+		return err
+	}
+	cancelErr := backend.Cancel(ctx, ref)
+	if attachment.State != effect.AttachmentActive && attachment.State != effect.AttachmentTerminal {
+		env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: lease.Key, Unknown: true,
+			Error: &protocol.WireError{Code: "cancel_reconciliation_unknown", Message: "cancelled execution is no longer attached"}}
+		err := w.finishOwned(ctx, lease, &env, effect.ExecutionUnknown, nil)
+		close(done)
+		return err
+	}
+	w.spawn(func() { w.watch(lease, backend, ref, done) })
+	return cancelErr
+}
+
 // awaitBackend holds a taken-over execution whose backend could not confirm
 // it (orphaned): it asks the backend again with backoff, under the
 // heartbeat leaseDone ends, until the backend observes the execution (then
@@ -134,6 +146,12 @@ func (w *Worker) awaitBackend(lease executionstore.Lease, claimed *executionstor
 			return
 		}
 		delay = min(delay*2, time.Second)
+		if state, _, ok, err := w.store.Load(w.lifecycle, lease.Key); err == nil && ok && state.State == effect.ExecutionCancelRequested {
+			cancelCtx, cancel := context.WithTimeout(w.lifecycle, w.lease)
+			_ = w.cancelOwned(cancelCtx, lease, backend, ref, leaseDone)
+			cancel()
+			return
+		}
 		attachCtx, cancel := context.WithTimeout(w.lifecycle, w.lease)
 		attachment, err := backend.Attach(attachCtx, ref)
 		cancel()
@@ -173,7 +191,15 @@ func (w *Worker) replay(ctx context.Context, lease executionstore.Lease, claimed
 		close(leaseDone)
 		return err
 	}
-	fresh, err := backend.Restart(ctx, ref, claimed.Assignment)
+	current, err := w.startable(ctx, lease, ref)
+	if err != nil {
+		if errors.Is(err, executionstore.ErrStateConflict) {
+			return w.cancelOwned(ctx, lease, backend, ref, leaseDone)
+		}
+		close(leaseDone)
+		return err
+	}
+	fresh, err := backend.Restart(ctx, ref, current.Assignment)
 	if err != nil {
 		close(leaseDone)
 		return err
@@ -184,7 +210,13 @@ func (w *Worker) replay(ctx context.Context, lease executionstore.Lease, claimed
 	}
 	if fresh != ref {
 		if err := w.restarted(ctx, lease, claimed.ExecutionRef, fresh); err != nil {
-			close(leaseDone)
+			// Restart allocates a Ref, not permission to execute it. A
+			// cancellation committed during the RPC wins; never Start fresh.
+			_ = backend.Cancel(ctx, fresh)
+			w.spawn(func() { w.watch(lease, backend, ref, leaseDone) })
+			if errors.Is(err, executionstore.ErrStateConflict) {
+				return nil
+			}
 			return err
 		}
 		claimed.Superseded = append(claimed.Superseded, claimed.ExecutionRef)
@@ -198,6 +230,9 @@ func (w *Worker) replay(ctx context.Context, lease executionstore.Lease, claimed
 // restarted commits execution_restarted: from leaves, fresh continues.
 func (w *Worker) restarted(ctx context.Context, lease executionstore.Lease, from ExecutionRef, fresh string) error {
 	return w.commit(ctx, lease, lease.Key, func(state *executionstore.Execution, _ ledger.Head) (*ledger.Commit, error) {
+		if state.Terminal() || state.State == effect.ExecutionCancelRequested {
+			return nil, executionstore.ErrStateConflict
+		}
 		if state.ExecutionRef.Ref == fresh {
 			return nil, nil
 		}
@@ -209,21 +244,87 @@ func (w *Worker) restarted(ctx context.Context, lease executionstore.Lease, from
 	})
 }
 
+// startable checks physical execution authority, not just lease ownership.
+// Controller cancellation and restart commits are serialized by the ledger;
+// each external boundary rechecks the latest fold as well.
+func (w *Worker) startable(ctx context.Context, lease executionstore.Lease, ref string) (executionstore.Execution, error) {
+	state, _, ok, err := w.store.Load(ctx, lease.Key)
+	if err != nil {
+		return state, err
+	}
+	if !ok {
+		return state, effect.ErrExecutionNotFound
+	}
+	if state.Terminal() || state.State == effect.ExecutionCancelRequested || state.ExecutionRef.Ref != ref {
+		return state, executionstore.ErrStateConflict
+	}
+	if !w.holdsLease(&state) || state.Lease.Epoch != lease.Epoch {
+		return state, executionstore.ErrLeaseLost
+	}
+	return state, nil
+}
+
+// beginStart commits dispatch intent even on retries, then checks again just
+// before the RPC. No state check can revoke a request already sent: a Cancel
+// racing the external boundary must keep observing and cancelling the Ref.
+func (w *Worker) beginStart(ctx context.Context, lease executionstore.Lease, ref string) error {
+	err := w.commit(ctx, lease, lease.Key, func(state *executionstore.Execution, head ledger.Head) (*ledger.Commit, error) {
+		if state.ExecutionRef.Ref != ref {
+			return nil, executionstore.ErrStateConflict
+		}
+		return w.transition(lease, executionstore.EventExecutionStarted, effect.ExecutionDispatching, "start")(state, head)
+	})
+	if err != nil {
+		return err
+	}
+	_, err = w.startable(ctx, lease, ref)
+	return err
+}
+
+// callStart bounds only the synchronous RPC. Backends manage the external
+// execution's lifetime independently and must honor this context for the RPC.
+// Cancellation/timeout cannot prove that the effect was never dispatched.
+func (w *Worker) callStart(ctx context.Context, backend ExecutionBackend, ref string, a effect.Assignment) error {
+	if !w.beginWork() {
+		return fmt.Errorf("%w: %w", effect.ErrDispatchUnknown, context.Canceled)
+	}
+	defer w.wg.Done()
+	rpc, cancel := context.WithTimeout(ctx, w.startTimeout)
+	stop := context.AfterFunc(w.lifecycle, cancel)
+	defer func() { stop(); cancel() }()
+	if w.lifecycle.Err() != nil {
+		cancel()
+	}
+	if err := rpc.Err(); err != nil {
+		return fmt.Errorf("%w: %w", effect.ErrDispatchUnknown, err)
+	}
+	err := backend.Start(rpc, ref, a)
+	if rpc.Err() != nil {
+		return fmt.Errorf("%w: %w", effect.ErrDispatchUnknown, rpc.Err())
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", effect.ErrDispatchUnknown, err)
+	}
+	return err
+}
+
 // start moves the execution through Dispatching to Running around
 // Backend.Start and hands it to a watcher; the heartbeat leaseDone ends is
 // already running.
 func (w *Worker) start(ctx context.Context, lease executionstore.Lease, claimed *executionstore.Execution, backend ExecutionBackend, ref string, leaseDone chan struct{}) error {
 	key := lease.Key
-	if claimed.State != effect.ExecutionDispatching {
-		if err := w.commit(ctx, lease, key, w.transition(lease, executionstore.EventExecutionStarted, effect.ExecutionDispatching, "start")); err != nil {
-			close(leaseDone)
-			if errors.Is(err, executionstore.ErrLeaseLost) || errors.Is(err, executionstore.ErrStateConflict) {
-				return nil
-			}
-			return err
+	if err := w.beginStart(ctx, lease, ref); err != nil {
+		// A cancelling execution with a physical Ref remains observable.
+		// A context ending before the RPC is also not proof of no effect
+		// for a Dispatching Ref adopted from an earlier invocation.
+		if errors.Is(err, executionstore.ErrStateConflict) || errors.Is(err, executionstore.ErrLeaseLost) {
+			w.spawn(func() { w.watch(lease, backend, ref, leaseDone) })
+			return nil
 		}
+		close(leaseDone)
+		return err
 	}
-	if err := backend.Start(context.WithoutCancel(ctx), ref, claimed.Assignment); err != nil {
+	if err := w.callStart(ctx, backend, ref, claimed.Assignment); err != nil {
 		if errors.Is(err, effect.ErrDispatchUnknown) {
 			w.spawn(func() { w.watch(lease, backend, ref, leaseDone) })
 			return err
@@ -262,11 +363,22 @@ func (w *Worker) watch(lease executionstore.Lease, backend ExecutionBackend, ref
 // bounded by the lease covers a Backend without notices and a notice that
 // was lost, and every wait re-checks that this Worker still owns the record.
 func (w *Worker) observe(lease executionstore.Lease, backend ExecutionBackend, ref *string) bool {
+	if w.lifecycle.Err() != nil || !w.ownershipIntact(lease) {
+		return false
+	}
 	wait := w.notices.await(backend, *ref)
 	defer wait.cancel()
 	delay := 10 * time.Millisecond
 	var out effect.Outcome
 	for {
+		// Cancellation is a durable command, not cancellation of an RPC
+		// context. Repeat it while observing a Ref that may already have
+		// crossed the effect boundary, including a racing Start.
+		if state, _, ok, err := w.store.Load(w.lifecycle, lease.Key); err == nil && ok && state.State == effect.ExecutionCancelRequested {
+			cancelCtx, cancel := context.WithTimeout(w.lifecycle, w.lease)
+			_ = backend.Cancel(cancelCtx, *ref)
+			cancel()
+		}
 		readCtx, cancelRead := context.WithTimeout(w.lifecycle, w.lease)
 		var err error
 		out, err = backend.Outcome(readCtx, *ref)
@@ -362,8 +474,8 @@ func (w *Worker) retryAfter(lease executionstore.Lease, backend ExecutionBackend
 		return "", false
 	}
 	ctx := w.lifecycle
-	state, _, ok, err := w.store.Load(ctx, lease.Key)
-	if err != nil || !ok || state.Lease.Owner != w.id || state.Lease.Epoch != lease.Epoch {
+	state, err := w.startable(ctx, lease, ref)
+	if err != nil {
 		return "", false
 	}
 	attempts := len(state.Superseded) + 1
@@ -373,21 +485,36 @@ func (w *Worker) retryAfter(lease executionstore.Lease, backend ExecutionBackend
 	if delay := w.retry.Backoff * time.Duration(attempts); delay > 0 && !w.waitOwned(lease, delay) {
 		return "", false
 	}
+	// Backoff and backend reads may have overlapped the controller's
+	// command. Ownership alone is not permission to retry.
+	state, err = w.startable(ctx, lease, ref)
+	if err != nil {
+		return "", false
+	}
 	fresh, err := backend.Restart(ctx, ref, state.Assignment)
 	if err != nil || fresh == "" || fresh == ref {
 		return "", false
 	}
 	if err := w.restarted(ctx, lease, state.ExecutionRef, fresh); err != nil {
+		_ = backend.Cancel(ctx, fresh)
 		return "", false
 	}
 	// The next generation of frames starts here; what the receiver saw of
 	// the failed attempt is void.
 	w.progress.Reset(lease.Key)
-	if err := backend.Start(context.WithoutCancel(ctx), fresh, state.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
-		// The retry itself was refused before starting: settle the original
-		// failure rather than loop on the refusal.
-		return "", false
+	if err := w.beginStart(ctx, lease, fresh); err != nil {
+		// The new binding was committed before cancellation. Observe it,
+		// never the superseded outcome, even when Start is now forbidden.
+		return fresh, true
 	}
+	if err := w.callStart(ctx, backend, fresh, state.Assignment); err != nil {
+		if !errors.Is(err, effect.ErrDispatchUnknown) {
+			_ = w.finishOwned(ctx, lease, &protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: lease.Key,
+				Error: &protocol.WireError{Code: "dispatch_failed", Message: err.Error()}}, effect.ExecutionFailed, nil)
+		}
+		return fresh, true
+	}
+	_ = w.commit(ctx, lease, lease.Key, w.transition(lease, executionstore.EventExecutionRunning, effect.ExecutionRunning, "run"))
 	return fresh, true
 }
 

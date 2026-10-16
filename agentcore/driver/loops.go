@@ -1,15 +1,11 @@
-// Package driver advances durable Turns. Loops composes and caches the Loop
-// of each AgentPreset over the shared Executor; Driver drives an active
-// Turn to its next quiescent point; Recovery runs the takeover disposition
-// when a Session is opened and settles Outcomes that survived a previous
-// owner; Responders answer the waits a tool leaves for the owner process.
-// None of them decides where inputs go or what a reply is; those are the
-// caller's.
+// Package driver performs finite advancement of durable Turns. Loops caches
+// preset interpreters, Driver reconciles and advances without waiting, and
+// Compactions coordinates durable context maintenance. Ownership, activation,
+// response scheduling and future work discovery belong to the host.
 package driver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -58,9 +54,6 @@ type Loops struct {
 	// Dispatch is the re-offer policy of every Loop for a retryable dispatch
 	// refusal; the zero value selects loop's defaults.
 	Dispatch loop.DispatchPolicy
-	// Watcher is where every Loop waits for Outcomes: one settlement
-	// subscription to the Executor shared with the Recovery; required.
-	Watcher *effect.Watcher
 	// Planner, when set, is consulted through every Loop's BeforePrepare:
 	// the application's between-steps context policy, given the Writer the
 	// drive commits through.
@@ -74,9 +67,6 @@ type Loops struct {
 
 // For returns the Loop of the preset, building it on first use.
 func (l *Loops) For(ref preset.PresetRef) (*loop.Loop, error) {
-	if l.Watcher == nil {
-		return nil, errors.New("driver: loops require a watcher")
-	}
 	ap, err := l.Presets.Resolve(ref)
 	if err != nil {
 		return nil, err
@@ -95,7 +85,6 @@ func (l *Loops) For(ref preset.PresetRef) (*loop.Loop, error) {
 		MalformedRetries: ap.MalformedRetries,
 		TargetResolver:   l.Targets,
 		Dispatch:         l.Dispatch,
-		Watcher:          l.Watcher,
 	}
 	if l.Planner != nil {
 		settings.BeforePrepare = l.beforePrepare
