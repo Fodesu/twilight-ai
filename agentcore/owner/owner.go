@@ -38,6 +38,9 @@ const (
 type openSession struct {
 	state openState
 	w     writer.Writer
+	// cancelOpen lets shutdown interrupt acquisition/recovery before joining.
+	// Cleared when the Handle is published; it does not own a live Session.
+	cancelOpen context.CancelFunc
 }
 
 // Owner holds the Sessions this process owns over the Session-side ports
@@ -52,8 +55,8 @@ type Owner struct {
 
 	mu   sync.Mutex
 	open map[session.SessionID]*openSession
-	// closing begins with Close: Open refuses from here on and Close waits
-	// for the Opens in flight before releasing, so none outlives the
+	// closing begins with Close: Open refuses from here on and Close cancels
+	// and joins the Opens in flight before releasing, so none outlives the
 	// Execution and the Kernel closing behind this call.
 	closing  bool
 	inflight sync.WaitGroup
@@ -80,9 +83,9 @@ type Handle struct {
 // or closing is ErrSessionOpen; an Open after the Owner began closing is
 // ErrClosed.
 func (a *Owner) Open(ctx context.Context, sid session.SessionID) (*Handle, error) {
-	a.inflight.Add(1)
-	defer a.inflight.Done()
-	gen := &openSession{state: opening}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	gen := &openSession{state: opening, cancelOpen: cancel}
 	a.mu.Lock()
 	if a.closing {
 		a.mu.Unlock()
@@ -93,7 +96,11 @@ func (a *Owner) Open(ctx context.Context, sid session.SessionID) (*Handle, error
 		return nil, fmt.Errorf("%w: %s", ErrSessionOpen, sid)
 	}
 	a.open[sid] = gen
+	// Register under the same mutex as Close's closing flag, so a late Open
+	// cannot add work after shutdown has begun waiting on an empty group.
+	a.inflight.Add(1)
 	a.mu.Unlock()
+	defer a.inflight.Done()
 	w, err := a.Writers.Writer(ctx, sid)
 	if err != nil {
 		_ = a.release(context.WithoutCancel(ctx), sid, gen, false)
@@ -109,7 +116,17 @@ func (a *Owner) Open(ctx context.Context, sid session.SessionID) (*Handle, error
 	// one: the Responder continues from its durable state.
 	a.Execution.ResumeWaiting(ctx, w)
 	a.mu.Lock()
+	if a.closing || ctx.Err() != nil {
+		err := ctx.Err()
+		if a.closing {
+			err = ErrClosed
+		}
+		a.mu.Unlock()
+		_ = a.release(context.WithoutCancel(ctx), sid, gen, true)
+		return nil, err
+	}
 	gen.state = open
+	gen.cancelOpen = nil
 	a.mu.Unlock()
 	return &Handle{Recovered: n, gen: gen, a: a}, nil
 }
@@ -165,13 +182,18 @@ func (a *Owner) DeleteSession(ctx context.Context, sid session.SessionID) error 
 	return writer.Delete(ctx, a.Maintenance, a.Admission, sid)
 }
 
-// Close refuses new Opens, waits for the ones in flight and releases every
+// Close refuses new Opens, cancels and joins the ones in flight, and releases every
 // generation this Owner then holds: the recovery listeners and the Writer
 // of each. Every outstanding Handle is stale afterwards. The Kernel and the
 // Execution stay open: they are the host's to close, after this.
 func (a *Owner) Close(ctx context.Context) error {
 	a.mu.Lock()
 	a.closing = true
+	for _, gen := range a.open {
+		if gen.cancelOpen != nil {
+			gen.cancelOpen()
+		}
+	}
 	a.mu.Unlock()
 	a.inflight.Wait()
 	a.mu.Lock()

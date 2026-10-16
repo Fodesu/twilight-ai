@@ -5,13 +5,12 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/testutil/local"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/chatlog"
-	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	rt "github.com/felinics/twilight/agentcore/runtime"
@@ -19,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
+	"github.com/felinics/twilight/agentcore/testutil/local"
 	"time"
 )
 
@@ -136,11 +136,11 @@ func (g *gatedWriters) Writer(ctx context.Context, sid session.SessionID) (write
 	return g.Writers.Writer(ctx, sid)
 }
 
-// Close waits for an Open in flight before returning, and an Open after
-// Close began is ErrClosed: no Open outlives the Execution and the Kernel
-// closing behind Close (the Application.Close order).
-func TestCloseWaitsForInFlightOpen(t *testing.T) {
-	ctx := context.Background()
+// Close cancels and joins an Open in flight without waiting for an external
+// acquisition gate. No Open outlives the Execution and Kernel closed afterward.
+func TestCloseCancelsAndJoinsInFlightOpen(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	a, k := newAuthority(t)
 	if err := k.CreateSession(ctx, "s-inflight", nil); err != nil {
 		t.Fatal(err)
@@ -161,15 +161,14 @@ func TestCloseWaitsForInFlightOpen(t *testing.T) {
 	go func() { closed <- a.Close(ctx) }()
 	select {
 	case err := <-closed:
-		t.Fatalf("close returned %v while an Open was in flight", err)
-	case <-time.After(50 * time.Millisecond):
+		if err != nil {
+			t.Fatalf("close = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Close did not cancel the blocked acquisition")
 	}
-	close(gate)
-	if err := <-closed; err != nil {
-		t.Fatalf("close = %v", err)
-	}
-	if err := <-opened; err != nil {
-		t.Fatalf("in-flight open's handle close = %v", err)
+	if err := <-opened; !errors.Is(err, context.Canceled) {
+		t.Fatalf("in-flight Open = %v, want cancellation", err)
 	}
 	if _, err := a.Open(ctx, "s-inflight"); !errors.Is(err, owner.ErrClosed) {
 		t.Fatalf("open after close = %v, want ErrClosed", err)

@@ -123,34 +123,63 @@ func (r *Recovery) lifetimeOf(w writer.Writer) *lifetime {
 	return r.installLocked(w, context.Background())
 }
 
-// Open installs the Session's recovery lifetime under w and runs the
-// takeover disposition. It returns the number of recovery commands issued.
-func (r *Recovery) Open(ctx context.Context, w writer.Writer) (int, error) {
+// Open installs the Session's recovery lifetime under w. Accepted compaction
+// work is settled before Run recovery can attach outcomes and resume building
+// requests. Success is the handoff to normal driving: callers must await Open
+// before driving this Writer. The count covers Run recovery commands only.
+// Opening is bounded by both ctx and the Session lifetime (Stop/Close).
+func (r *Recovery) Open(ctx context.Context, w writer.Writer) (n int, err error) {
 	r.mu.Lock()
 	lt := r.installLocked(w, ctx)
+	lt.maintenance.Add(1)
 	r.mu.Unlock()
-	n, err := r.Recover(ctx, w)
-	if err == nil && r.Compactions != nil {
-		var needed bool
-		needed, err = r.Compactions.NeedsRecovery(ctx, w)
-		if err == nil && needed {
-			r.resumeCompactions(lt)
+
+	opening, cancel := context.WithCancel(ctx)
+	stopCancel := context.AfterFunc(lt.ctx, cancel)
+	defer func() {
+		stopCancel()
+		cancel()
+		// Stop joins owned work, including this opening. Release our own
+		// registration before cleaning up a failed opening's listeners.
+		lt.maintenance.Done()
+		if err != nil {
+			r.Stop(w.SessionID())
+		}
+	}()
+
+	var hadCompactionWork bool
+	if r.Compactions != nil {
+		hadCompactionWork, err = r.Compactions.NeedsRecovery(opening, w)
+		if err != nil {
+			return 0, err
+		}
+		if hadCompactionWork {
+			if err := r.Compactions.Recover(opening, w); err != nil {
+				return 0, err
+			}
 		}
 	}
+	// Use this opening's lifetime, rather than discovering/installing another
+	// one if Stop has cancelled it. No normal outcome callback is registered
+	// until the summary has been adopted (or durably disposed as stale).
+	n, err = r.Runs.RecoverInterrupted(opening, w, r.reconciler(lt))
 	if err != nil {
-		r.Stop(w.SessionID())
+		return n, err
 	}
-	return n, err
+	if err := opening.Err(); err != nil {
+		return n, err
+	}
+	if hadCompactionWork {
+		r.resumeAfterCompaction(lt)
+	}
+	return n, nil
 }
 
-// resumeCompactions also handles an idle Session: Run recovery alone cannot
-// discover an accepted summary intent. Open does not hold its caller until
-// the model answers; Stop cancels and joins this maintenance continuation.
-func (r *Recovery) resumeCompactions(lt *lifetime) {
+// resumeAfterCompaction preserves automatic continuation of an active Turn,
+// but never runs its summary in parallel with candidate construction. Idle
+// Sessions need no continuation; their accepted work was settled by Open.
+func (r *Recovery) resumeAfterCompaction(lt *lifetime) {
 	r.runOwned(lt, func() error {
-		if err := r.Compactions.Recover(lt.ctx, lt.w); err != nil {
-			return err
-		}
 		surface, err := turn.ReadSurface(lt.ctx, lt.w.Projections(), lt.w.SessionID())
 		if err != nil {
 			return err

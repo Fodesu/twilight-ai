@@ -184,9 +184,11 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 	return x, nil
 }
 
-// Open runs the takeover disposition for a Session whose Writer a host just
-// acquired (order): the returned count is the recovery commands
-// the disposition issued.
+// Open settles accepted compaction work before recovering ordinary Runs for
+// a Session whose Writer a host just acquired. Callers must await success
+// before driving this Writer. The caller context bounds opening; summary
+// execution or settlement errors are returned, not deferred to Fail.
+// The returned count is the number of Run recovery commands issued.
 func (x *Execution) Open(ctx context.Context, w writer.Writer) (int, error) {
 	return x.Recovery.Open(ctx, w)
 }

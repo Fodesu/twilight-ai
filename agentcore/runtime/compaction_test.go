@@ -574,15 +574,18 @@ func TestCompactionInFlightOwnerHandoff(t *testing.T) {
 	f.accept(old, "in-flight")
 	accepted := f.state().Operations["in-flight"]
 	key := accepted.Request.Key(compactSession)
-	if _, err := old.Open(f.ctx, f.w); err != nil {
-		t.Fatal(err)
-	}
+	oldOpened := make(chan error, 1)
+	oldWriter := f.w
+	go func() { _, err := old.Open(f.ctx, oldWriter); oldOpened <- err }()
 	waitCompact(t, f.ctx, started)
 	// Stop must cancel and join the old Recover waiter without cancelling the
 	// executor-owned physical summary. A new owner attaches the same key.
 	stopped := make(chan struct{})
 	go func() { old.Stop(compactSession); close(stopped) }()
 	waitCompact(t, f.ctx, stopped)
+	if err := waitCompact(t, f.ctx, oldOpened); !errors.Is(err, context.Canceled) {
+		t.Fatalf("old Open=%v, want cancellation", err)
+	}
 	if op := f.state().Operations["in-flight"]; op.Status != compaction.Pending || op.Acknowledged {
 		t.Fatalf("cancelled waiter settled operation=%+v", op)
 	}
@@ -591,13 +594,15 @@ func TestCompactionInFlightOwnerHandoff(t *testing.T) {
 	port := newCompactPort(f.worker)
 	x := f.execution(port, nil, false)
 	w := &compactWriter{Writer: f.w, acked: make(chan struct{}, 1)}
-	if _, err := x.Open(f.ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	opened := make(chan error, 1)
+	go func() { _, err := x.Open(f.ctx, w); opened <- err }()
 	if got := waitCompact(t, f.ctx, port.attached); got != key {
 		t.Fatalf("replacement attached=%+v, want %+v", got, key)
 	}
 	close(release)
+	if err := waitCompact(t, f.ctx, opened); err != nil {
+		t.Fatal(err)
+	}
 	waitCompact(t, f.ctx, w.acked)
 	x.Stop(compactSession)
 	if calls.Load() != 1 || len(port.dispatched) != 0 {
@@ -863,44 +868,33 @@ func TestCompactionSummaryFailureIsNotConversation(t *testing.T) {
 	f.counts(0, 0, 0)
 }
 
-func TestCompactionFailureCallbackMayCloseSession(t *testing.T) {
-	for _, ackFailure := range []bool{false, true} {
-		t.Run(fmt.Sprintf("ack=%v", ackFailure), func(t *testing.T) {
-			f := newCompactFixture(t, func(context.Context, sdk.Request) (sdk.ModelResult, error) {
-				if !ackFailure {
-					return sdk.ModelResult{}, errors.New("summary failed")
-				}
-				return sdk.ModelResult{Text: compactSummary}, nil
-			})
-			port := newCompactPort(f.worker)
-			port.failACK.Store(ackFailure)
-			x := f.execution(port, nil, true)
-			closed := make(chan error, 1)
-			callback := func(sid session.SessionID, failure error) {
-				x.Stop(sid)
-				if err := writer.CloseWriter(f.ctx, f.k.Writers, sid); err != nil {
-					closed <- err
-					return
-				}
-				closed <- failure
-			}
-			if ackFailure {
-				x.Compactions.Fail = callback
-			} else {
-				x.Recovery.Fail = callback
-			}
-			f.history()
-			f.accept(x, "close-on-failure")
-			if _, err := x.Open(f.ctx, f.w); err != nil {
-				t.Fatal(err)
-			}
-			if err := waitCompact(t, f.ctx, closed); err == nil {
-				t.Fatal("missing failure notification")
-			}
-			// Stop's join has finished: it did not wait for the callback itself.
-			x.Close()
-		})
+func TestCompactionACKFailureCallbackMayCloseSession(t *testing.T) {
+	f := newCompactFixture(t, func(context.Context, sdk.Request) (sdk.ModelResult, error) {
+		return sdk.ModelResult{Text: compactSummary}, nil
+	})
+	port := newCompactPort(f.worker)
+	port.failACK.Store(true)
+	x := f.execution(port, nil, true)
+	closed := make(chan error, 1)
+	x.Compactions.Fail = func(sid session.SessionID, failure error) {
+		x.Stop(sid)
+		if err := writer.CloseWriter(f.ctx, f.k.Writers, sid); err != nil {
+			closed <- err
+			return
+		}
+		closed <- failure
 	}
+	f.history()
+	f.accept(x, "close-on-failure")
+	// The asynchronous cleanup callback can cancel Open before it returns.
+	if _, err := x.Open(f.ctx, f.w); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if err := waitCompact(t, f.ctx, closed); err == nil {
+		t.Fatal("missing failure notification")
+	}
+	// Stop joins opening, but opening must not join this callback itself.
+	x.Close()
 }
 
 type compactGateTool struct {
