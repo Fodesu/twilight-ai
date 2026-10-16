@@ -63,6 +63,17 @@ Semantic Authority
 
 This boundary prevents the agent's semantic state from depending on the lifetime of a particular process, worker, or backend.
 
+### Agent Host
+
+The `agent/` layer composes the core without becoming a second semantic
+authority. It owns durable command delivery (`inbox`), temporary Session
+ownership (`ownership`), versioned work claims (`scheduling`), and disposable
+computation with independent rediscovery (`activation`). A Turn can remain
+active while no Session owner exists. Execution workers continue independently.
+
+See [Agent Core](core.md) for semantic protocols and [Agent](agent.md) for
+ownership, activation, scheduling, and durable continuation.
+
 ### Deployment Model
 
 The same semantic and execution model is used across deployment environments.
